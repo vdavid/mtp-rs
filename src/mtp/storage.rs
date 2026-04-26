@@ -149,7 +149,8 @@ impl Storage {
     /// [`list_objects_stream()`](Self::list_objects_stream) instead.
     ///
     /// This method handles various device quirks:
-    /// - Android devices: parent=0 returns ALL objects, so we use parent=0xFFFFFFFF instead
+    /// - Root listing tries parent=0xFFFFFFFF first (fast path for Android, Kindle, etc.)
+    /// - Falls back to parent=0 only when the device rejects 0xFFFFFFFF
     /// - Samsung devices: return InvalidObjectHandle for parent=0, so we fall back to recursive
     /// - Fuji devices: return all objects for root, so we filter by parent handle
     pub async fn list_objects(
@@ -166,9 +167,15 @@ impl Storage {
 
     /// List objects in a folder as a streaming [`ObjectListing`].
     ///
-    /// Returns immediately after `GetObjectHandles` completes (one USB round-trip).
-    /// The total count is then known via [`ObjectListing::total()`], and each call
-    /// to [`ObjectListing::next()`] fetches one object's metadata from USB.
+    /// Returns immediately after `GetObjectHandles` completes. The total count
+    /// is then known via [`ObjectListing::total()`], and each call to
+    /// [`ObjectListing::next()`] fetches one object's metadata from USB.
+    ///
+    /// For root listings (`parent=None`), tries `parent=0xFFFFFFFF` first — this
+    /// returns only root-level handles on Android, Kindle, and many other devices.
+    /// Falls back to `parent=0` only when the device rejects `0xFFFFFFFF` with an
+    /// error. An empty result from `0xFFFFFFFF` is treated as an empty storage,
+    /// not as a reason to fall back.
     ///
     /// This enables progress reporting (e.g., "Loading 42 of 500...") during
     /// what would otherwise be a single blocking `list_objects()` call.
@@ -198,20 +205,36 @@ impl Storage {
         &self,
         parent: Option<ObjectHandle>,
     ) -> Result<ObjectListing, Error> {
-        // Android quirk: When listing root (parent=None/0), Android returns ALL objects
-        // on the device instead of just root-level objects. This makes listing extremely slow.
-        // Counter-intuitively, using parent=0xFFFFFFFF (ObjectHandle::ALL) returns the
-        // actual root-level objects on Android devices.
-        let effective_parent = if parent.is_none() && self.inner.is_android() {
-            Some(ObjectHandle::ALL)
-        } else {
-            parent
-        };
+        // For root listings, try parent=0xFFFFFFFF first. Many devices (Android,
+        // Kindle, others) return only root-level handles for this value, while
+        // parent=0 returns every object on the storage. Fall back to parent=0
+        // only when the device rejects 0xFFFFFFFF with an error.
+        if parent.is_none() {
+            let fast = self
+                .inner
+                .session
+                .get_object_handles(self.id, None, Some(ObjectHandle::ALL))
+                .await;
+
+            match fast {
+                Ok(handles) => {
+                    return Ok(ObjectListing {
+                        inner: Arc::clone(&self.inner),
+                        handles,
+                        cursor: 0,
+                        parent_filter: Some(ParentFilter::AndroidRoot),
+                    });
+                }
+                Err(_) => {
+                    // 0xFFFFFFFF rejected; fall through to parent=0 path
+                }
+            }
+        }
 
         let result = self
             .inner
             .session
-            .get_object_handles(self.id, None, effective_parent)
+            .get_object_handles(self.id, None, parent)
             .await;
 
         let handles = match result {
@@ -226,13 +249,7 @@ impl Storage {
             Err(e) => return Err(e),
         };
 
-        // Build parent filter for devices that return more objects than requested
-        let parent_filter = if parent.is_none() && self.inner.is_android() {
-            Some(ParentFilter::AndroidRoot)
-        } else {
-            // Filter by exact parent (catches Fuji devices that return all objects for root)
-            Some(ParentFilter::Exact(parent.unwrap_or(ObjectHandle::ROOT)))
-        };
+        let parent_filter = Some(ParentFilter::Exact(parent.unwrap_or(ObjectHandle::ROOT)));
 
         Ok(ObjectListing {
             inner: Arc::clone(&self.inner),
@@ -749,7 +766,8 @@ mod tests {
 
     #[tokio::test]
     async fn stream_filters_by_parent() {
-        // Simulates Fuji quirk: device returns objects with wrong parent handles
+        // Root fast path (0xFFFFFFFF) uses AndroidRoot filter, which rejects
+        // objects whose parent is neither 0 nor 0xFFFFFFFF.
         let (transport, mock) = mock_transport();
         mock.queue_response(ok_response(0)); // OpenSession
 
@@ -775,17 +793,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_android_root_accepts_both_parents() {
-        // Android quirk: root items may have parent 0 or 0xFFFFFFFF
+    async fn stream_root_accepts_both_parent_values() {
+        // Root fast path uses AndroidRoot filter: accepts parent 0 or 0xFFFFFFFF
         let (transport, mock) = mock_transport();
         mock.queue_response(ok_response(0)); // OpenSession
 
         queue_handles(&mock, 1, &[10, 20, 30]);
         queue_object_info(&mock, 2, "dcim", 0); // parent=0, root
-        queue_object_info(&mock, 3, "download", 0xFFFFFFFF); // parent=ALL, also root on Android
+        queue_object_info(&mock, 3, "download", 0xFFFFFFFF); // parent=ALL, also root
         queue_object_info(&mock, 4, "nested", 42); // not root
 
-        let storage = mock_storage(transport, "android.com").await;
+        let storage = mock_storage(transport, "").await;
         let mut listing = storage.list_objects_stream(None).await.unwrap();
 
         let first = listing.next().await.unwrap().unwrap();
@@ -870,6 +888,100 @@ mod tests {
             assert_eq!(a.filename, b.filename);
             assert_eq!(a.handle, b.handle);
         }
+    }
+
+    // -- Root listing fast-path / fallback tests --------------------------------
+
+    #[tokio::test]
+    async fn stream_root_falls_back_on_error() {
+        // When 0xFFFFFFFF is rejected, falls through to parent=0 with Exact(ROOT)
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+
+        // Fast path (0xFFFFFFFF): device rejects with InvalidObjectHandle
+        mock.queue_response(error_response(1, ResponseCode::InvalidObjectHandle));
+
+        // Fallback path (parent=0): returns root objects
+        queue_handles(&mock, 2, &[10, 20]);
+        queue_object_info(&mock, 3, "root.jpg", 0);
+        queue_object_info(&mock, 4, "nested.jpg", 99); // filtered by Exact(ROOT)
+
+        let storage = mock_storage(transport, "").await;
+        let mut listing = storage.list_objects_stream(None).await.unwrap();
+
+        assert_eq!(listing.total(), 2);
+
+        let first = listing.next().await.unwrap().unwrap();
+        assert_eq!(first.filename, "root.jpg");
+
+        // nested.jpg has parent=99, filtered out by Exact(ROOT)
+        assert!(listing.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stream_root_empty_is_not_fallback() {
+        // Empty Ok([]) from 0xFFFFFFFF is a valid empty storage, not a fallback trigger
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+
+        queue_handles(&mock, 1, &[]); // fast path returns empty
+
+        let storage = mock_storage(transport, "").await;
+        let mut listing = storage.list_objects_stream(None).await.unwrap();
+
+        assert_eq!(listing.total(), 0);
+        assert!(listing.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stream_kindle_root_uses_fast_path() {
+        // Non-Android device (Kindle) benefits from 0xFFFFFFFF fast path
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+
+        queue_handles(&mock, 1, &[100, 101, 102]);
+        queue_object_info(&mock, 2, "documents", 0);
+        queue_object_info(&mock, 3, "system", 0);
+        queue_object_info(&mock, 4, "fonts", 0);
+
+        let storage = mock_storage(transport, "microsoft.com/WMDRMPD:10.1").await;
+        let mut listing = storage.list_objects_stream(None).await.unwrap();
+
+        assert_eq!(listing.total(), 3);
+
+        let first = listing.next().await.unwrap().unwrap();
+        assert_eq!(first.filename, "documents");
+        let second = listing.next().await.unwrap().unwrap();
+        assert_eq!(second.filename, "system");
+        let third = listing.next().await.unwrap().unwrap();
+        assert_eq!(third.filename, "fonts");
+
+        assert!(listing.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stream_subfolder_skips_fast_path() {
+        // Subfolder listing should not attempt 0xFFFFFFFF; only one get_object_handles call
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+
+        let parent_handle = 50u32;
+        queue_handles(&mock, 1, &[200, 201]);
+        queue_object_info(&mock, 2, "child_a.txt", parent_handle);
+        queue_object_info(&mock, 3, "child_b.txt", parent_handle);
+
+        let storage = mock_storage(transport, "").await;
+        let mut listing = storage
+            .list_objects_stream(Some(ObjectHandle(parent_handle)))
+            .await
+            .unwrap();
+
+        assert_eq!(listing.total(), 2);
+        let first = listing.next().await.unwrap().unwrap();
+        assert_eq!(first.filename, "child_a.txt");
+        let second = listing.next().await.unwrap().unwrap();
+        assert_eq!(second.filename, "child_b.txt");
+        assert!(listing.next().await.is_none());
     }
 
     // -- Full-size (>4 GB) resolution via GetObjectPropValue ------------------
