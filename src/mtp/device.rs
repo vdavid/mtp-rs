@@ -535,6 +535,11 @@ impl MtpDeviceBuilder {
         // Get device info
         let device_info = session.get_device_info().await?;
 
+        // Quirk for Garmin devices
+        if device_info.manufacturer == "Garmin" {
+            session.set_split_header_data(true);
+        }
+
         let inner = Arc::new(MtpDeviceInner {
             session,
             device_info,
