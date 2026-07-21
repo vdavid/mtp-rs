@@ -68,9 +68,17 @@ pub enum Error {
     /// to recover. The current session is gone; reopen the device and continue.
     ///
     /// Distinct from [`Disconnected`](Self::Disconnected): the device is still
-    /// present and reopenable with no physical replug. Cancelling a held-open
-    /// streaming download while a large bulk backlog is queued can trigger this
-    /// on Samsung devices (issue #18); prefer `download_windowed` to avoid it.
+    /// present and reopenable with no physical replug. Cancelling or abandoning
+    /// an in-flight read triggers it on Android devices (issue #18), at any
+    /// transfer size; prefer `download_windowed`, whose wedge is the recoverable
+    /// one. Recover with quiet, idle-spaced reopens; see
+    /// [`MtpDevice::reset_by_serial`](crate::mtp::MtpDevice::reset_by_serial).
+    ///
+    /// **Don't treat this as the only wedge signature.** A Samsung reports it; a
+    /// Pixel wedges the same way but the next operation simply hangs with no
+    /// error at all (verified on a Pixel 9 Pro XL, macOS/nusb, 2026-07-20), so a
+    /// consumer needs a timeout around operations too, not just this match. See
+    /// `docs/notes/android-wedges-and-the-reset-kill-switch.md`.
     #[error("device was reset to recover from a wedged cancel; reopen to continue")]
     DeviceReset,
 

@@ -99,9 +99,10 @@ range, window_size)` (returns `WindowedDownload`), and buffered `Storage::downlo
 
 > **Debugging against real hardware? Read [docs/debugging.md](docs/debugging.md) first.**
 > It's the debugging hub: how to keep macOS's `ptpcamerad` off the interface (run
-> the blocker yourself), recover a wedged device in software with `mtp-rs reset`
-> (no replug), fail fast with `MTP_TEST_TIMEOUT_SECS=2`, and the Samsung/Android
-> gotchas. Only needed when a physical device is involved.
+> the blocker yourself), recover a wedged device (quiet spaced reopens first,
+> `mtp-rs reset` last: on Android the reset can break MTP until a replug), fail
+> fast with `MTP_TEST_TIMEOUT_SECS=2`, and the Android gotchas. Only needed when a
+> physical device is involved.
 
 - **Unit**: `cargo test --workspace` (uses mock transport)
 - **Virtual device**: `cargo test -p mtp-rs --features virtual-device` (full protocol tests against local filesystem). `VirtualDeviceConfig` implements `Default`, so build it as `VirtualDeviceConfig { storages: vec![...], ..Default::default() }` and state only the fields a test actually exercises; new fields must land with a default so consumers don't break (see CONTRIBUTING.md). `VirtualStorageConfig` has no `Default` (an unset `backing_dir` fails silently).
@@ -193,15 +194,20 @@ the bulk IN and interrupt pipes. This approach was validated against libmtp's
   (for cameras). A healthy Android device answers this poll `OK` or fails it
   harmlessly; the poll is not what wedges the Samsung below (that was ruled out
   on hardware).
-- **Interrupting an in-flight bulk read wedges some Samsung devices** (Galaxy S23
-  Ultra, and qarmin's A15, #18). The drain that follows leaves the `GetObject`
-  transaction unclosed: it idles out without ever seeing the closing Response
-  container, the device then stops answering (GET_DEVICE_STATUS times out as
-  `TransferError::Cancelled`, versus the fast `Stall` an unsupported device
-  returns), and the session is dead. The wedge is intermittent.
-  **Transfer size is not the trigger**: `doctor --probe-cancel` reported
-  `wedged_recovered` on a 36-byte file (verified on a Galaxy S23 Ultra SM-S918B,
-  macOS/nusb, 2026-07-20). Don't reason about "backlog size" when triaging.
+- **Interrupting an in-flight bulk read wedges Android devices** (Galaxy S23
+  Ultra, qarmin's A15, #18, and a Pixel 9 Pro XL: not Samsung-specific). The drain
+  that follows leaves the `GetObject` transaction unclosed: it idles out without
+  ever seeing the closing Response container, the device then stops answering
+  (GET_DEVICE_STATUS times out as `TransferError::Cancelled`, versus the fast
+  `Stall` an unsupported device returns), and the session is dead. The wedge is
+  intermittent. **Transfer size is not the trigger**: `doctor --probe-cancel`
+  reported `wedged_recovered` on a 36-byte file (verified on a Galaxy S23 Ultra
+  SM-S918B, macOS/nusb, 2026-07-20). Don't reason about "backlog size" when
+  triaging.
+  **The signature differs by device**: a Samsung surfaces `Error::DeviceReset` on
+  the next op, a Pixel simply **hangs** with no error (verified on a Pixel 9 Pro
+  XL, macOS/nusb, 2026-07-20), so consumer detection needs a timeout, not just an
+  error match.
   Two ways in, with different outcomes on the same hardware and day:
   - An explicit `cancel()`, or a **dropped windowed** `GetPartialObject64`
     future whose drain runs through `recover_if_needed`, surfaces
@@ -353,6 +359,13 @@ demonstrates it with no hardware. Real-device coverage:
   drain stale bulk data (without a PTP session), so they work on a device too
   wedged for `OpenSession` ("Transaction ID mismatch" / "expected Response
   container type" on every command).
+- **The reset is a LAST resort on Android, not step two.** It can break the
+  phone's MTP function until the user physically replugs: Android's `MtpServer`
+  loses its endpoint and never re-arms, while USB keeps enumerating (verified on a
+  healthy Pixel 9 Pro XL, macOS/nusb + `adb logcat`, 2026-07-21). Quiet spaced
+  reopens come first, and they're enough on a Pixel. Don't reword the reset docs
+  back into "the recovery recipe". Evidence:
+  [docs/notes/android-wedges-and-the-reset-kill-switch.md](docs/notes/android-wedges-and-the-reset-kill-switch.md).
 - **The neutral reset is a free-standing selector, not a method on an open
   `MtpDevice`, and that's deliberate.** It claims the USB interface and stops;
   the regular opens run `OpenSession` + `GetDeviceInfo`, which a wedged device
@@ -555,5 +568,6 @@ Run `just check` before committing. `cargo fmt`, `cargo clippy -D warnings`, tes
 - [docs/architecture.md](docs/architecture.md), [docs/protocol.md](docs/protocol.md)
 - [docs/debugging.md](docs/debugging.md): debugging hub. Real-device setup and recovery (ptpcamerad blocker, software reset, fast-fail timeouts, device gotchas) plus USB capture. Read before touching physical hardware.
 - [docs/releasing.md](docs/releasing.md): how to publish a new version to crates.io
+- [docs/notes/android-wedges-and-the-reset-kill-switch.md](docs/notes/android-wedges-and-the-reset-kill-switch.md): what a day of hardware work established about wedged Android MTP sessions. The two wedge signatures (Samsung errors, Pixel hangs), the dropped-future trigger, why the transport reset kills a Pixel's MTP function, what recovers what, and which claims rest on a single observation. Read before changing reset or recovery guidance.
 - [docs/notes/community-threads.md](docs/notes/community-threads.md): required reading before working on issues or PRs. Recap of every GitHub thread so far, known device quirks, and recurring contributors. Update after work that affects community-facing context.
 - [MTP v1.1 Spec](https://github.com/vdavid/mtp-v1_1-spec-md)

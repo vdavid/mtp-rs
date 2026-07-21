@@ -30,32 +30,57 @@ The `[p]` bracket stops the pattern from matching its own `pgrep`/`pkill`. A
 stray `ptpcamerad` grab is the most common cause of "device present on USB but
 `open device - Timeout`" on macOS.
 
-### 2. Recover a wedged device in software (usually no replug needed)
+### 2. Recover a wedged device: quiet reopens first, reset last
 
-`mtp-rs reset` (CLI) / `MtpDevice::reset_by_serial()` (library consumers) /
-`PtpDevice::reset_device()` (SIC `DEVICE_RESET`, 0x66) revives a session-wedged
-Android/Samsung device **without a physical unplug**. It opens without a PTP
-session, so it works precisely when `MtpDevice::open` can't.
-Verified on a Galaxy S23 Ultra (#18): after a cancel wedged the session,
-`cargo run -p mtp-rs-cli -- reset` printed `Reset OK, device responding: SM-S918B`
-and listing worked immediately.
+**Before anything else, check nothing else owns the interface.** A running `adb`
+server holds the USB device, and a perfectly healthy phone then enumerates, lists
+in `mtp-rs devices`, and times out on every open: the identical symptom to a
+wedge. So is a stray `ptpcamerad` (step 1 above). This masquerade cost hours
+during the 2026-07 investigation.
 
-Reach for it when you see, on a device that worked moments ago:
+Symptoms of a real wedge, on a device that worked moments ago:
 
 - `open device - Timeout`,
 - `expected Response container type (3), got N` or a transaction-ID mismatch,
-- every operation timing out after one bad operation.
+- every operation timing out after one bad operation,
+- or, on a Pixel, an operation that simply **hangs and never returns**, with no
+  error at all (verified on a Pixel 9 Pro XL, macOS/nusb, 2026-07-20). Detection
+  logic that only matches `Error::DeviceReset` misses this case entirely.
 
-A fully USB-stuck device (some PTP cameras, #12) still needs a physical replug;
-Samsung/Android phones usually recover from the software reset.
+The recovery order:
 
-From a library consumer, the full sequence is: drop the `MtpDevice` (holding it
-keeps the USB interface claimed, so the reset can't claim it), call
-`MtpDevice::reset_by_serial`, wait a few seconds quiet, then reopen with
-idle-spaced retries. Expect the early attempts to fail: on the S23 the reopens
-went `Timeout`, then `SessionAlreadyOpen`, then success (verified on SM-S918B,
-macOS/nusb, 2026-07-20). Trying once and giving up reads as "the reset didn't
-work" when it did.
+1. Drop the `MtpDevice` and every `Storage` handle (holding one keeps the USB
+   interface claimed).
+2. Wait a few seconds **quiet**, with no USB traffic at all.
+3. Reopen with idle-spaced retries, several of them. Don't hammer close/open in a
+   tight loop; that keeps the device busy and re-wedges it into a hard `Timeout`.
+   A Pixel's wedge cleared on a fresh open with no reset at all (verified on a
+   Pixel 9 Pro XL, macOS/nusb, 2026-07-20).
+4. Only when all of that has failed: `mtp-rs reset` (CLI) /
+   `MtpDevice::reset_by_serial()` / `PtpDevice::reset_device()` (SIC
+   `DEVICE_RESET`, 0x66), then repeat steps 2 and 3.
+
+**Why the reset is last: on Android it can break MTP until a physical replug.**
+Sent to a *healthy* Pixel 9 Pro XL, it killed the phone's MTP function: Android's
+`MtpServer` lost its FunctionFS endpoint read (`ECANCELED`, then `EPIPE`) and
+never re-armed, while the USB device controller stayed `configured`, so the phone
+kept enumerating and answered nothing. Ten spaced reopens over about 100 s all
+timed out; only an unplug and replug fixed it (verified on a Pixel 9 Pro XL,
+macOS/nusb + `adb logcat`, 2026-07-21). Full evidence:
+[notes/android-wedges-and-the-reset-kill-switch.md](notes/android-wedges-and-the-reset-kill-switch.md).
+
+The reset stays the right tool for a device that's **already** unreachable, and
+for the cross-process poison it exists for: it opens without a PTP session, so it
+works precisely when `MtpDevice::open` can't. On a Galaxy S23 Ultra (#18) it
+looked like the cure: after a cancel wedged the session,
+`cargo run -p mtp-rs-cli -- reset` printed `Reset OK, device responding: SM-S918B`
+and listing worked immediately, and a later run went reset, then reopens returning
+`Timeout`, then `SessionAlreadyOpen`, then success (verified on SM-S918B,
+macOS/nusb, 2026-07-20). But the control was never run, so it's unknown whether
+spaced reopens alone would have done it. Don't read that as proof the reset helps.
+
+A fully USB-stuck device (some PTP cameras, #12) needs a physical replug either
+way.
 
 ### 3. Fail fast on a wedged or absent device
 
@@ -65,7 +90,7 @@ iterating so a wedged or absent device **skips in ~2s instead of stalling 30s pe
 op** (otherwise the destructive-first suite hangs for minutes on an unopenable
 device). Healthy operations here finish well under a second, so 2s is safe.
 
-### 4. Samsung / Android gotchas
+### 4. Android gotchas (Samsung and Pixel alike)
 
 - **USB mode resets on reconnect.** Replugging a Samsung reverts it to "charging
   / no data transfer" and re-arms the "Allow access?" prompt. Re-select File
@@ -73,24 +98,26 @@ device). Healthy operations here finish well under a second, so 2s is safe.
 - **Momentary zero storages after reconnect.** Right after a reconnect the device
   can briefly report zero storages, so an immediate `storages()[0]` panics. Give
   it a beat and retry.
-- **Interrupting an in-flight bulk read can wedge the session** (#18). Cancelling
-  or abandoning a transfer leaves the transaction unclosed and the session
-  desynced. **Size is not the trigger**: a 36-byte file wedged it (verified on a
-  Galaxy S23 Ultra SM-S918B, macOS/nusb, 2026-07-20), so don't dismiss a report
-  because the file was small. The library detects this and returns
-  `Error::DeviceReset` after resetting the transport to un-stick it (it does not
-  reopen). To recover: drop the device, **wait a few seconds quiet, then reopen**
-  with idle-spaced retries. The sequence that worked on the S23: transport reset,
-  reopens returning `Timeout`, then `SessionAlreadyOpen`, then success. Do **not**
-  hammer close/open in a tight loop; that keeps the device busy and re-wedges it
-  into a hard `Timeout`.
+- **Interrupting an in-flight bulk read can wedge the session** (#18), and this is
+  **not Samsung-specific**: a Pixel 9 Pro XL wedges from the same trigger (clean
+  A/B, same binary minutes apart, no-drop run fine, drop run hung; verified on a
+  Pixel 9 Pro XL, macOS/nusb, 2026-07-20). Cancelling or abandoning a transfer
+  leaves the transaction unclosed and the session desynced. **Size is not the
+  trigger**: a 36-byte file wedged it (verified on a Galaxy S23 Ultra SM-S918B,
+  macOS/nusb, 2026-07-20), so don't dismiss a report because the file was small.
+- **The signature differs by device, and that's a trap for consumers.** On a
+  Samsung the next operation surfaces `Error::DeviceReset` (the library detects
+  the wedge, resets the transport to un-stick it, and reports it; it does not
+  reopen). On a Pixel the next operation just **hangs**, with no error to match
+  on. Code watching only for `DeviceReset` never notices the Pixel case, so wrap
+  operations in a timeout too. Recovery for both: see step 2 above (quiet, spaced
+  reopens; the reset last).
 - **One flavor doesn't recover in software**: a dropped **held-open streaming**
   `GetObject` (`FileDownload`) future needed a physical replug on the S23 (plain
   reopen and transport reset both failed), while a dropped **windowed**
   `GetPartialObject64` future recovered via the reset-plus-spaced-retries path
-  above (both verified 2026-07-20). So `download_windowed` doesn't dodge the
-  wedge, only the need to cancel; prefer it because its wedge is the recoverable
-  one.
+  (both verified 2026-07-20). So `download_windowed` doesn't dodge the wedge, only
+  the need to cancel; prefer it because its wedge is the recoverable one.
 
 ### 5. Capture diagnostics for a bug report
 

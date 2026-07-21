@@ -89,6 +89,17 @@ impl PtpDevice {
     /// This is the USB transport-level reset, not the in-session
     /// `ResetDevice` (0x1010) PTP operation: it works precisely when the
     /// device is too confused for PTP traffic.
+    ///
+    /// # Warning: a last resort on Android
+    ///
+    /// Sending this to a *healthy* Pixel 9 Pro XL permanently killed its MTP
+    /// function: Android's `MtpServer` lost its endpoint read (`ECANCELED`, then
+    /// `EPIPE`) and never re-armed, while the USB device controller stayed
+    /// `configured`, so the phone kept enumerating and answered nothing. Only a
+    /// physical replug brought it back (verified on a Pixel 9 Pro XL, with
+    /// macOS/nusb and `adb logcat`, 2026-07-21). Reach for it only after spaced
+    /// reopens have failed, or on a device that's already unreachable. See
+    /// `docs/notes/android-wedges-and-the-reset-kill-switch.md`.
     pub async fn reset_device(&self) -> Result<(), Error> {
         self.transport.reset_device().await
     }

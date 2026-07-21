@@ -82,7 +82,15 @@ pub enum Command {
     /// Diagnose device visibility and basic MTP access.
     Doctor(DoctorArgs),
 
-    /// Reset a stuck device's USB transport state (no PTP session needed).
+    /// Last-resort reset of a stuck device's USB transport state (no PTP session needed).
+    ///
+    /// Try unplugging nothing and simply retrying first: wait a few seconds with the device idle,
+    /// then run your command again, a few times with gaps. Reach for `reset` only when that has
+    /// failed, or when the device is already unreachable.
+    ///
+    /// On Android this can break the phone's MTP function until the user physically replugs it: a
+    /// healthy Pixel 9 Pro XL stopped answering for good after a reset, while still enumerating over
+    /// USB (verified on a Pixel 9 Pro XL, macOS/nusb, 2026-07-21).
     Reset,
 }
 

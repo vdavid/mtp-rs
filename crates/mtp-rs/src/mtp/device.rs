@@ -81,6 +81,22 @@ impl MtpDevice {
     /// operation: it works precisely when the device is too confused for PTP
     /// traffic, which is when you need it.
     ///
+    /// # Warning: on Android this can break MTP until the user replugs
+    ///
+    /// **Treat this as a last resort, not a recovery step.** Sending the reset to
+    /// a *healthy* Pixel 9 Pro XL permanently killed its MTP function: Android's
+    /// `MtpServer` lost its endpoint read (`ECANCELED`, then `EPIPE`) and never
+    /// re-armed, while the USB device controller stayed `configured`. The phone
+    /// kept enumerating and kept showing up in a device list, and answered
+    /// nothing. Ten spaced reopens over ~100 s all timed out; only a physical
+    /// unplug and replug brought it back (verified on a Pixel 9 Pro XL,
+    /// macOS/nusb + `adb logcat`, 2026-07-21).
+    ///
+    /// Android is the most common MTP device class, so reach for this only after
+    /// spaced reopens have already failed, or on a device that's *already*
+    /// unreachable, where you can't make things much worse. See
+    /// `docs/notes/android-wedges-and-the-reset-kill-switch.md`.
+    ///
     /// # Why this isn't a method on an open device
     ///
     /// It only claims the USB interface and stops there. The regular opens run
@@ -92,20 +108,25 @@ impl MtpDevice {
     ///
     /// # Recovering a wedged device
     ///
-    /// After [`Error::DeviceReset`], or when every operation fails with
-    /// "Transaction ID mismatch" / "expected Response container type":
+    /// After [`Error::DeviceReset`], when an operation hangs and never returns
+    /// (the Android signature: no error at all), or when every operation fails
+    /// with "Transaction ID mismatch" / "expected Response container type":
     ///
     /// 1. Drop the [`MtpDevice`] (and any [`Storage`] handles).
-    /// 2. Call this.
-    /// 3. Wait a few seconds **quiet**, with no USB traffic at all.
-    /// 4. Reopen with idle-spaced retries.
+    /// 2. Wait a few seconds **quiet**, with no USB traffic at all.
+    /// 3. Reopen with idle-spaced retries, several of them.
+    /// 4. Only if every reopen failed, and knowing the Android warning above,
+    ///    call this and then repeat steps 2 and 3.
     ///
-    /// Step 4 is where consumers go wrong: don't try once and give up, and don't
+    /// Step 3 is where consumers go wrong: don't try once and give up, and don't
     /// hammer close/open in a tight loop (that keeps the device busy and
     /// re-wedges it into a hard `Timeout`). Expect the early attempts to fail.
-    /// The observed sequence was reset, then a reopen returning `Timeout`, then
-    /// one returning `SessionAlreadyOpen`, then success (verified on a Galaxy S23
-    /// Ultra SM-S918B, macOS/nusb, 2026-07-20).
+    /// A Pixel's wedge cleared on a fresh open with no reset at all (verified on
+    /// a Pixel 9 Pro XL, macOS/nusb, 2026-07-20). On a Galaxy S23 Ultra the
+    /// observed sequence was reset, then a reopen returning `Timeout`, then one
+    /// returning `SessionAlreadyOpen`, then success (verified on SM-S918B,
+    /// macOS/nusb, 2026-07-20); the control without a reset was never run, so
+    /// it's unknown whether spaced reopens alone would have sufficed there.
     ///
     /// # Errors
     ///
@@ -121,6 +142,9 @@ impl MtpDevice {
     ///
     /// See [`reset_by_serial`](Self::reset_by_serial) for the full contract and
     /// the recovery sequence to follow.
+    ///
+    /// **Last resort on Android**: the reset can break the phone's MTP function
+    /// until the user physically replugs. Try spaced reopens first.
     pub async fn reset_by_location(location_id: u64) -> Result<(), Error> {
         Self::builder().reset_by_location(location_id).await
     }
@@ -130,6 +154,9 @@ impl MtpDevice {
     ///
     /// See [`reset_by_serial`](Self::reset_by_serial) for the full contract and
     /// the recovery sequence to follow.
+    ///
+    /// **Last resort on Android**: the reset can break the phone's MTP function
+    /// until the user physically replugs. Try spaced reopens first.
     pub async fn reset_first() -> Result<(), Error> {
         Self::builder().reset_first().await
     }
@@ -689,6 +716,9 @@ impl MtpDeviceBuilder {
 
     /// Reset the USB transport of the device with this serial, without opening a
     /// session. See [`MtpDevice::reset_by_serial`] for the full contract.
+    ///
+    /// **Last resort on Android**: the reset can break the phone's MTP function
+    /// until the user physically replugs. Try spaced reopens first.
     pub async fn reset_by_serial(self, serial: &str) -> Result<(), Error> {
         #[cfg(feature = "virtual-device")]
         if crate::transport::virtual_device::registry::find_virtual_config_by_serial(serial)
@@ -707,6 +737,9 @@ impl MtpDeviceBuilder {
 
     /// Reset the USB transport of the device at this location, without opening a
     /// session. See [`MtpDevice::reset_by_serial`] for the full contract.
+    ///
+    /// **Last resort on Android**: the reset can break the phone's MTP function
+    /// until the user physically replugs. Try spaced reopens first.
     pub async fn reset_by_location(self, location_id: u64) -> Result<(), Error> {
         #[cfg(feature = "virtual-device")]
         if crate::transport::virtual_device::registry::find_virtual_config_by_location(location_id)
@@ -725,6 +758,9 @@ impl MtpDeviceBuilder {
 
     /// Reset the USB transport of the first available device, without opening a
     /// session. See [`MtpDevice::reset_by_serial`] for the full contract.
+    ///
+    /// **Last resort on Android**: the reset can break the phone's MTP function
+    /// until the user physically replugs. Try spaced reopens first.
     pub async fn reset_first(self) -> Result<(), Error> {
         let devices = NusbTransport::list_mtp_devices_with_known(&self.known_devices)?;
         let device_info = devices

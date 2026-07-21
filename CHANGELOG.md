@@ -14,6 +14,11 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Changed
+
+- **[workspace] Corrected recovery guidance: the transport reset is a last resort on Android, not step two.** The reset APIs (`MtpDevice::reset_by_serial` / `reset_by_location` / `reset_first`, the `MtpDeviceBuilder` forms, `PtpDevice::reset_device`), the `mtp-rs reset` CLI help, and `docs/debugging.md` all documented drop → reset → quiet pause → spaced reopen as *the* way to recover a wedged device. On Android, the most common MTP device class, that advice can break the phone. Sending the SIC `DEVICE_RESET` (0x66) to a **healthy** Pixel 9 Pro XL killed its MTP function outright: Android's `MtpServer` lost its FunctionFS endpoint read (`ECANCELED`, then `EPIPE`) and never re-armed, while the USB device controller stayed `configured`, so the phone kept enumerating, kept appearing in `mtp-rs devices`, and answered nothing. Ten spaced reopens over about 100 s all timed out, and only a physical replug recovered it (verified on a Pixel 9 Pro XL, macOS/nusb + `adb logcat`, 2026-07-21). The docs now put quiet spaced reopens first (enough on their own for a Pixel) and the reset last, for a device that's already unreachable. No behavior changed; if you built recovery logic on the old advice, reorder it.
+- **[workspace] The cancel/abandon wedge is documented as an Android problem, not a Samsung one, and its signature differs by device.** A Pixel 9 Pro XL wedges from the same trigger (a dropped in-flight future, verified by a clean A/B on a Pixel 9 Pro XL, macOS/nusb, 2026-07-20), but where a Samsung surfaces `Error::DeviceReset` on the next operation, a Pixel simply **hangs** with no error at all. Consumer code watching only for `DeviceReset` never notices the Pixel case, so it needs a timeout around operations too. A Pixel's wedge also self-heals on a fresh open. New note with the full evidence, the mechanism, and which claims rest on a single observation: `docs/notes/android-wedges-and-the-reset-kill-switch.md`.
+
 ## [0.29.0] - 2026-07-21
 
 Library `0.29.0`, CLI `0.7.4`. Recovering a wedged device stops being a CLI-only trick: consumers get the session-less reset, the error that says a reset happened now reaches them, and the diagnostic that captures the evidence finally runs on Android.

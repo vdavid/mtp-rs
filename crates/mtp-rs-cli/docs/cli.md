@@ -262,24 +262,40 @@ keeps its files somewhere the bounded search misses.
 
 ### `reset`
 
-Reset a stuck device's USB transport state. No PTP session needed, so it
-works when every other command fails.
+Last-resort reset of a stuck device's USB transport state. No PTP session
+needed, so it works when every other command fails.
 
 ```sh
 mtp-rs reset
 mtp-rs reset --device SERIAL --json
 ```
 
-Use this when a device stops responding after an interrupted transfer:
-typical symptoms are every command failing with "Transaction ID mismatch" or
-"expected Response container type" errors. `reset` sends the USB Still Image
-Class Device Reset request (the same recovery Windows uses), clears halted
-endpoints, and drains stale data. It then verifies the device responds again
-with a session-less GetDeviceInfo.
+**Try waiting and retrying first.** A device that stops responding after an
+interrupted transfer often clears on its own: leave it idle for a few seconds
+with no USB traffic, then run your command again, a few times with gaps between
+attempts. On a Pixel the wedge cleared on a fresh open with no reset at all
+(verified on a Pixel 9 Pro XL, macOS/nusb, 2026-07-20).
+
+**On Android, `reset` can break MTP until you replug the phone.** Sent to a
+healthy Pixel 9 Pro XL, it killed the phone's MTP function outright: Android's
+`MtpServer` lost its endpoint and never came back, while the phone kept
+enumerating over USB and answering nothing. Ten spaced reopens over about 100 s
+all timed out, and only a physical unplug and replug fixed it (verified on a
+Pixel 9 Pro XL, macOS/nusb, 2026-07-21).
+
+So reach for `reset` when the device is **already** unreachable and retrying has
+failed, where you can't make things much worse. Typical symptoms are every
+command failing with "Transaction ID mismatch" or "expected Response container
+type" errors. `reset` sends the USB Still Image Class Device Reset request (the
+same recovery Windows uses), clears halted endpoints, and drains stale data. It
+then verifies the device responds again with a session-less GetDeviceInfo.
 
 Works on real USB devices only (virtual devices have no USB transport).
 Some devices with hard-wedged firmware still need a power cycle; `reset`
 covers everything short of that.
+
+Background and the full evidence:
+[android-wedges-and-the-reset-kill-switch.md](../../../docs/notes/android-wedges-and-the-reset-kill-switch.md).
 
 ## JSON Output
 
@@ -420,8 +436,20 @@ mtp-rs --timeout 120 put ./large-video.mp4 /Movies/large-video.mp4
 When a transfer or listing gets interrupted (Ctrl+C, crash, sleep), some
 devices keep waiting for the rest of the transaction. Symptoms: every command
 fails with "Transaction ID mismatch" or "expected Response container type"
-errors. Run [`reset`](#reset) to recover without replugging:
+errors, or on a phone, hangs with no error at all.
+
+Recover in this order:
+
+1. Leave the device idle for a few seconds, with nothing talking to it.
+2. Run your command again. Repeat a few times with gaps between attempts, rather
+   than in a tight loop: hammering keeps the device busy and re-wedges it.
+3. Only when that has failed, run [`reset`](#reset). On Android it can break MTP
+   until you physically replug the phone, so it's the last step, not the first.
 
 ```sh
 mtp-rs reset
 ```
+
+If the device is an Android phone and you have `adb` running against it, stop the
+adb server first. It holds the USB device and produces the identical symptom on a
+perfectly healthy phone.

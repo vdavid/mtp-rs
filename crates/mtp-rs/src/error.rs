@@ -53,10 +53,16 @@ pub enum PtpError {
     /// A transfer cancel wedged the device, and the transport was reset to
     /// recover it. The PTP session is gone; reopen the device to continue.
     ///
-    /// Seen when cancelling a held-open streaming download while the device
-    /// still has a large bulk backlog queued (Samsung, issue #18): the device
-    /// stops responding, so `cancel_transfer` issues a USB `DEVICE_RESET` (no
-    /// physical replug needed) and reports this instead of a false success.
+    /// Seen when cancelling or abandoning an in-flight read on an Android device
+    /// (issue #18): the device stops responding, so `cancel_transfer` issues a
+    /// USB `DEVICE_RESET` and reports this instead of a false success. Transfer
+    /// size doesn't drive it; a 36-byte file is enough.
+    ///
+    /// **Don't treat this as the only wedge signature.** A Samsung reports it; a
+    /// Pixel wedges the same way but the next operation simply hangs with no
+    /// error at all (verified on a Pixel 9 Pro XL, macOS/nusb, 2026-07-20), so
+    /// wrap operations in a timeout as well as matching this variant. See
+    /// `docs/notes/android-wedges-and-the-reset-kill-switch.md`.
     #[error("device was reset to recover from a wedged cancel; reopen to continue")]
     DeviceReset,
 }

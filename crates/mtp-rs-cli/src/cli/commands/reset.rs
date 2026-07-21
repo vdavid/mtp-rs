@@ -1,10 +1,19 @@
-//! `mtp-rs reset`: recover a stuck device without replugging it.
+//! `mtp-rs reset`: last-resort recovery of a stuck device without replugging it.
 //!
 //! Sends the USB Still Image Class Device Reset request at the transport
 //! level, with no PTP session. This works precisely when the device's PTP
 //! state machine is wedged (every command fails with "Transaction ID
 //! mismatch" or "expected Response container type" errors, typically after a
 //! host process died mid-transfer).
+//!
+//! **On Android it can make things worse.** The reset cancels Android's
+//! outstanding FunctionFS endpoint read and breaks the endpoint; `MtpServer`
+//! exits its read loop and never re-arms, while the USB device controller stays
+//! `configured`, so the phone keeps enumerating and answers nothing until the
+//! user physically replugs (verified on a healthy Pixel 9 Pro XL, macOS/nusb +
+//! `adb logcat`, 2026-07-21). So it stays the right tool for a device that's
+//! already unreachable, and the wrong first move otherwise: spaced reopens come
+//! first. See `docs/notes/android-wedges-and-the-reset-kill-switch.md`.
 //!
 //! Uses `PtpDevice` instead of the `MtpDevice` selection in `cli::device`:
 //! opening an `MtpDevice` runs OpenSession, which is exactly what a stuck

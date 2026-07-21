@@ -267,9 +267,16 @@ future still wedges through the recovery drain), but its wedge is the recoverabl
 recommended pattern for interruptible reads on Android. Verified end-to-end on the S23 (wedge → reset →
 quiet reopen recovered on the 2nd attempt, no replug).
 
-**Open question for the reporter**: does `mtp-rs reset` recover his A15 the way it does the S23? That's
-the only device-specific unknown left. Also spun off `docs/debugging.md` into a real-device debugging
-hub (ptpcamerad blocker, software-reset recovery, `MTP_TEST_TIMEOUT_SECS` fast-fail, Samsung gotchas).
+**Correction from later hardware work (2026-07-21)**: the wedge is **not** Samsung-specific (a Pixel 9
+Pro XL wedges from the same dropped-future trigger), the Pixel's signature is a silent hang rather than
+`DeviceReset`, and the transport reset is a **kill switch** on a Pixel: it breaks MTP until a physical
+replug. The S23's apparent reset recovery is ambiguous, because the no-reset control was never run.
+Don't ask the reporter to try `mtp-rs reset` on his A15 as a first move; ask for quiet spaced reopens
+first. Full evidence:
+[android-wedges-and-the-reset-kill-switch.md](android-wedges-and-the-reset-kill-switch.md).
+
+Also spun off `docs/debugging.md` into a real-device debugging hub (ptpcamerad blocker, recovery
+ordering, `MTP_TEST_TIMEOUT_SECS` fast-fail, Android gotchas).
 
 ### #17: `mtp-mountd` auto-mount daemon proposal (transferred out 2026-07-20)
 
@@ -315,7 +322,8 @@ Cross-cutting summary of every quirk currently handled or known. Sorted by devic
 | Panasonic Lumix DMC-TZ61     | Freezes hard (battery-pull-level) if the host aborts mid-listing                                                                               | `mtp-rs reset` / `PtpDevice::reset_device()` (SIC 0x66, untested on the full freeze) | #12                                  |
 | PTP cameras (SIC-compliant)  | Unusable after a cancel unless the host polls GET_DEVICE_STATUS until not Device_Busy                                                          | Step 4 in `cancel_transfer` (post-drain polling + halt clearing)                     | #12 (2026-06-07)                     |
 | PTP cameras (SIC-compliant)  | STALL bulk endpoint for unsupported operations/properties; halt persists across processes                                                      | `clear_halt` at every bulk completion site on STALL                                  | #12 (2026-06-07)                     |
-| Samsung Galaxy (S23 Ultra, A15) | Cancelling or abandoning an in-flight read wedges the session, at any transfer size (false-success cancel, then every op hangs)                | Detect (GET_DEVICE_STATUS timeout) → `DEVICE_RESET` → `Error::DeviceReset`; caller reopens quietly with spaced retries; prefer `download_windowed` (recoverable wedge; a dropped streaming `GetObject` needs a replug) | #18 (2026-07-18, v0.24.0)            |
+| Android (Samsung S23 Ultra, A15, Pixel 9 Pro XL) | Cancelling or abandoning an in-flight read wedges the session, at any transfer size. Signature differs: Samsung surfaces `Error::DeviceReset`, a Pixel just hangs with no error | Detect (GET_DEVICE_STATUS timeout) → `DEVICE_RESET` → `Error::DeviceReset`; caller reopens quietly with spaced retries (enough on a Pixel); prefer `download_windowed` (recoverable wedge; a dropped streaming `GetObject` needs a replug) | #18 (2026-07-18, v0.24.0)            |
+| Android (Pixel 9 Pro XL)     | The SIC `DEVICE_RESET` (0x66) breaks the MTP function until a physical replug, even on a healthy phone: `MtpServer` loses its endpoint and never re-arms while USB stays `configured`                                          | Treat the reset as a last resort after spaced reopens; see [android-wedges-and-the-reset-kill-switch.md](android-wedges-and-the-reset-kill-switch.md) | 2026-07-21 hardware session          |
 | Panasonic Lumix DMC-TZ61     | Pads serial number to fixed width with multiple NULs                                                                                           | `unpack_string` truncates at first NUL                                               | #12 (2026-06-06)                     |
 
 ## Recurring contributors
