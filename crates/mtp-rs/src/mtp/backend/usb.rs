@@ -125,7 +125,7 @@ impl UsbBackend {
                 .get_object_handles(storage, None, Some(PtpHandle::ALL))
                 .await
             {
-                Ok(handles) => return Ok((handles, ParentFilter::AndroidRoot)),
+                Ok(handles) => return Ok((handles, ParentFilter::Root(storage))),
                 // Declined: fall through to the parent=0 path.
                 Err(e) if is_all_handle_rejection(&e) => {}
                 Err(e) => return Err(e),
@@ -150,7 +150,7 @@ impl UsbBackend {
                     .session
                     .get_object_handles(storage, None, Some(PtpHandle::ALL))
                     .await?;
-                Ok((handles, ParentFilter::AndroidRoot))
+                Ok((handles, ParentFilter::Root(storage)))
             }
             Err(e) => Err(e),
         }
@@ -186,15 +186,18 @@ fn is_all_handle_rejection(err: &PtpError) -> bool {
 enum ParentFilter {
     /// Accept objects whose parent matches exactly.
     Exact(PtpHandle),
-    /// Android root: accept parent 0 or 0xFFFFFFFF.
-    AndroidRoot,
+    /// Device root: accept the standard root handles and devices that report
+    /// the containing storage ID as the parent of root objects.
+    Root(PtpStorageId),
 }
 
 impl ParentFilter {
     fn accepts(self, parent: PtpHandle) -> bool {
         match self {
             ParentFilter::Exact(expected) => parent == expected,
-            ParentFilter::AndroidRoot => parent.0 == 0 || parent.0 == 0xFFFF_FFFF,
+            ParentFilter::Root(storage) => {
+                parent.0 == 0 || parent.0 == 0xFFFF_FFFF || parent.0 == storage.0
+            }
         }
     }
 }
@@ -820,6 +823,23 @@ mod tests {
         assert_eq!(objs.len(), 2);
         assert_eq!(objs[0].filename, "dcim");
         assert_eq!(objs[1].filename, "download");
+    }
+
+    #[tokio::test]
+    async fn list_root_accepts_storage_id_as_parent() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        queue_handles(&mock, 1, &[10, 20]);
+        // DBI reports the containing storage ID as each root object's parent.
+        queue_object_info(&mock, 2, "dbi-root", u32::try_from(SID.0).unwrap());
+        queue_object_info(&mock, 3, "nested", 42); // not root
+
+        let backend = mock_backend(transport, "").await;
+        let objs = collect(backend.list(SID, None, None).await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(objs.len(), 1);
+        assert_eq!(objs[0].filename, "dbi-root");
     }
 
     #[tokio::test]
