@@ -14,6 +14,10 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Fixed
+
+- **[lib] One rejected `GetObjectInfo` no longer hides every valid sibling in a directory.** After a device has returned the handle list, an explicit `GeneralError` response for one handle is now reported as a skipped-object diagnostic while collection continues. `Storage::list_objects_detailed` returns both the valid objects and those diagnostics; the existing streaming API still yields the per-object error directly. Transport, session, cancellation, malformed-data, stale-handle, and all other failures remain fatal.
+
 ## [0.29.0] - 2026-07-21
 
 Library `0.29.0`, CLI `0.7.4`. Recovering a wedged device stops being a CLI-only trick: consumers get the session-less reset, the error that says a reset happened now reaches them, and the diagnostic that captures the evidence finally runs on Android.

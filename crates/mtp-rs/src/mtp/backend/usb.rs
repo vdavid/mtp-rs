@@ -9,7 +9,8 @@
 
 use crate::cancel::{bail_if_cancelled, CancelToken};
 use crate::mtp::backend::{
-    BackendDownload, BackendListing, ByteRange, DownloadBody, MtpBackend, ProgressFn, UploadStream,
+    BackendDownload, BackendListing, BackendListingError, ByteRange, DownloadBody, MtpBackend,
+    ProgressFn, UploadStream,
 };
 use crate::mtp::object::NewObjectInfo;
 use crate::mtp::stream::Progress;
@@ -169,8 +170,11 @@ impl UsbBackend {
 ///
 /// Two shapes count as a decline:
 ///
-/// - `Protocol`: the spec'd way to say no (`OperationNotSupported`,
-///   `InvalidObjectHandle`, `InvalidParameter`, …).
+/// - Selected `Protocol` responses that explicitly reject the operation or its
+///   parent parameter (`OperationNotSupported`, `InvalidObjectHandle`,
+///   `InvalidParentObject`, `InvalidParameter`, `ParameterNotSupported`). A
+///   broad `GeneralError` is not a decline: enumeration integrity is unknown,
+///   so it propagates.
 /// - `Io`: how a bulk STALL arrives, which is how SIC-compliant cameras signal
 ///   an unsupported operation (Panasonic Lumix DMC-TZ61, #12). The transport
 ///   folds STALL in with `Fault`/`InvalidArgument`/`Unknown`, so `Io` can't be
@@ -178,7 +182,17 @@ impl UsbBackend {
 ///   permissive side deliberately, since losing camera root listings would be
 ///   the worse failure.
 fn is_all_handle_rejection(err: &PtpError) -> bool {
-    matches!(err, PtpError::Protocol { .. } | PtpError::Io(_))
+    matches!(
+        err,
+        PtpError::Protocol {
+            code: ResponseCode::OperationNotSupported
+                | ResponseCode::InvalidObjectHandle
+                | ResponseCode::InvalidParentObject
+                | ResponseCode::InvalidParameter
+                | ResponseCode::ParameterNotSupported,
+            ..
+        } | PtpError::Io(_)
+    )
 }
 
 /// How to filter objects by parent handle during a listing (PTP terms).
@@ -285,16 +299,35 @@ impl MtpBackend for UsbBackend {
 
                 // Cooperative cancel check before issuing the per-handle USB roundtrip. On a
                 // 1k-photo listing this is the actual stop point.
+                let handle = state.handles[state.cursor];
+
                 if let Err(e) = bail_if_cancelled(state.cancel.as_ref()) {
-                    return Some((Err(Error::from(e)), state));
+                    return Some((
+                        Err(BackendListingError::fatal(handle.into(), Error::from(e))),
+                        state,
+                    ));
                 }
 
-                let handle = state.handles[state.cursor];
                 state.cursor += 1;
 
                 let mut info = match state.session.get_object_info_full(handle).await {
                     Ok(info) => info,
-                    Err(e) => return Some((Err(Error::from(e)), state)),
+                    Err(e) => {
+                        let disposition = matches!(
+                            e,
+                            PtpError::Protocol {
+                                code: ResponseCode::GeneralError,
+                                operation: OperationCode::GetObjectInfo,
+                            }
+                        );
+                        let source = Error::from(e);
+                        let error = if disposition {
+                            BackendListingError::skippable(handle.into(), source)
+                        } else {
+                            BackendListingError::fatal(handle.into(), source)
+                        };
+                        return Some((Err(error), state));
+                    }
                 };
                 info.handle = handle;
 
@@ -579,6 +612,10 @@ mod tests {
             code: ResponseCode::OperationNotSupported,
             operation: OperationCode::GetObjectHandles,
         }));
+        assert!(is_all_handle_rejection(&PtpError::Protocol {
+            code: ResponseCode::InvalidParentObject,
+            operation: OperationCode::GetObjectHandles,
+        }));
         // ...and a bulk STALL is how SIC cameras say the same thing (#12). The
         // transport can only surface that as `Io`, so `Io` has to fall back too.
         assert!(is_all_handle_rejection(&PtpError::Io(
@@ -592,6 +629,10 @@ mod tests {
         // declining. Retrying hammers a sick device and reports the second
         // error, hiding the first.
         for err in [
+            PtpError::Protocol {
+                code: ResponseCode::GeneralError,
+                operation: OperationCode::GetObjectHandles,
+            },
             PtpError::DeviceReset,
             PtpError::Timeout,
             PtpError::Disconnected,
@@ -777,7 +818,7 @@ mod tests {
     async fn collect(mut listing: BackendListing) -> Result<Vec<ObjectInfo>, Error> {
         let mut out = Vec::new();
         while let Some(item) = listing.items.next().await {
-            out.push(item?);
+            out.push(item.map_err(|error| error.source)?);
         }
         Ok(out)
     }
@@ -871,6 +912,107 @@ mod tests {
         assert!(listing.items.next().await.unwrap().is_err());
     }
 
+    #[tokio::test]
+    async fn list_general_error_is_tolerated_only_by_collection() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        queue_handles(&mock, 1, &[10, 20, 30]);
+        queue_object_info(&mock, 2, "first.jpg", 0);
+        mock.queue_response(error_response(3, ResponseCode::GeneralError));
+        queue_object_info(&mock, 4, "last.jpg", 0);
+
+        let backend = mock_backend(transport, "").await;
+        let storage =
+            crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
+        let collection = storage.list_objects_detailed(None).await.unwrap();
+
+        assert_eq!(collection.objects.len(), 2);
+        assert_eq!(collection.objects[0].filename, "first.jpg");
+        assert_eq!(collection.objects[1].filename, "last.jpg");
+        assert_eq!(collection.skipped.len(), 1);
+        assert_eq!(collection.skipped[0].handle, ObjectHandle(20));
+        assert!(matches!(
+            collection.skipped[0].error,
+            Error::Other { ref detail } if detail == "GeneralError"
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_objects_returns_valid_siblings_around_general_error() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        queue_handles(&mock, 1, &[10, 20, 30]);
+        queue_object_info(&mock, 2, "first.jpg", 0);
+        mock.queue_response(error_response(3, ResponseCode::GeneralError));
+        queue_object_info(&mock, 4, "last.jpg", 0);
+
+        let backend = mock_backend(transport, "").await;
+        let storage =
+            crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
+        let objects = storage.list_objects(None).await.unwrap();
+
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0].filename, "first.jpg");
+        assert_eq!(objects[1].filename, "last.jpg");
+    }
+
+    #[tokio::test]
+    async fn stream_keeps_general_error_observable_and_continues() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        queue_handles(&mock, 1, &[10, 20, 30]);
+        queue_object_info(&mock, 2, "first.jpg", 0);
+        mock.queue_response(error_response(3, ResponseCode::GeneralError));
+        queue_object_info(&mock, 4, "last.jpg", 0);
+
+        let backend = mock_backend(transport, "").await;
+        let storage =
+            crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
+        let mut listing = storage.list_objects_stream(None).await.unwrap();
+
+        assert_eq!(listing.next().await.unwrap().unwrap().filename, "first.jpg");
+        assert!(matches!(
+            listing.next().await.unwrap(),
+            Err(Error::Other { ref detail }) if detail == "GeneralError"
+        ));
+        assert_eq!(listing.next().await.unwrap().unwrap().filename, "last.jpg");
+        assert!(listing.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_object_handle_remains_fatal_for_collection() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        queue_handles(&mock, 1, &[10, 20]);
+        queue_object_info(&mock, 2, "first.jpg", 0);
+        mock.queue_response(error_response(3, ResponseCode::InvalidObjectHandle));
+
+        let backend = mock_backend(transport, "").await;
+        let storage =
+            crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
+
+        assert!(matches!(
+            storage.list_objects_detailed(None).await,
+            Err(Error::StaleHandle)
+        ));
+    }
+
+    #[tokio::test]
+    async fn handle_enumeration_general_error_remains_fatal() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(error_response(1, ResponseCode::GeneralError));
+
+        let backend = mock_backend(transport, "").await;
+        let storage =
+            crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
+
+        assert!(matches!(
+            storage.list_objects_detailed(None).await,
+            Err(Error::Other { ref detail }) if detail == "GeneralError"
+        ));
+    }
+
     // -- Root fallback (Samsung) -------------------------------------------------
 
     #[tokio::test]
@@ -955,7 +1097,13 @@ mod tests {
         assert_eq!(listing.total, 3);
         cancel.cancel();
         let first = listing.items.next().await.expect("expected Some(Err)");
-        assert!(matches!(first, Err(Error::Cancelled)));
+        assert!(matches!(
+            first,
+            Err(BackendListingError {
+                source: Error::Cancelled,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
@@ -972,7 +1120,13 @@ mod tests {
         assert_eq!(first.filename, "first.jpg");
         cancel.cancel();
         let second = listing.items.next().await.expect("expected Some(Err)");
-        assert!(matches!(second, Err(Error::Cancelled)));
+        assert!(matches!(
+            second,
+            Err(BackendListingError {
+                source: Error::Cancelled,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
