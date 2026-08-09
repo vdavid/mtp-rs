@@ -94,7 +94,7 @@ jobs:
       - name: Install Rust toolchain (MSRV)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.85"
+          toolchain: "1.97"
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
