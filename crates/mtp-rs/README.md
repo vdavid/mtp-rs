@@ -421,9 +421,10 @@ Android's MTP implementation has some quirks that this library handles automatic
     - **How we handle it:** Auto-detected; uses manual folder traversal instead. Although, note that it takes a lot more
       time! Like, if the device supported this, it'd be pretty fast, while with the workaround, in the tests it took
       9 minutes to list ~20k files in ~2k folders.
-- **Behavior:** Can't create in root
-    - **What happens:** Creating files/folders in storage root fails with `InvalidObjectHandle`
-    - **How we handle it:** Use a subfolder like `Download/` as the parent
+- **Behavior:** Strict about how you name the storage root when creating
+    - **What happens:** Android maps only `0xFFFFFFFF` to the storage root when you create a file or folder there, and
+      answers anything else with `InvalidObjectHandle`
+    - **How we handle it:** We send the value the MTP spec asks for, so `parent = None` creates in the root
 - **Behavior:** Large responses span transfers
     - **What happens:** Data >64KB comes in multiple USB transfers
     - **How we handle it:** Automatically reassembled before parsing
@@ -435,14 +436,15 @@ The library detects Android devices via the `"android.com"` vendor extension and
 automatically.
 You generally don't need to worry about these details.
 
-**Tip**: When uploading files, use a known folder like `Download/` rather than the storage root:
+**Tip**: An Android root holds only directories by convention (`DCIM`, `Download`, `Pictures`, …), so uploading into one
+of them keeps your files where the phone's own apps will look for them:
 
 ```rust
 // Find the Download folder
 let objects = storage.list_objects(None).await?;
-let download = objects.iter().find( | o| o.filename == "Download").unwrap();
+let download = objects.iter().find(|o| o.filename == "Download").unwrap();
 
-// Upload to Download folder (not root)
+// Upload into Download
 storage.upload(Some(download.handle), file_info, data).await?;
 ```
 

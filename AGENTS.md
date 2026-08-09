@@ -89,7 +89,15 @@ range, window_size)` (returns `WindowedDownload`), and buffered `Storage::downlo
   back to a catch-all. `DeviceReset`, `Timeout`, and `Disconnected` must propagate: the retry hammers a device that
   re-wedges under exactly that treatment (#18), and it reports the *second* error, hiding the `DeviceReset` a consumer
   needs to trigger its reopen.
-- **Android**: Uploads to the storage root are rejected with `InvalidObjectHandle`. Upload into an existing folder (for example, `Download`) instead.
+- **Root writes address the storage root as `0xFFFFFFFF`, not `0`.** `SendObjectInfo`'s parent parameter is the one
+  place MTP spells the root that way (MTP 1.1 D.2.12); `0` means "no parent given, responder may choose", so responders
+  look it up as a handle and reject it. Android's `MtpServer` only maps `MTP_PARENT_ROOT` (0xFFFFFFFF) to the storage
+  path, and libhaze (the Nintendo Switch homebrew responder behind Sphaira, #21) only maps 0xFFFFFFFF to its storage
+  object; both answer `0` with `InvalidObjectHandle`. `PtpHandle::SEND_ROOT` carries this, and `upload`/`create_folder`
+  use it when the caller passes no parent. **The spec is asymmetric, so don't unify it with `PtpHandle::ROOT`**:
+  `MoveObject`/`CopyObject` (D.2.25/D.2.26) spell the same destination `0x00000000`, and
+  `move_and_copy_keep_handle_zero_for_the_root_destination` in `mtp::backend::usb` pins that down. The virtual device
+  normalizes `SEND_ROOT` to `ROOT` on receive and still accepts `0`, since low-level `ptp::` callers may send either.
 - **Android**: Object handles are NOT stable. MediaProvider re-keys object IDs across a media rescan, so a handle a host cached when it last listed a folder can be silently invalidated before a later operation (upload, delete) into that folder: the device then returns `InvalidObjectHandle`/`InvalidParentObject`, not for a missing object but for a stale ID. Hosts should treat those codes on a previously-valid handle as "re-list the parent and re-resolve, then retry once", not as a hard not-found. (A downstream, Cmdr, hit this as a 307 MB upload failing at `SendObjectInfo` and surfacing as "Path not found" on the intact *source* file.) Reproducible against the virtual device with `rekey_virtual_object` (see Testing).
 - **Fujifilm cameras**: Report `AccessCapability::ReadWrite` but return `StoreReadOnly` on writes. Advertised ops lie.
 - **Samsung**: Returns `InvalidObjectHandle` for root listing; needs recursive traversal with filtering

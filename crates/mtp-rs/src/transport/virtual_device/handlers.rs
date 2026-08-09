@@ -370,7 +370,15 @@ fn handle_send_object_info(
     data_payload: Option<&[u8]>,
 ) {
     let storage_id = StorageId(params.first().copied().unwrap_or(0));
-    let parent = ObjectHandle(params.get(1).copied().unwrap_or(0));
+    // `SendObjectInfo`'s root destination is `SEND_ROOT` (0xFFFFFFFF) per MTP 1.1
+    // D.2.12, not the `ROOT` (0) that every other parent field uses. Normalize it
+    // here so path resolution and the stored object's parent stay on `ROOT`, the
+    // way a real responder maps it to its storage object. `0` is accepted too:
+    // the device is the lenient side, and low-level `ptp::` callers may send it.
+    let parent = match ObjectHandle(params.get(1).copied().unwrap_or(0)) {
+        ObjectHandle::SEND_ROOT => ObjectHandle::ROOT,
+        other => other,
+    };
 
     // Validate storage
     if state.find_storage(storage_id).is_none() {

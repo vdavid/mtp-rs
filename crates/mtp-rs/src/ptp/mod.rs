@@ -82,6 +82,22 @@ impl ObjectHandle {
     pub const ROOT: Self = ObjectHandle(0x00000000);
     /// All objects (used in GetObjectHandles to list recursively).
     pub const ALL: Self = ObjectHandle(0xFFFFFFFF);
+    /// Storage root as the *destination* of a new object: `SendObjectInfo`
+    /// parameter 2.
+    ///
+    /// MTP 1.1 D.2.12 is explicit: "If the initiator wishes to place an object
+    /// in the root of a given storage, it shall indicate the desired storage in
+    /// the first parameter and include a value of 0xFFFFFFFF in the second
+    /// parameter." A `0` there means "no parent specified, responder may
+    /// choose", so responders look it up as a handle and reject it: Android's
+    /// `MtpServer` only maps `MTP_PARENT_ROOT` (0xFFFFFFFF) to the storage path,
+    /// and libhaze (Nintendo Switch homebrew, #21) only maps 0xFFFFFFFF to its
+    /// storage object. Both answer `0` with `InvalidObjectHandle`.
+    ///
+    /// The spec is asymmetric, so don't unify this with [`ObjectHandle::ROOT`]:
+    /// `MoveObject`/`CopyObject` (D.2.25/D.2.26) spell the same destination
+    /// `0x00000000`.
+    pub const SEND_ROOT: Self = ObjectHandle(0xFFFFFFFF);
 }
 
 /// 32-bit storage identifier.

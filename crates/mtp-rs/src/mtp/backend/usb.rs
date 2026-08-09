@@ -438,7 +438,9 @@ impl MtpBackend for UsbBackend {
     ) -> Result<ObjectHandle, UploadError> {
         let total_size = info.size;
         let object_info = info.to_object_info();
-        let parent_handle = parent.map(ObjectHandle::to_ptp).unwrap_or(PtpHandle::ROOT);
+        let parent_handle = parent
+            .map(ObjectHandle::to_ptp)
+            .unwrap_or(PtpHandle::SEND_ROOT);
 
         // Phase 1: SendObjectInfo. No object exists yet, so a failure here has no partial to
         // surface.
@@ -500,7 +502,9 @@ impl MtpBackend for UsbBackend {
     ) -> Result<ObjectHandle, Error> {
         let info = NewObjectInfo::folder(name);
         let object_info = info.to_object_info();
-        let parent_handle = parent.map(ObjectHandle::to_ptp).unwrap_or(PtpHandle::ROOT);
+        let parent_handle = parent
+            .map(ObjectHandle::to_ptp)
+            .unwrap_or(PtpHandle::SEND_ROOT);
 
         let (_, _, handle) = self
             .session
@@ -773,6 +777,40 @@ mod tests {
         mock.queue_response(ok_response(tx_id));
     }
 
+    fn response_with_params(tx_id: u32, code: ResponseCode, params: &[u32]) -> Vec<u8> {
+        let len = 12 + params.len() * 4;
+        let mut buf = Vec::with_capacity(len);
+        buf.extend_from_slice(&pack_u32(len as u32));
+        buf.extend_from_slice(&pack_u16(ContainerType::Response.to_code()));
+        buf.extend_from_slice(&pack_u16(code.into()));
+        buf.extend_from_slice(&pack_u32(tx_id));
+        for param in params {
+            buf.extend_from_slice(&pack_u32(*param));
+        }
+        buf
+    }
+
+    /// The parameter list of every command container the host sent for `operation`.
+    /// Asserting on the wire is the only way to catch a wrong parent constant: the
+    /// mock answers `Ok` whatever we send, and so does a lenient device.
+    fn command_params(mock: &MockTransport, operation: OperationCode) -> Vec<Vec<u32>> {
+        let operation_code: u16 = operation.into();
+        mock.get_sends()
+            .into_iter()
+            .filter(|send| {
+                send.len() >= 12
+                    && u16::from_le_bytes([send[4], send[5]]) == ContainerType::Command.to_code()
+                    && u16::from_le_bytes([send[6], send[7]]) == operation_code
+            })
+            .map(|send| {
+                send[12..]
+                    .chunks_exact(4)
+                    .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+                    .collect()
+            })
+            .collect()
+    }
+
     /// Drive a `BackendListing` to a Vec, surfacing the first error.
     async fn collect(mut listing: BackendListing) -> Result<Vec<ObjectInfo>, Error> {
         let mut out = Vec::new();
@@ -869,6 +907,111 @@ mod tests {
         let first = listing.items.next().await.unwrap().unwrap();
         assert_eq!(first.filename, "good.jpg");
         assert!(listing.items.next().await.unwrap().is_err());
+    }
+
+    // -- Root as a write destination ---------------------------------------------
+
+    #[tokio::test]
+    async fn root_upload_addresses_the_storage_root_not_handle_zero() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(response_with_params(
+            1,
+            ResponseCode::Ok,
+            &[SID.0 as u32, 0xFFFF_FFFF, 77],
+        ));
+        mock.queue_response(ok_response(2));
+
+        let backend = mock_backend(transport, "").await;
+        let data = futures::stream::iter(vec![Ok(Bytes::from_static(b"data"))]);
+        let handle = backend
+            .upload(
+                SID,
+                None,
+                NewObjectInfo::file("file.bin", 4),
+                Box::pin(data),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(handle, ObjectHandle(77));
+        assert_eq!(
+            command_params(&mock, OperationCode::SendObjectInfo),
+            vec![vec![SID.0 as u32, 0xFFFF_FFFF]]
+        );
+    }
+
+    #[tokio::test]
+    async fn root_folder_addresses_the_storage_root_not_handle_zero() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(response_with_params(
+            1,
+            ResponseCode::Ok,
+            &[SID.0 as u32, 0xFFFF_FFFF, 78],
+        ));
+
+        let backend = mock_backend(transport, "").await;
+        let handle = backend.create_folder(SID, None, "folder").await.unwrap();
+
+        assert_eq!(handle, ObjectHandle(78));
+        assert_eq!(
+            command_params(&mock, OperationCode::SendObjectInfo),
+            vec![vec![SID.0 as u32, 0xFFFF_FFFF]]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_named_write_parent_is_passed_through_untouched() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(response_with_params(
+            1,
+            ResponseCode::Ok,
+            &[SID.0 as u32, 42, 79],
+        ));
+
+        let backend = mock_backend(transport, "").await;
+        backend
+            .create_folder(SID, Some(ObjectHandle(42)), "folder")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            command_params(&mock, OperationCode::SendObjectInfo),
+            vec![vec![SID.0 as u32, 42]]
+        );
+    }
+
+    #[tokio::test]
+    async fn move_and_copy_keep_handle_zero_for_the_root_destination() {
+        // The spec is asymmetric here, so this test pins the asymmetry down:
+        // `MoveObject`/`CopyObject` (D.2.25/D.2.26) spell the root destination
+        // `0x00000000`, unlike `SendObjectInfo`. Don't "unify" these.
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(ok_response(1));
+        mock.queue_response(response_with_params(2, ResponseCode::Ok, &[99]));
+
+        let backend = mock_backend(transport, "").await;
+        backend
+            .move_object(ObjectHandle(5), ObjectHandle::ROOT, SID)
+            .await
+            .unwrap();
+        backend
+            .copy_object(ObjectHandle(5), ObjectHandle::ROOT, SID)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            command_params(&mock, OperationCode::MoveObject),
+            vec![vec![5, SID.0 as u32, 0]]
+        );
+        assert_eq!(
+            command_params(&mock, OperationCode::CopyObject),
+            vec![vec![5, SID.0 as u32, 0]]
+        );
     }
 
     // -- Root fallback (Samsung) -------------------------------------------------
