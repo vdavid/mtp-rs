@@ -205,6 +205,20 @@ fn is_all_handle_rejection(err: &PtpError) -> bool {
 /// The check is one pass over the handle list, not per object.
 fn root_filter(storage: PtpStorageId, handles: &[PtpHandle]) -> ParentFilter {
     let collides = handles.iter().any(|h| h.0 == storage.0);
+    if collides {
+        // Worth a line, because this is the one way the guard can bite back: on a
+        // device that BOTH reports the storage ID as its root parent and owns a
+        // folder at that handle, dropping the marker leaves nothing to accept and
+        // the root lists as empty. That needs three coincidences and no known
+        // device does it, but a silent empty root is miserable to diagnose from a
+        // bug report, so say it out loud instead.
+        diag_debug!(
+            "root listing: storage ID {:#010x} is also an object handle here, so it can't double as \
+             a root marker; accepting only the reserved parents (0, 0xFFFFFFFF). An unexpectedly \
+             empty root listing on this device starts here.",
+            storage.0
+        );
+    }
     ParentFilter::Root(if collides { None } else { Some(storage) })
 }
 
