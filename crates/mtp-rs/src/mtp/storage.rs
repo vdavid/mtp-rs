@@ -377,26 +377,44 @@ impl Storage {
 
     /// List objects recursively.
     ///
-    /// Walks the folder tree manually via [`list_objects`](Self::list_objects), which already
+    /// Walks the folder tree manually via [`collect_objects`](Self::collect_objects), which already
     /// applies the backend's root/quirk handling. Works the same across all devices, including
     /// Android (whose native `GetObjectHandles` recursion is broken).
+    ///
+    /// Unreadable handles are dropped. Over a whole tree that can add up quietly, so use
+    /// [`collect_objects_recursive`](Self::collect_objects_recursive) when you need to know.
     pub async fn list_objects_recursive(
         &self,
         parent: Option<ObjectHandle>,
     ) -> Result<Vec<ObjectInfo>, Error> {
-        let mut result = Vec::new();
+        Ok(self.collect_objects_recursive(parent).await?.objects)
+    }
+
+    /// Walk a folder tree, keeping both the objects and every handle that couldn't be read.
+    ///
+    /// The recursive counterpart of [`collect_objects`](Self::collect_objects). One unreadable
+    /// object per folder is easy to shrug off; across a few thousand folders it's a silent
+    /// omission nobody notices, so the skips are aggregated across the whole walk rather than
+    /// dropped per folder.
+    pub async fn collect_objects_recursive(
+        &self,
+        parent: Option<ObjectHandle>,
+    ) -> Result<ObjectCollection, Error> {
+        let mut objects = Vec::new();
+        let mut skipped = Vec::new();
         let mut folders_to_visit = vec![parent];
 
         while let Some(current_parent) = folders_to_visit.pop() {
-            let objects = self.list_objects(current_parent).await?;
-            for obj in objects {
+            let collection = self.collect_objects(current_parent).await?;
+            skipped.extend(collection.skipped);
+            for obj in collection.objects {
                 if obj.is_folder() {
                     folders_to_visit.push(Some(obj.handle));
                 }
-                result.push(obj);
+                objects.push(obj);
             }
         }
-        Ok(result)
+        Ok(ObjectCollection { objects, skipped })
     }
 
     /// Get object metadata by handle.

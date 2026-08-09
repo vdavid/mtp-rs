@@ -135,6 +135,24 @@ mtp-rs ls / --storage 0 --json
 
 `ls` requires the path to resolve to a folder.
 
+Some devices list an object and then refuse to describe it. `ls` shows the rest of the folder rather
+than failing, and says what it left out on stderr:
+
+```
+warning: 1 object could not be read and was left out:
+  handle=20 GeneralError
+```
+
+The warning goes to stderr in both plain and `--json` modes, so stdout stays clean for pipes. In
+`--json` the same objects appear in a `skipped` array, which is always present (empty when
+everything was readable) so a script can read one field without checking whether the key exists:
+
+```json
+{ "path": "/", "recursive": false, "objects": [], "skipped": [{ "handle": 20, "error": "GeneralError" }] }
+```
+
+A folder where *every* object failed is an error, not an empty listing.
+
 ### `put`
 
 Upload a local file to a remote path.

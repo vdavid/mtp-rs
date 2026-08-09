@@ -59,6 +59,16 @@ struct DoctorStorageRow {
     storage: StorageRow,
     root_listed: bool,
     writable_folder_hints: Vec<String>,
+    /// Handles the device enumerated at the root but wouldn't describe. Exactly
+    /// the kind of half-working device doctor exists to name, and invisible in a
+    /// plain listing.
+    unreadable_root_objects: Vec<UnreadableObjectRow>,
+}
+
+#[derive(Debug, Serialize)]
+struct UnreadableObjectRow {
+    handle: u64,
+    error: String,
 }
 
 pub async fn run(cli: &Cli, args: &DoctorArgs) -> Result<(), CliError> {
@@ -159,10 +169,28 @@ pub async fn run(cli: &Cli, args: &DoctorArgs) -> Result<(), CliError> {
                 }
             );
         }
-        let root = storage
-            .list_objects(None)
+        let root_collection = storage
+            .collect_objects(None)
             .await
             .map_err(|e| CliError::from_mtp("list storage root", e, cli.verbose))?;
+        let root = root_collection.objects;
+        let unreadable: Vec<UnreadableObjectRow> = root_collection
+            .skipped
+            .iter()
+            .map(|s| UnreadableObjectRow {
+                handle: s.handle.0,
+                error: s.error.to_string(),
+            })
+            .collect();
+        if !cli.json && !unreadable.is_empty() {
+            println!(
+                "      unreadable at root: {} object(s) the device listed but won't describe",
+                unreadable.len()
+            );
+            for entry in &unreadable {
+                println!("        handle={} {}", entry.handle, entry.error);
+            }
+        }
         let hints: Vec<String> = [
             "Download",
             "Downloads",
@@ -191,6 +219,7 @@ pub async fn run(cli: &Cli, args: &DoctorArgs) -> Result<(), CliError> {
             storage: StorageRow::from_storage(index, storage),
             root_listed: true,
             writable_folder_hints: hints,
+            unreadable_root_objects: unreadable,
         });
     }
 

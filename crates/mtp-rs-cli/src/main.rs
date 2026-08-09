@@ -35,6 +35,17 @@ fn register_test_virtual_device() {
         }],
         event_poll_interval: std::time::Duration::ZERO,
         watch_backing_dirs: false,
+        // Comma-separated storage-relative paths the device refuses to describe,
+        // so the CLI's partially-readable-folder output can be tested end to end.
+        undescribable_objects: std::env::var("__MTP_RS_TEST_VIRTUAL_UNREADABLE")
+            .map(|v| {
+                v.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
         ..Default::default()
     };
     let _ = mtp_rs::register_virtual_device(&config);

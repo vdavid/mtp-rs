@@ -207,6 +207,16 @@ fn handle_get_object_handles(
     }
 }
 
+/// Does `rel_path` match one of the configured undescribable paths?
+///
+/// Compares component-wise rather than as strings, so a config written with `/`
+/// separators works on Windows too.
+fn is_undescribable(configured: &[String], rel_path: &Path) -> bool {
+    configured
+        .iter()
+        .any(|candidate| Path::new(candidate).components().eq(rel_path.components()))
+}
+
 fn handle_get_object_info(
     state: &mut VirtualDeviceState,
     op_code: u16,
@@ -215,14 +225,28 @@ fn handle_get_object_info(
 ) {
     let handle = ObjectHandle(params.first().copied().unwrap_or(0));
 
-    // Test hook: a device that enumerated this handle but won't describe it. The
+    // Test hooks: a device that enumerated this handle but won't describe it. The
     // object itself stays present and readable, so the listing has something to
-    // be tolerant *about*.
+    // be tolerant *about*. Armed either by handle at runtime
+    // (`force_object_info_error`) or by path up front
+    // (`VirtualDeviceConfig::undescribable_objects`, for consumers testing their
+    // own binary out of process).
     if let Some(&code) = state.forced_object_info_errors.get(&handle.0) {
         state
             .response_queue
             .push_back(build_response(code, tx_id, &[]));
         return;
+    }
+    if !state.config.undescribable_objects.is_empty() {
+        let undescribable = state.objects.get(&handle.0).is_some_and(|obj| {
+            is_undescribable(&state.config.undescribable_objects, &obj.rel_path)
+        });
+        if undescribable {
+            state
+                .response_queue
+                .push_back(build_response(GENERAL_ERROR, tx_id, &[]));
+            return;
+        }
     }
 
     match build_object_info(handle, state) {

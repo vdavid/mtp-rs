@@ -60,6 +60,21 @@ pub struct VirtualDeviceConfig {
     /// `ObjectAdded`/`ObjectRemoved` events. Set to `false` for tests that
     /// don't need this (faster startup, no background threads).
     pub watch_backing_dirs: bool,
+    /// Storage-relative paths (`"b.txt"`, `"sub/c.txt"`) whose `GetObjectInfo`
+    /// answers `GeneralError` instead of an ObjectInfo dataset. The objects stay
+    /// present on disk and readable by every other operation, modeling a device
+    /// that enumerates a handle and then won't describe it (Sphaira on the
+    /// Nintendo Switch, issue #22).
+    ///
+    /// This is the config twin of
+    /// [`force_object_info_error`](super::registry::force_object_info_error): the
+    /// hook needs a handle, so it can only be armed after a listing and from
+    /// inside the same process. Name the paths here instead when the device has
+    /// to come up already broken, which is what a consumer testing its own
+    /// binary end to end (a CLI, a FUSE mount) needs.
+    ///
+    /// Defaults to empty: every object describes itself.
+    pub undescribable_objects: Vec<String>,
 }
 
 /// A ready-to-extend starting point: an obviously-fake identity plus the
@@ -90,6 +105,7 @@ impl Default for VirtualDeviceConfig {
             supports_partial_object_64: true,
             event_poll_interval: Duration::from_millis(50),
             watch_backing_dirs: true,
+            undescribable_objects: Vec::new(),
         }
     }
 }

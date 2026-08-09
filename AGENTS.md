@@ -120,7 +120,7 @@ range, window_size)` (returns `WindowedDownload`), and buffered `Storage::downlo
 > physical device is involved.
 
 - **Unit**: `cargo test --workspace` (uses mock transport)
-- **Virtual device**: `cargo test -p mtp-rs --features virtual-device` (full protocol tests against local filesystem). `VirtualDeviceConfig` implements `Default`, so build it as `VirtualDeviceConfig { storages: vec![...], ..Default::default() }` and state only the fields a test actually exercises; new fields must land with a default so consumers don't break (see CONTRIBUTING.md). `VirtualStorageConfig` has no `Default` (an unset `backing_dir` fails silently).
+- **Virtual device**: `cargo test -p mtp-rs --features virtual-device` (full protocol tests against local filesystem). `VirtualDeviceConfig` implements `Default`, so build it as `VirtualDeviceConfig { storages: vec![...], ..Default::default() }` and state only the fields a test actually exercises; new fields must land with a default so consumers don't break (see CONTRIBUTING.md). `VirtualStorageConfig` has no `Default` (an unset `backing_dir` fails silently). Fault injection: `force_partial_read_caps` (short/stall reads), `force_cancel_wedge` / `force_operation_wedge` (#18), `force_object_info_error` and `VirtualDeviceConfig::undescribable_objects` (partially-readable folders, #22).
 - **Integration**: `cargo test -p mtp-rs --test integration -- --ignored --nocapture` (needs device). Destructive tests pick a writable root folder from a priority list (Android `Download`, Garmin `Music`, Kindle `documents`, etc.); set `MTP_TEST_FOLDER=Name` to override. See `crates/mtp-rs/tests/integration.rs` header for full details.
 - **CLI**: `cargo test -p mtp-rs-cli --features virtual-device` (runs the built binary against a virtual device)
 - **Property**: `cargo test --workspace --all-features` (proptest fuzzing)
@@ -163,6 +163,55 @@ Identity is keyed on `(location_id, vendor_id, product_id, serial_number)`, not 
 alone: swapping phones between two enumerations, or an Android phone re-enumerating from
 charge-only into file transfer (new product ID), must read as `Left` then `Arrived`. A failed
 enumeration keeps the last known set rather than reporting everything as departed.
+
+## Partially-readable folders (tolerant listing)
+
+A device can hand back a folder's handle list and then refuse to describe one of them. Sphaira
+(Nintendo Switch homebrew) does this for one handle out of 50 (#22). One rejected `GetObjectInfo`
+must not hide the other 49.
+
+**What may be skipped.** All three have to hold, and the rule lives on `Storage::collect_objects`:
+
+1. The handle list is already in hand, so the folder's membership isn't in doubt, only one entry's
+   metadata.
+2. The failing operation is read-only, so nothing on the device changed.
+3. The device answered with a protocol response code, which closes that transaction cleanly and
+   leaves the session usable for the next handle.
+
+Exactly one case qualifies today: `GeneralError` on `GetObjectInfo`. **Don't add codes
+speculatively** (`AccessDenied` would satisfy the rule, but no device has been observed doing it).
+Adding one is a one-line change in `UsbBackend::list` once a device justifies it.
+
+**Everything else stays fatal**: transport and session failures, malformed responses, cancellation,
+stale handles, and any failure to enumerate the handles in the first place.
+
+**All-skipped is a failure, not an empty folder.** If a non-empty handle list yields zero successes,
+`collect_objects` returns the first error rather than `Ok(vec![])`. Don't "simplify" this away: an
+empty Vec renders as an empty folder in a file manager and reads as "everything was deleted" to
+anything syncing, so it turns a read failure into data loss. All-or-nothing rather than a
+percentage, because a threshold would be arbitrary and this isn't: we learned nothing about a folder
+we know has contents. A genuinely empty folder (no handles) stays an empty folder.
+
+**The two APIs agree.** `ObjectListing::next` yields `Result<ListingItem, Error>` where `ListingItem`
+is `Object` or `Skipped`, so `Err` keeps one meaning ("the listing is over") and a skip can't be
+mistaken for a fatal error. `collect_objects` returns `ObjectCollection { objects, skipped }`;
+`list_objects` is the same read with `skipped` dropped. Keep the streaming and collecting halves in
+sync: if one learns a new distinction, so does the other.
+
+**Consumers**: `mtp-rs ls` prints a stderr warning in both plain and `--json` modes and always emits
+a `skipped` array (empty when nothing was skipped, so a script reads one field unconditionally);
+`doctor` reports `unreadable_root_objects`; `collect_objects_recursive` aggregates skips across a
+whole tree walk.
+
+**Testing it**: `force_object_info_error(serial, handle, code)` on a virtual device (by handle, in
+process, armed after a listing), or `VirtualDeviceConfig::undescribable_objects` (by storage-relative
+path, up front, for consumers testing their own binary out of process, for example a CLI or a FUSE
+mount). The object stays present and readable by every other operation either way, which is what
+makes it a model of the real device rather than a deletion.
+
+**WPD**: the Windows backend's per-child listing reader is lenient (an unreadable child degrades to a
+default record), so it never produces skips and `skipped` is always empty there. That asymmetry is
+deliberate but undocumented in the WPD plan; don't assume parity.
 
 ## Cooperative cancellation for list/delete ops
 

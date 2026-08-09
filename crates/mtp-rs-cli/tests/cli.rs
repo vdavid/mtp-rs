@@ -249,3 +249,59 @@ fn parser_errors_cross_process_boundary() {
 fn path_str(path: &Path) -> &str {
     path.to_str().expect("test path is valid UTF-8")
 }
+
+#[test]
+fn ls_reports_objects_the_device_will_not_describe() {
+    let fixture = CliFixture::new();
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        std::fs::write(fixture.backing_dir.join(name), b"x").unwrap();
+    }
+
+    // Model Sphaira: the device enumerates b.txt but won't describe it.
+    let mut command = fixture.command();
+    command.env("__MTP_RS_TEST_VIRTUAL_UNREADABLE", "b.txt");
+    let output = command
+        .args(["--json", "--device", SERIAL, "ls", "/"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "one unreadable object must not fail the whole listing\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let objects = value["objects"].as_array().expect("objects is an array");
+    let names: Vec<&str> = objects
+        .iter()
+        .map(|o| o["filename"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"a.txt") && names.contains(&"c.txt"));
+    assert!(!names.contains(&"b.txt"));
+
+    // The omission is reported, not silent: in JSON for scripts...
+    let skipped = value["skipped"].as_array().expect("skipped is an array");
+    assert_eq!(skipped.len(), 1, "the unreadable object must be reported");
+    assert!(skipped[0]["handle"].is_number());
+
+    // ...and on stderr for humans, leaving stdout clean for pipes.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("could not be read"),
+        "expected a warning on stderr, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn ls_always_reports_a_skipped_field_even_when_nothing_was_skipped() {
+    // A consumer should be able to read one field unconditionally rather than
+    // having to know the key is sometimes absent.
+    let fixture = CliFixture::new();
+    std::fs::write(fixture.backing_dir.join("only.txt"), b"x").unwrap();
+
+    let value = fixture.run_json(&["--json", "--device", SERIAL, "ls", "/"]);
+    assert_eq!(
+        value["skipped"].as_array().expect("skipped is present"),
+        &Vec::<Value>::new()
+    );
+}
