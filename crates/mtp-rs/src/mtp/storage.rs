@@ -229,6 +229,24 @@ impl Storage {
                 Err(error) => return Err(error.source),
             }
         }
+
+        // Tolerating one bad object is the point. Reporting a device that answered
+        // NOTHING as an empty folder is not: `Ok(vec![])` renders as "empty folder"
+        // in a file manager and reads as "everything was deleted" to anything
+        // syncing, which turns a read failure into data loss. The device gave us
+        // handles and then failed every single lookup, so we learned nothing about
+        // a folder we know has contents. That's a failure, not a result.
+        if objects.is_empty() && !skipped.is_empty() {
+            let first = skipped.swap_remove(0);
+            diag_debug!(
+                "list_objects: every one of {} handles on storage {} failed its metadata lookup; \
+                 reporting the failure rather than an empty folder",
+                skipped.len() + 1,
+                self.id.0
+            );
+            return Err(first.error);
+        }
+
         Ok(ObjectCollection { objects, skipped })
     }
 

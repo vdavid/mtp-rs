@@ -176,11 +176,14 @@ impl UsbBackend {
 ///
 /// Two shapes count as a decline:
 ///
-/// - Selected `Protocol` responses that explicitly reject the operation or its
-///   parent parameter (`OperationNotSupported`, `InvalidObjectHandle`,
-///   `InvalidParentObject`, `InvalidParameter`, `ParameterNotSupported`). A
-///   broad `GeneralError` is not a decline: enumeration integrity is unknown,
-///   so it propagates.
+/// - `Protocol`: the spec'd way to say no (`OperationNotSupported`,
+///   `InvalidObjectHandle`, `InvalidParameter`, …). **Any** response code counts,
+///   deliberately. Narrowing this to an allowlist looks tidier and isn't: a
+///   device that declines with `AccessDenied`, `StoreNotAvailable`,
+///   `InvalidStorageId`, or a vendor code then loses its root listing entirely,
+///   and those are precisely the devices nobody here can test. The device
+///   answered, which is the only thing that distinguishes a decline from a sick
+///   session, and that's what this predicate is for.
 /// - `Io`: how a bulk STALL arrives, which is how SIC-compliant cameras signal
 ///   an unsupported operation (Panasonic Lumix DMC-TZ61, #12). The transport
 ///   folds STALL in with `Fault`/`InvalidArgument`/`Unknown`, so `Io` can't be
@@ -188,17 +191,7 @@ impl UsbBackend {
 ///   permissive side deliberately, since losing camera root listings would be
 ///   the worse failure.
 fn is_all_handle_rejection(err: &PtpError) -> bool {
-    matches!(
-        err,
-        PtpError::Protocol {
-            code: ResponseCode::OperationNotSupported
-                | ResponseCode::InvalidObjectHandle
-                | ResponseCode::InvalidParentObject
-                | ResponseCode::InvalidParameter
-                | ResponseCode::ParameterNotSupported,
-            ..
-        } | PtpError::Io(_)
-    )
+    matches!(err, PtpError::Protocol { .. } | PtpError::Io(_))
 }
 
 /// Build the root filter for an enumerated handle set, deciding whether the
@@ -665,6 +658,23 @@ mod tests {
             code: ResponseCode::InvalidParentObject,
             operation: OperationCode::GetObjectHandles,
         }));
+        // ...and so is any OTHER response code. These are the ones an allowlist
+        // would quietly drop, on devices nobody here owns: losing their root
+        // listing is a far worse outcome than one extra `parent=0` roundtrip.
+        for code in [
+            ResponseCode::AccessDenied,
+            ResponseCode::InvalidStorageId,
+            ResponseCode::StoreReadOnly,
+            ResponseCode::ParameterNotSupported,
+        ] {
+            assert!(
+                is_all_handle_rejection(&PtpError::Protocol {
+                    code,
+                    operation: OperationCode::GetObjectHandles,
+                }),
+                "{code:?} is the device declining; it must still fall back to parent=0"
+            );
+        }
         // ...and a bulk STALL is how SIC cameras say the same thing (#12). The
         // transport can only surface that as `Io`, so `Io` has to fall back too.
         assert!(is_all_handle_rejection(&PtpError::Io(
@@ -678,10 +688,6 @@ mod tests {
         // declining. Retrying hammers a sick device and reports the second
         // error, hiding the first.
         for err in [
-            PtpError::Protocol {
-                code: ResponseCode::GeneralError,
-                operation: OperationCode::GetObjectHandles,
-            },
             PtpError::DeviceReset,
             PtpError::Timeout,
             PtpError::Disconnected,
@@ -1232,6 +1238,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_folder_where_every_object_was_skipped_fails_instead_of_reading_as_empty() {
+        // Tolerating one bad apple is the point; reporting a dead device as an
+        // empty folder is not. `Ok(vec![])` here would render as "empty folder" in
+        // a file manager and as "everything was deleted" to anything syncing.
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        queue_handles(&mock, 1, &[10, 20]);
+        mock.queue_response(error_response(2, ResponseCode::GeneralError));
+        mock.queue_response(error_response(3, ResponseCode::GeneralError));
+
+        let backend = mock_backend(transport, "").await;
+        let storage =
+            crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
+
+        assert!(matches!(
+            storage.list_objects_detailed(None).await,
+            Err(Error::Other { ref detail }) if detail == "GeneralError"
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_all_skipped_rule_also_covers_the_plain_list_objects_wrapper() {
+        // `list_objects` is the one nearly every consumer calls, and it's the one
+        // that would hand back an innocent-looking empty Vec.
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        queue_handles(&mock, 1, &[10, 20]);
+        mock.queue_response(error_response(2, ResponseCode::GeneralError));
+        mock.queue_response(error_response(3, ResponseCode::GeneralError));
+
+        let backend = mock_backend(transport, "").await;
+        let storage =
+            crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
+
+        assert!(matches!(
+            storage.list_objects(None).await,
+            Err(Error::Other { ref detail }) if detail == "GeneralError"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_genuinely_empty_folder_is_still_empty_not_an_error() {
+        // The all-skipped rule keys on "we learned nothing about a folder we know
+        // has contents". No handles means no contents, which is not a failure.
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        queue_handles(&mock, 1, &[]);
+
+        let backend = mock_backend(transport, "").await;
+        let storage =
+            crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
+        let collection = storage.list_objects_detailed(None).await.unwrap();
+
+        assert!(collection.objects.is_empty());
+        assert!(collection.skipped.is_empty());
+    }
+
+    #[tokio::test]
     async fn invalid_object_handle_remains_fatal_for_collection() {
         let (transport, mock) = mock_transport();
         mock.queue_response(ok_response(0));
@@ -1251,9 +1315,16 @@ mod tests {
 
     #[tokio::test]
     async fn handle_enumeration_general_error_remains_fatal() {
+        // Skippability applies to per-object metadata only. Failing to enumerate the
+        // handles means we never learned what the folder contains, so there are no
+        // "valid siblings" to preserve and nothing to be tolerant about.
         let (transport, mock) = mock_transport();
         mock.queue_response(ok_response(0));
+        // A root listing tries `parent=0xFFFFFFFF` first and treats any response code
+        // as a decline (see `is_all_handle_rejection`), so the `parent=0` fallback has
+        // to fail too before the error is the listing's final answer.
         mock.queue_response(error_response(1, ResponseCode::GeneralError));
+        mock.queue_response(error_response(2, ResponseCode::GeneralError));
 
         let backend = mock_backend(transport, "").await;
         let storage =
