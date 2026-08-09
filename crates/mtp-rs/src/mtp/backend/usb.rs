@@ -125,7 +125,10 @@ impl UsbBackend {
                 .get_object_handles(storage, None, Some(PtpHandle::ALL))
                 .await
             {
-                Ok(handles) => return Ok((handles, ParentFilter::Root(storage))),
+                Ok(handles) => {
+                    let filter = root_filter(storage, &handles);
+                    return Ok((handles, filter));
+                }
                 // Declined: fall through to the parent=0 path.
                 Err(e) if is_all_handle_rejection(&e) => {}
                 Err(e) => return Err(e),
@@ -145,12 +148,15 @@ impl UsbBackend {
                 code: ResponseCode::InvalidObjectHandle,
                 ..
             }) if parent.is_none() => {
-                // Samsung fallback: recursive listing filtered to root items.
+                // Samsung fallback: recursive listing filtered to root items. This is the
+                // path where a storage-ID collision can actually bite, since the handle
+                // set covers the whole storage (see `root_filter`).
                 let handles = self
                     .session
                     .get_object_handles(storage, None, Some(PtpHandle::ALL))
                     .await?;
-                Ok((handles, ParentFilter::Root(storage)))
+                let filter = root_filter(storage, &handles);
+                Ok((handles, filter))
             }
             Err(e) => Err(e),
         }
@@ -181,14 +187,36 @@ fn is_all_handle_rejection(err: &PtpError) -> bool {
     matches!(err, PtpError::Protocol { .. } | PtpError::Io(_))
 }
 
+/// Build the root filter for an enumerated handle set, deciding whether the
+/// storage ID can be trusted as a root marker.
+///
+/// Some responders report the containing storage ID as the parent of every root
+/// object (DBI and Sphaira/libhaze on the Nintendo Switch, PR #20). That reading
+/// only holds while the storage ID isn't ALSO a real object handle: a storage ID
+/// is a small number (`0x00010001` is 65,537), and on the recursive fallback path
+/// the handle set covers the whole storage, so a device with a large library can
+/// genuinely own a folder at that handle. Then `parent == storage_id` means
+/// "inside that folder", and accepting it would list the folder's children
+/// alongside the real root entries (duplicated subtrees for anything walking the
+/// tree, since nested listings correctly use `Exact`).
+///
+/// So we look: if the storage ID came back as one of the objects, drop it as a
+/// marker and fall back to the two reserved handles, which can never collide.
+/// The check is one pass over the handle list, not per object.
+fn root_filter(storage: PtpStorageId, handles: &[PtpHandle]) -> ParentFilter {
+    let collides = handles.iter().any(|h| h.0 == storage.0);
+    ParentFilter::Root(if collides { None } else { Some(storage) })
+}
+
 /// How to filter objects by parent handle during a listing (PTP terms).
 #[derive(Clone, Copy)]
 enum ParentFilter {
     /// Accept objects whose parent matches exactly.
     Exact(PtpHandle),
-    /// Device root: accept the standard root handles and devices that report
-    /// the containing storage ID as the parent of root objects.
-    Root(PtpStorageId),
+    /// Device root: accept the reserved root handles (0 and 0xFFFFFFFF), plus the
+    /// containing storage ID when [`root_filter`] established it can't be an
+    /// object handle on this storage.
+    Root(Option<PtpStorageId>),
 }
 
 impl ParentFilter {
@@ -196,7 +224,7 @@ impl ParentFilter {
         match self {
             ParentFilter::Exact(expected) => parent == expected,
             ParentFilter::Root(storage) => {
-                parent.0 == 0 || parent.0 == 0xFFFF_FFFF || parent.0 == storage.0
+                parent.0 == 0 || parent.0 == 0xFFFF_FFFF || storage.is_some_and(|s| parent.0 == s.0)
             }
         }
     }
@@ -614,6 +642,29 @@ mod tests {
     }
 
     #[test]
+    fn the_storage_id_is_a_root_marker_only_while_it_isnt_an_object() {
+        let storage = PtpStorageId(0x0001_0001);
+        let h = |v| PtpHandle(v);
+
+        // Nothing claims that handle, so root objects reporting it are at the root
+        // (DBI/Sphaira, PR #20).
+        let clean = root_filter(storage, &[h(10), h(20)]);
+        assert!(clean.accepts(h(0x0001_0001)));
+
+        // A real folder owns it, so the same parent value means "inside that
+        // folder" and must not read as root.
+        let collides = root_filter(storage, &[h(0x0001_0001), h(20)]);
+        assert!(!collides.accepts(h(0x0001_0001)));
+
+        // The reserved handles are never object handles, so they hold either way.
+        for filter in [clean, collides] {
+            assert!(filter.accepts(PtpHandle::ROOT));
+            assert!(filter.accepts(PtpHandle::ALL));
+            assert!(!filter.accepts(h(42)));
+        }
+    }
+
+    #[test]
     fn plan_partial_read_prefers_64bit_when_available() {
         // Both ops, or 64-bit only: always Wide, at any offset.
         for offset in [0, 1024, OVER_4GIB, u64::MAX] {
@@ -878,6 +929,28 @@ mod tests {
             .unwrap();
         assert_eq!(objs.len(), 1);
         assert_eq!(objs[0].filename, "dbi-root");
+    }
+
+    #[tokio::test]
+    async fn a_folder_handle_colliding_with_the_storage_id_keeps_its_children_out_of_root() {
+        // The storage-ID-as-root-parent convention only makes sense while the
+        // storage ID isn't ALSO a real object. Here handle 1 == SID, so parent=1
+        // means "inside that folder", not "at the root", and the recursive
+        // fallback would otherwise smuggle the folder's children into the root.
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        // Recursive enumeration: the colliding folder plus one of its children.
+        queue_handles(&mock, 1, &[1, 10, 20]);
+        queue_object_info(&mock, 2, "collides-with-storage-id", 0); // real root folder
+        queue_object_info(&mock, 3, "child-of-that-folder", 1); // NOT root
+        queue_object_info(&mock, 4, "real-root-file", 0);
+
+        let backend = mock_backend(transport, "").await;
+        let objs = collect(backend.list(SID, None, None).await.unwrap())
+            .await
+            .unwrap();
+        let names: Vec<_> = objs.iter().map(|o| o.filename.as_str()).collect();
+        assert_eq!(names, ["collides-with-storage-id", "real-root-file"]);
     }
 
     #[tokio::test]

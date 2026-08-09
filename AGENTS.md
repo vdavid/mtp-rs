@@ -89,6 +89,13 @@ range, window_size)` (returns `WindowedDownload`), and buffered `Storage::downlo
   back to a catch-all. `DeviceReset`, `Timeout`, and `Disconnected` must propagate: the retry hammers a device that
   re-wedges under exactly that treatment (#18), and it reports the *second* error, hiding the `DeviceReset` a consumer
   needs to trigger its reopen.
+- **Some responders report the containing storage ID as the parent of root objects**, not `0` or `0xFFFFFFFF` (DBI and
+  Sphaira/libhaze on the Nintendo Switch, PR #20). The root filter accepts it, but only after `root_filter` in
+  `mtp::backend::usb` checks the storage ID isn't itself one of the enumerated handles. Keep that guard: a storage ID is
+  a small number (`0x00010001` is 65,537), and on the recursive fallback path the handle set covers the whole storage,
+  so a device with a large library can genuinely own a folder at that handle. Without the guard, `parent == storage_id`
+  reads as "at the root" for that folder's children too, and they get listed alongside the real root entries (a tree
+  walk then visits their subtree twice; nested listings are unaffected, they use `Exact`).
 - **Root writes address the storage root as `0xFFFFFFFF`, not `0`.** `SendObjectInfo`'s parent parameter is the one
   place MTP spells the root that way (MTP 1.1 D.2.12); `0` means "no parent given, responder may choose", so responders
   look it up as a handle and reject it. Android's `MtpServer` only maps `MTP_PARENT_ROOT` (0xFFFFFFFF) to the storage
