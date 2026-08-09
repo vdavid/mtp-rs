@@ -14,6 +14,10 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Fixed
+
+- **[lib] Root-level creates retry with the selected storage ID only when parent `0` receives `InvalidParentObject` or `InvalidObjectHandle` for that exact `SendObjectInfo` transaction.** The standard parent remains the first attempt, object data cannot start before the retry succeeds, nested writes are unchanged, and ambiguous transport/session failures are never retried.
+
 ## [0.29.0] - 2026-07-21
 
 Library `0.29.0`, CLI `0.7.4`. Recovering a wedged device stops being a CLI-only trick: consumers get the session-less reset, the error that says a reset happened now reaches them, and the diagnostic that captures the evidence finally runs on Android.

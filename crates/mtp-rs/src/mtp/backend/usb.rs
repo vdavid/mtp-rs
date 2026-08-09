@@ -103,6 +103,44 @@ impl UsbBackend {
         plan_partial_read(self.has_partial_object_64, self.has_partial_object, offset)
     }
 
+    /// Send metadata for a new object, preserving the standard root parent and
+    /// retrying only an explicit root-parent rejection that proves the first
+    /// metadata transaction completed before any object-data phase began. Some
+    /// responders require the selected storage ID in the parent command
+    /// parameter for root-level writes.
+    async fn send_object_info_with_root_fallback(
+        &self,
+        storage: PtpStorageId,
+        parent: Option<PtpHandle>,
+        info: &crate::ptp::ObjectInfo,
+    ) -> Result<(PtpStorageId, PtpHandle, PtpHandle), PtpError> {
+        let caller_requested_root = parent.is_none();
+        let first_parent = parent.unwrap_or(PtpHandle::ROOT);
+        match self
+            .session
+            .send_object_info(storage, first_parent, info)
+            .await
+        {
+            Err(error)
+                if caller_requested_root
+                    && first_parent == PtpHandle::ROOT
+                    && explicit_root_parent_rejection(&error).is_some() =>
+            {
+                let storage_parent = PtpHandle(storage.0);
+                let rejection = explicit_root_parent_rejection(&error)
+                    .expect("guard established an explicit root-parent rejection");
+                diag_debug!(
+                    "root-parent fallback: first SendObjectInfo returned {rejection:?}; retrying once with storage ID {}",
+                    storage.0
+                );
+                self.session
+                    .send_object_info(storage, storage_parent, info)
+                    .await
+            }
+            result => result,
+        }
+    }
+
     /// Resolve the object-handle list for a listing, applying the root-listing quirks.
     ///
     /// Returns `(handles, filter)` in PTP terms. Mirrors the historical `list_objects_stream`
@@ -154,6 +192,22 @@ impl UsbBackend {
             }
             Err(e) => Err(e),
         }
+    }
+}
+
+/// Classify the two completed protocol responses that some responders use to
+/// reject `parent=0` specifically for root-level `SendObjectInfo`.
+///
+/// This helper deliberately does not make either response generally retryable:
+/// its caller additionally proves the high-level parent was `None`, the first
+/// request used `PtpHandle::ROOT`, and no object-data phase can have started.
+fn explicit_root_parent_rejection(error: &PtpError) -> Option<ResponseCode> {
+    match error {
+        PtpError::Protocol {
+            code: code @ (ResponseCode::InvalidParentObject | ResponseCode::InvalidObjectHandle),
+            operation: OperationCode::SendObjectInfo,
+        } => Some(*code),
+        _ => None,
     }
 }
 
@@ -438,13 +492,15 @@ impl MtpBackend for UsbBackend {
     ) -> Result<ObjectHandle, UploadError> {
         let total_size = info.size;
         let object_info = info.to_object_info();
-        let parent_handle = parent.map(ObjectHandle::to_ptp).unwrap_or(PtpHandle::ROOT);
 
         // Phase 1: SendObjectInfo. No object exists yet, so a failure here has no partial to
         // surface.
         let (_, _, handle) = self
-            .session
-            .send_object_info(storage.to_ptp(), parent_handle, &object_info)
+            .send_object_info_with_root_fallback(
+                storage.to_ptp(),
+                parent.map(ObjectHandle::to_ptp),
+                &object_info,
+            )
             .await
             .map_err(|source| UploadError {
                 source: source.into(),
@@ -500,11 +556,13 @@ impl MtpBackend for UsbBackend {
     ) -> Result<ObjectHandle, Error> {
         let info = NewObjectInfo::folder(name);
         let object_info = info.to_object_info();
-        let parent_handle = parent.map(ObjectHandle::to_ptp).unwrap_or(PtpHandle::ROOT);
 
         let (_, _, handle) = self
-            .session
-            .send_object_info(storage.to_ptp(), parent_handle, &object_info)
+            .send_object_info_with_root_fallback(
+                storage.to_ptp(),
+                parent.map(ObjectHandle::to_ptp),
+                &object_info,
+            )
             .await?;
         Ok(handle.into())
     }
@@ -677,6 +735,36 @@ mod tests {
         buf.extend_from_slice(&pack_u16(code.into()));
         buf.extend_from_slice(&pack_u32(tx_id));
         buf
+    }
+
+    fn response_with_params(tx_id: u32, code: ResponseCode, params: &[u32]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(12 + params.len() * 4);
+        buf.extend_from_slice(&pack_u32((12 + params.len() * 4) as u32));
+        buf.extend_from_slice(&pack_u16(ContainerType::Response.to_code()));
+        buf.extend_from_slice(&pack_u16(code.into()));
+        buf.extend_from_slice(&pack_u32(tx_id));
+        for param in params {
+            buf.extend_from_slice(&pack_u32(*param));
+        }
+        buf
+    }
+
+    fn command_params(mock: &MockTransport, operation: OperationCode) -> Vec<Vec<u32>> {
+        let operation_code: u16 = operation.into();
+        mock.get_sends()
+            .into_iter()
+            .filter(|send| {
+                send.len() >= 12
+                    && u16::from_le_bytes([send[4], send[5]]) == ContainerType::Command.to_code()
+                    && u16::from_le_bytes([send[6], send[7]]) == operation_code
+            })
+            .map(|send| {
+                send[12..]
+                    .chunks_exact(4)
+                    .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+                    .collect()
+            })
+            .collect()
     }
 
     fn data_container(tx_id: u32, code: OperationCode, payload: &[u8]) -> Vec<u8> {
@@ -869,6 +957,204 @@ mod tests {
         let first = listing.items.next().await.unwrap().unwrap();
         assert_eq!(first.filename, "good.jpg");
         assert!(listing.items.next().await.unwrap().is_err());
+    }
+
+    // -- Root-level SendObjectInfo fallback -------------------------------------
+
+    #[tokio::test]
+    async fn root_folder_uses_parent_zero_once_when_accepted() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(response_with_params(
+            1,
+            ResponseCode::Ok,
+            &[SID.0 as u32, 0, 77],
+        ));
+
+        let backend = mock_backend(transport, "").await;
+        let handle = backend.create_folder(SID, None, "folder").await.unwrap();
+
+        assert_eq!(handle, ObjectHandle(77));
+        assert_eq!(
+            command_params(&mock, OperationCode::SendObjectInfo),
+            vec![vec![SID.0 as u32, 0]]
+        );
+    }
+
+    #[tokio::test]
+    async fn root_folder_retries_once_after_invalid_parent_object() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(error_response(1, ResponseCode::InvalidParentObject));
+        mock.queue_response(response_with_params(
+            2,
+            ResponseCode::Ok,
+            &[SID.0 as u32, SID.0 as u32, 77],
+        ));
+
+        let backend = mock_backend(transport, "").await;
+        let handle = backend.create_folder(SID, None, "folder").await.unwrap();
+
+        assert_eq!(handle, ObjectHandle(77));
+        assert_eq!(
+            command_params(&mock, OperationCode::SendObjectInfo),
+            vec![vec![SID.0 as u32, 0], vec![SID.0 as u32, SID.0 as u32]]
+        );
+    }
+
+    #[tokio::test]
+    async fn root_folder_retries_once_after_invalid_object_handle() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(error_response(1, ResponseCode::InvalidObjectHandle));
+        mock.queue_response(response_with_params(
+            2,
+            ResponseCode::Ok,
+            &[SID.0 as u32, SID.0 as u32, 78],
+        ));
+
+        let backend = mock_backend(transport, "").await;
+        let handle = backend.create_folder(SID, None, "folder").await.unwrap();
+
+        assert_eq!(handle, ObjectHandle(78));
+        assert_eq!(
+            command_params(&mock, OperationCode::SendObjectInfo),
+            vec![vec![SID.0 as u32, 0], vec![SID.0 as u32, SID.0 as u32]]
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_success_starts_object_data_exactly_once() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(error_response(1, ResponseCode::InvalidParentObject));
+        mock.queue_response(response_with_params(
+            2,
+            ResponseCode::Ok,
+            &[SID.0 as u32, SID.0 as u32, 88],
+        ));
+        mock.queue_response(ok_response(3));
+
+        let backend = mock_backend(transport, "").await;
+        let data = futures::stream::iter(vec![Ok(Bytes::from_static(b"data"))]);
+        let handle = backend
+            .upload(
+                SID,
+                None,
+                NewObjectInfo::file("file.bin", 4),
+                Box::pin(data),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(handle, ObjectHandle(88));
+        assert_eq!(
+            command_params(&mock, OperationCode::SendObjectInfo),
+            vec![vec![SID.0 as u32, 0], vec![SID.0 as u32, SID.0 as u32]]
+        );
+        assert_eq!(command_params(&mock, OperationCode::SendObject).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn fallback_failure_has_no_third_attempt_or_data_phase() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(error_response(1, ResponseCode::InvalidObjectHandle));
+        mock.queue_response(error_response(2, ResponseCode::InvalidParentObject));
+
+        let backend = mock_backend(transport, "").await;
+        let data = futures::stream::iter(vec![Ok(Bytes::from_static(b"data"))]);
+        let result = backend
+            .upload(
+                SID,
+                None,
+                NewObjectInfo::file("file.bin", 4),
+                Box::pin(data),
+                None,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(UploadError {
+                source: Error::StaleHandle,
+                partial: None
+            })
+        ));
+        assert_eq!(
+            command_params(&mock, OperationCode::SendObjectInfo),
+            vec![vec![SID.0 as u32, 0], vec![SID.0 as u32, SID.0 as u32]]
+        );
+        assert!(command_params(&mock, OperationCode::SendObject).is_empty());
+    }
+
+    #[tokio::test]
+    async fn nested_invalid_object_handle_never_uses_storage_fallback() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(error_response(1, ResponseCode::InvalidObjectHandle));
+
+        let backend = mock_backend(transport, "").await;
+        let result = backend
+            .create_folder(SID, Some(ObjectHandle(42)), "folder")
+            .await;
+
+        assert!(matches!(result, Err(Error::StaleHandle)));
+        assert_eq!(
+            command_params(&mock, OperationCode::SendObjectInfo),
+            vec![vec![SID.0 as u32, 42]]
+        );
+    }
+
+    #[tokio::test]
+    async fn root_session_failure_never_uses_storage_fallback() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(error_response(1, ResponseCode::SessionNotOpen));
+
+        let backend = mock_backend(transport, "").await;
+        let result = backend.create_folder(SID, None, "folder").await;
+
+        assert!(matches!(result, Err(Error::Disconnected)));
+        assert_eq!(
+            command_params(&mock, OperationCode::SendObjectInfo),
+            vec![vec![SID.0 as u32, 0]]
+        );
+    }
+
+    #[tokio::test]
+    async fn root_general_error_never_uses_storage_fallback() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(error_response(1, ResponseCode::GeneralError));
+
+        let backend = mock_backend(transport, "").await;
+        let result = backend.create_folder(SID, None, "folder").await;
+
+        assert!(matches!(
+            result,
+            Err(Error::Other { ref detail }) if detail == "GeneralError"
+        ));
+        assert_eq!(
+            command_params(&mock, OperationCode::SendObjectInfo),
+            vec![vec![SID.0 as u32, 0]]
+        );
+    }
+
+    #[tokio::test]
+    async fn ambiguous_root_transport_failure_never_retries() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+
+        let backend = mock_backend(transport, "").await;
+        let result = backend.create_folder(SID, None, "folder").await;
+
+        assert!(matches!(result, Err(Error::NoDevice)));
+        assert_eq!(
+            command_params(&mock, OperationCode::SendObjectInfo),
+            vec![vec![SID.0 as u32, 0]]
+        );
     }
 
     // -- Root fallback (Samsung) -------------------------------------------------
