@@ -3,7 +3,7 @@
 //! Run with: cargo run --example diagnose
 
 use bytes::Bytes;
-use mtp_rs::mtp::{MtpDevice, NewObjectInfo};
+use mtp_rs::mtp::{ListingItem, MtpDevice, NewObjectInfo};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,12 +50,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rec_folders = 0usize;
     let mut rec_files = 0usize;
     let mut rec_total = 0usize;
+    let mut rec_skipped = 0usize;
     let mut capped = false;
     let mut to_visit = std::collections::VecDeque::from([None]);
     'traversal: while let Some(parent) = to_visit.pop_front() {
         let mut listing = storage.list_objects_stream(parent).await?;
         while let Some(result) = listing.next().await {
-            let obj = result?;
+            let obj = match result? {
+                ListingItem::Object(info) => info,
+                // Worth counting rather than ignoring: an object the device
+                // wouldn't describe is exactly the kind of thing a diagnostic run
+                // exists to surface.
+                ListingItem::Skipped(skipped) => {
+                    println!(
+                        "  ! handle {} could not be read: {}",
+                        skipped.handle.0, skipped.error
+                    );
+                    rec_skipped += 1;
+                    continue;
+                }
+            };
             rec_total += 1;
             if obj.is_folder() {
                 rec_folders += 1;
@@ -71,10 +85,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let elapsed = start.elapsed();
     println!(
-        "Recursive traversal saw: {} folders, {} files, {} total{}",
+        "Recursive traversal saw: {} folders, {} files, {} total{}{}",
         rec_folders,
         rec_files,
         rec_total,
+        if rec_skipped > 0 {
+            format!(", {rec_skipped} unreadable")
+        } else {
+            String::new()
+        },
         if capped {
             " (stopped at cap, more exist)"
         } else {

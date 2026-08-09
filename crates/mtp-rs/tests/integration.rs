@@ -58,7 +58,7 @@
 //! ```
 
 use mtp_rs::mtp::Storage;
-use mtp_rs::{ByteRange, ObjectHandle};
+use mtp_rs::{ByteRange, ListingItem, ObjectHandle};
 
 /// Whether an opt-in env flag is enabled. True only for truthy values
 /// (`1`/`true`/`yes`/`on`, case-insensitive), so `VAR=0` means off, not "defined
@@ -302,10 +302,17 @@ async fn resolve_readfile_override(
     };
     while let Some(result) = listing.next().await {
         match result {
-            Ok(obj) if obj.is_file() && obj.filename == *last => {
+            Ok(ListingItem::Object(obj)) if obj.is_file() && obj.filename == *last => {
                 return Some((obj.handle, obj.size, obj.filename));
             }
-            Ok(_) => {}
+            Ok(ListingItem::Object(_)) => {}
+            Ok(ListingItem::Skipped(skipped)) => {
+                tlog!(
+                    "MTP_TEST_READFILE: handle {} unreadable: {}",
+                    skipped.handle.0,
+                    skipped.error
+                );
+            }
             Err(e) => {
                 tlog!("MTP_TEST_READFILE: object fetch failed: {:?}", e);
                 return None;
@@ -338,13 +345,16 @@ async fn find_file_recursive_early_exit(
         };
         while let Some(result) = listing.next().await {
             match result {
-                Ok(obj) => {
+                Ok(ListingItem::Object(obj)) => {
                     if obj.is_file() && obj.size > min_size && obj.size < max_size {
                         return Some((obj.handle, obj.size, obj.filename));
                     }
                     if obj.is_folder() {
                         to_visit.push_back(Some(obj.handle));
                     }
+                }
+                Ok(ListingItem::Skipped(skipped)) => {
+                    tlog!("Handle {} unreadable: {}", skipped.handle.0, skipped.error);
                 }
                 Err(e) => {
                     tlog!("Object fetch failed: {:?}", e);

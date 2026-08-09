@@ -56,10 +56,10 @@ pub use mtp::{Error, UploadError};
 
 // Backend-neutral high-level types (the default vocabulary for `mtp::`).
 pub use mtp::{
-    Backend, ByteRange, Capabilities, DateTime, DeviceEvent, DeviceInfo, FileDownload, MtpDevice,
-    MtpDeviceBuilder, NewObjectInfo, ObjectCollection, ObjectFormat, ObjectHandle, ObjectInfo,
-    ObjectListing, Progress, SkippedObject, Storage, StorageId, StorageInfo, WindowedDownload,
-    DEFAULT_CANCEL_TIMEOUT, DEFAULT_DOWNLOAD_WINDOW,
+    Backend, ByteRange, Capabilities, DateTime, DeviceEvent, DeviceInfo, FileDownload, ListingItem,
+    MtpDevice, MtpDeviceBuilder, NewObjectInfo, ObjectCollection, ObjectFormat, ObjectHandle,
+    ObjectInfo, ObjectListing, Progress, SkippedObject, Storage, StorageId, StorageInfo,
+    WindowedDownload, DEFAULT_CANCEL_TIMEOUT, DEFAULT_DOWNLOAD_WINDOW,
 };
 
 // Low-level PTP escape hatch for cameras / protocol work. These keep their PTP-specific

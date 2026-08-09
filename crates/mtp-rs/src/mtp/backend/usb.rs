@@ -1182,7 +1182,7 @@ mod tests {
         let backend = mock_backend(transport, "").await;
         let storage =
             crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
-        let collection = storage.list_objects_detailed(None).await.unwrap();
+        let collection = storage.collect_objects(None).await.unwrap();
 
         assert_eq!(collection.objects.len(), 2);
         assert_eq!(collection.objects[0].filename, "first.jpg");
@@ -1215,7 +1215,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_keeps_general_error_observable_and_continues() {
+    async fn stream_reports_a_skip_as_an_item_not_an_error_and_continues() {
+        // The streaming half of the contract: a skippable per-object failure is a
+        // successful item of kind `Skipped`, so `Err` keeps its single meaning
+        // ("the listing is over") and a consumer can't confuse the two.
+        use crate::mtp::ListingItem;
+
         let (transport, mock) = mock_transport();
         mock.queue_response(ok_response(0));
         queue_handles(&mock, 1, &[10, 20, 30]);
@@ -1228,13 +1233,48 @@ mod tests {
             crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
         let mut listing = storage.list_objects_stream(None).await.unwrap();
 
-        assert_eq!(listing.next().await.unwrap().unwrap().filename, "first.jpg");
+        let first = listing.next().await.unwrap().unwrap();
+        assert!(matches!(first, ListingItem::Object(ref o) if o.filename == "first.jpg"));
+
+        let skipped = listing.next().await.unwrap().unwrap();
+        let ListingItem::Skipped(skipped) = skipped else {
+            panic!("expected a Skipped item, got {skipped:?}");
+        };
+        assert_eq!(skipped.handle, ObjectHandle(20));
+        assert!(matches!(
+            skipped.error,
+            Error::Other { ref detail } if detail == "GeneralError"
+        ));
+
+        let last = listing.next().await.unwrap().unwrap();
+        assert!(matches!(last, ListingItem::Object(ref o) if o.filename == "last.jpg"));
+        assert!(listing.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stream_still_reports_a_fatal_error_as_an_error() {
+        // The other half: a non-skippable failure must not arrive as an item.
+        use crate::mtp::ListingItem;
+
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        queue_handles(&mock, 1, &[10, 20]);
+        queue_object_info(&mock, 2, "first.jpg", 0);
+        mock.queue_response(error_response(3, ResponseCode::InvalidObjectHandle));
+
+        let backend = mock_backend(transport, "").await;
+        let storage =
+            crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
+        let mut listing = storage.list_objects_stream(None).await.unwrap();
+
+        assert!(matches!(
+            listing.next().await.unwrap().unwrap(),
+            ListingItem::Object(_)
+        ));
         assert!(matches!(
             listing.next().await.unwrap(),
-            Err(Error::Other { ref detail }) if detail == "GeneralError"
+            Err(Error::StaleHandle)
         ));
-        assert_eq!(listing.next().await.unwrap().unwrap().filename, "last.jpg");
-        assert!(listing.next().await.is_none());
     }
 
     #[tokio::test]
@@ -1253,7 +1293,7 @@ mod tests {
             crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
 
         assert!(matches!(
-            storage.list_objects_detailed(None).await,
+            storage.collect_objects(None).await,
             Err(Error::Other { ref detail }) if detail == "GeneralError"
         ));
     }
@@ -1289,7 +1329,7 @@ mod tests {
         let backend = mock_backend(transport, "").await;
         let storage =
             crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
-        let collection = storage.list_objects_detailed(None).await.unwrap();
+        let collection = storage.collect_objects(None).await.unwrap();
 
         assert!(collection.objects.is_empty());
         assert!(collection.skipped.is_empty());
@@ -1308,7 +1348,7 @@ mod tests {
             crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
 
         assert!(matches!(
-            storage.list_objects_detailed(None).await,
+            storage.collect_objects(None).await,
             Err(Error::StaleHandle)
         ));
     }
@@ -1331,7 +1371,7 @@ mod tests {
             crate::mtp::Storage::new(Arc::new(backend), SID, crate::mtp::StorageInfo::default());
 
         assert!(matches!(
-            storage.list_objects_detailed(None).await,
+            storage.collect_objects(None).await,
             Err(Error::Other { ref detail }) if detail == "GeneralError"
         ));
     }

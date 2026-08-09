@@ -51,7 +51,7 @@ pub use hotplug::{
 };
 // Backend-neutral high-level types (see types.rs). These are the default vocabulary for `mtp::`.
 pub use object::NewObjectInfo;
-pub use storage::{ObjectCollection, ObjectListing, SkippedObject, Storage};
+pub use storage::{ListingItem, ObjectCollection, ObjectListing, SkippedObject, Storage};
 pub use stream::{
     FileDownload, Progress, WindowedDownload, DEFAULT_CANCEL_TIMEOUT, DEFAULT_DOWNLOAD_WINDOW,
 };

@@ -27,7 +27,7 @@ use std::sync::Arc;
 /// # Example
 ///
 /// ```rust,no_run
-/// use mtp_rs::mtp::MtpDevice;
+/// use mtp_rs::mtp::{ListingItem, MtpDevice};
 ///
 /// # async fn example() -> Result<(), mtp_rs::Error> {
 /// # let device = MtpDevice::open_first().await?;
@@ -36,9 +36,15 @@ use std::sync::Arc;
 /// let mut listing = storage.list_objects_stream(None).await?;
 /// println!("Loading {} files...", listing.total());
 ///
-/// while let Some(result) = listing.next().await {
-///     let info = result?;
-///     println!("[{}/{}] {}", listing.fetched(), listing.total(), info.filename);
+/// while let Some(item) = listing.next().await {
+///     match item? {
+///         ListingItem::Object(info) => {
+///             println!("[{}/{}] {}", listing.fetched(), listing.total(), info.filename);
+///         }
+///         ListingItem::Skipped(skipped) => {
+///             eprintln!("could not read handle {}: {}", skipped.handle.0, skipped.error);
+///         }
+///     }
 /// }
 /// # Ok(())
 /// # }
@@ -79,21 +85,74 @@ impl ObjectListing {
         }
     }
 
-    /// Fetch the next object from the device.
+    /// Fetch the next item from the device.
     ///
     /// Returns `None` when the listing is exhausted. Items that don't match the parent filter are
-    /// skipped by the backend.
+    /// skipped by the backend and never surface here.
+    ///
+    /// The `Ok` side has two shapes, and the distinction is the whole point: a
+    /// [`ListingItem::Object`] is an object whose metadata was read, and a
+    /// [`ListingItem::Skipped`] is one handle the device refused in a way that leaves the rest of
+    /// the listing usable (see [`Storage::collect_objects`] for what qualifies). An `Err` means the
+    /// listing itself is over: transport trouble, a broken session, cancellation, a malformed
+    /// response.
+    ///
+    /// So `Err` is "stop", `Ok(Skipped)` is "this one is unreadable, keep going", and you can't
+    /// confuse them by accident. Consumers that don't care can filter:
+    ///
+    /// ```no_run
+    /// # use mtp_rs::{ListingItem, Storage};
+    /// # async fn demo(storage: &Storage) -> Result<(), mtp_rs::Error> {
+    /// let mut listing = storage.list_objects_stream(None).await?;
+    /// while let Some(item) = listing.next().await {
+    ///     if let ListingItem::Object(info) = item? {
+    ///         println!("{}", info.filename);
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     ///
     /// If a [`CancelToken`] was passed via [`Storage::list_objects_stream_with_cancel`] and it's
     /// been cancelled, this returns `Some(Err(Error::Cancelled))` at the next per-handle boundary.
-    pub async fn next(&mut self) -> Option<Result<ObjectInfo, Error>> {
-        self.next_classified()
-            .await
-            .map(|result| result.map_err(|error| error.source))
+    pub async fn next(&mut self) -> Option<Result<ListingItem, Error>> {
+        match self.next_classified().await? {
+            Ok(info) => Some(Ok(ListingItem::Object(info))),
+            Err(error) if error.disposition == ListingErrorDisposition::SkipObject => {
+                Some(Ok(ListingItem::Skipped(SkippedObject {
+                    handle: error.handle,
+                    error: error.source,
+                })))
+            }
+            Err(error) => Some(Err(error.source)),
+        }
     }
 }
 
-/// A per-handle metadata failure that was safe to skip while collecting the
+/// One item from an [`ObjectListing`].
+///
+/// The streaming and collecting APIs sit over the same stream, so they agree on what a per-object
+/// failure means: this enum is the streaming half of the [`ObjectCollection`] split.
+#[derive(Debug)]
+pub enum ListingItem {
+    /// An object whose metadata the device returned.
+    Object(ObjectInfo),
+    /// A handle the device refused, safely enough that the rest of the listing continues.
+    Skipped(SkippedObject),
+}
+
+impl ListingItem {
+    /// The object, or `None` if this item was skipped.
+    #[must_use]
+    pub fn object(self) -> Option<ObjectInfo> {
+        match self {
+            ListingItem::Object(info) => Some(info),
+            ListingItem::Skipped(_) => None,
+        }
+    }
+}
+
+/// A per-handle metadata failure that was safe to skip while reading the
 /// other objects in the same directory.
 #[derive(Debug)]
 pub struct SkippedObject {
@@ -103,7 +162,7 @@ pub struct SkippedObject {
     pub error: Error,
 }
 
-/// A completed tolerant directory collection.
+/// A completed tolerant directory read: what was readable, and what wasn't.
 #[derive(Debug)]
 pub struct ObjectCollection {
     /// Every object whose metadata was read successfully.
@@ -158,7 +217,7 @@ impl Storage {
     /// fallbacks).
     ///
     /// A narrowly tolerated per-object metadata rejection does not hide valid
-    /// siblings. Use [`list_objects_detailed`](Self::list_objects_detailed) to
+    /// siblings. Use [`collect_objects`](Self::collect_objects) to
     /// retain its handle and diagnostic, or the streaming API to observe every
     /// item error directly. All errors that can compromise enumeration or
     /// session integrity remain fatal.
@@ -180,30 +239,50 @@ impl Storage {
         cancel: Option<&CancelToken>,
     ) -> Result<Vec<ObjectInfo>, Error> {
         Ok(self
-            .list_objects_detailed_with_cancel(parent, cancel)
+            .collect_objects_with_cancel(parent, cancel)
             .await?
             .objects)
     }
 
-    /// List objects and retain diagnostics for narrowly tolerated per-handle
-    /// metadata failures.
+    /// Read a folder, keeping both the objects and a record of the handles that
+    /// couldn't be read.
     ///
-    /// Currently, only an explicit `GeneralError` response to one
-    /// `GetObjectInfo` request is tolerated. The handle list has already been
-    /// received, `GetObjectInfo` is read-only, and the protocol response closes
-    /// that transaction cleanly, so later siblings can still be queried.
-    /// Transport/session failures, malformed responses, cancellation, stale
-    /// handles, and every other error remain fatal.
-    pub async fn list_objects_detailed(
+    /// [`list_objects`](Self::list_objects) is the same read with the record
+    /// thrown away. Use this one when you need to tell "the folder has 49 files"
+    /// from "the folder has 49 files and a 50th we couldn't see", which is the
+    /// difference between a correct file listing and a silent omission.
+    ///
+    /// # What counts as skippable
+    ///
+    /// A per-handle failure may be skipped only when all three hold:
+    ///
+    /// 1. The handle list is already in hand, so the folder's membership isn't in
+    ///    doubt, only one entry's metadata.
+    /// 2. The failing operation is read-only, so nothing on the device changed.
+    /// 3. The device answered with a protocol response code, which closes that
+    ///    transaction cleanly and leaves the session usable for the next handle.
+    ///
+    /// Today exactly one case qualifies: a `GeneralError` response to
+    /// `GetObjectInfo` (Sphaira on the Nintendo Switch does this for one handle
+    /// out of 50). The rule is written down rather than the code, so adding a
+    /// second response code is a one-line change once a real device justifies it.
+    /// Nothing gets added speculatively.
+    ///
+    /// Everything else stays fatal: transport and session failures, malformed
+    /// responses, cancellation, stale handles, and any failure to enumerate the
+    /// handles in the first place. And if *every* handle was skipped, that's a
+    /// device that answered nothing, so this reports the failure rather than an
+    /// empty folder.
+    pub async fn collect_objects(
         &self,
         parent: Option<ObjectHandle>,
     ) -> Result<ObjectCollection, Error> {
-        self.list_objects_detailed_with_cancel(parent, None).await
+        self.collect_objects_with_cancel(parent, None).await
     }
 
-    /// Like [`list_objects_detailed`](Self::list_objects_detailed), but with a
-    /// cooperative cancellation token.
-    pub async fn list_objects_detailed_with_cancel(
+    /// Like [`collect_objects`](Self::collect_objects), but with a cooperative
+    /// cancellation token.
+    pub async fn collect_objects_with_cancel(
         &self,
         parent: Option<ObjectHandle>,
         cancel: Option<&CancelToken>,
@@ -259,7 +338,7 @@ impl Storage {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use mtp_rs::mtp::MtpDevice;
+    /// use mtp_rs::mtp::{ListingItem, MtpDevice};
     ///
     /// # async fn example() -> Result<(), mtp_rs::Error> {
     /// # let device = MtpDevice::open_first().await?;
@@ -268,9 +347,10 @@ impl Storage {
     /// let mut listing = storage.list_objects_stream(None).await?;
     /// println!("Found {} items", listing.total());
     ///
-    /// while let Some(result) = listing.next().await {
-    ///     let info = result?;
-    ///     println!("[{}/{}] {}", listing.fetched(), listing.total(), info.filename);
+    /// while let Some(item) = listing.next().await {
+    ///     if let ListingItem::Object(info) = item? {
+    ///         println!("[{}/{}] {}", listing.fetched(), listing.total(), info.filename);
+    ///     }
     /// }
     /// # Ok(())
     /// # }
