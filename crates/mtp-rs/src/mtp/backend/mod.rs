@@ -109,8 +109,46 @@ pub(crate) struct BackendDownload {
     pub(crate) body: Box<dyn DownloadBody>,
 }
 
+/// Whether a per-handle metadata error invalidates the whole collection or can
+/// be reported while sibling enumeration continues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ListingErrorDisposition {
+    Fatal,
+    SkipObject,
+}
+
+/// One error produced after a backend has already enumerated an object's
+/// handle. Keeping the handle and disposition internal lets the public MTP API
+/// remain backend-neutral while detailed collection callers still receive a
+/// useful diagnostic.
+#[derive(Debug)]
+pub(crate) struct BackendListingError {
+    pub(crate) handle: ObjectHandle,
+    pub(crate) source: Error,
+    pub(crate) disposition: ListingErrorDisposition,
+}
+
+impl BackendListingError {
+    pub(crate) fn fatal(handle: ObjectHandle, source: Error) -> Self {
+        Self {
+            handle,
+            source,
+            disposition: ListingErrorDisposition::Fatal,
+        }
+    }
+
+    pub(crate) fn skippable(handle: ObjectHandle, source: Error) -> Self {
+        Self {
+            handle,
+            source,
+            disposition: ListingErrorDisposition::SkipObject,
+        }
+    }
+}
+
 /// A boxed stream of object metadata, yielded by [`MtpBackend::list`].
-pub(crate) type ObjectStream = Pin<Box<dyn Stream<Item = Result<ObjectInfo, Error>> + Send>>;
+pub(crate) type ObjectStream =
+    Pin<Box<dyn Stream<Item = Result<ObjectInfo, BackendListingError>> + Send>>;
 
 /// One in-progress listing returned by [`MtpBackend::list`]: a known total plus the item stream.
 pub(crate) struct BackendListing {

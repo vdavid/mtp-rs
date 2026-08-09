@@ -140,7 +140,11 @@ impl MtpBackend for WpdBackend {
             })
             .await?;
         let total = objs.len();
-        let items = futures::stream::iter(objs.into_iter().map(Ok::<ObjectInfo, Error>)).boxed();
+        let items = futures::stream::iter(
+            objs.into_iter()
+                .map(Ok::<ObjectInfo, super::BackendListingError>),
+        )
+        .boxed();
         Ok(BackendListing { total, items })
     }
 

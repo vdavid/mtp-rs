@@ -1,7 +1,9 @@
 //! Storage operations (a thin façade over the active backend).
 
 use crate::cancel::{bail_if_cancelled, CancelToken};
-use crate::mtp::backend::{BackendListing, ByteRange, MtpBackend, ProgressFn};
+use crate::mtp::backend::{
+    BackendListing, BackendListingError, ByteRange, ListingErrorDisposition, MtpBackend, ProgressFn,
+};
 use crate::mtp::object::NewObjectInfo;
 use crate::mtp::stream::{FileDownload, Progress, WindowedDownload, DEFAULT_DOWNLOAD_WINDOW};
 use crate::mtp::{Error, ObjectHandle, ObjectInfo, StorageId, StorageInfo, UploadError};
@@ -67,14 +69,7 @@ impl ObjectListing {
         self.fetched
     }
 
-    /// Fetch the next object from the device.
-    ///
-    /// Returns `None` when the listing is exhausted. Items that don't match the parent filter are
-    /// skipped by the backend.
-    ///
-    /// If a [`CancelToken`] was passed via [`Storage::list_objects_stream_with_cancel`] and it's
-    /// been cancelled, this returns `Some(Err(Error::Cancelled))` at the next per-handle boundary.
-    pub async fn next(&mut self) -> Option<Result<ObjectInfo, Error>> {
+    async fn next_classified(&mut self) -> Option<Result<ObjectInfo, BackendListingError>> {
         match self.inner.items.next().await {
             Some(Ok(info)) => {
                 self.fetched += 1;
@@ -83,6 +78,38 @@ impl ObjectListing {
             other => other,
         }
     }
+
+    /// Fetch the next object from the device.
+    ///
+    /// Returns `None` when the listing is exhausted. Items that don't match the parent filter are
+    /// skipped by the backend.
+    ///
+    /// If a [`CancelToken`] was passed via [`Storage::list_objects_stream_with_cancel`] and it's
+    /// been cancelled, this returns `Some(Err(Error::Cancelled))` at the next per-handle boundary.
+    pub async fn next(&mut self) -> Option<Result<ObjectInfo, Error>> {
+        self.next_classified()
+            .await
+            .map(|result| result.map_err(|error| error.source))
+    }
+}
+
+/// A per-handle metadata failure that was safe to skip while collecting the
+/// other objects in the same directory.
+#[derive(Debug)]
+pub struct SkippedObject {
+    /// The object handle whose metadata request failed.
+    pub handle: ObjectHandle,
+    /// The backend-neutral error reported for that handle.
+    pub error: Error,
+}
+
+/// A completed tolerant directory collection.
+#[derive(Debug)]
+pub struct ObjectCollection {
+    /// Every object whose metadata was read successfully.
+    pub objects: Vec<ObjectInfo>,
+    /// Per-handle failures that met the library's narrow safe-to-skip policy.
+    pub skipped: Vec<SkippedObject>,
 }
 
 /// A storage location on an MTP device.
@@ -129,6 +156,12 @@ impl Storage {
     ///
     /// The backend handles device quirks (root-listing fast path and Android/Samsung/Fuji
     /// fallbacks).
+    ///
+    /// A narrowly tolerated per-object metadata rejection does not hide valid
+    /// siblings. Use [`list_objects_detailed`](Self::list_objects_detailed) to
+    /// retain its handle and diagnostic, or the streaming API to observe every
+    /// item error directly. All errors that can compromise enumeration or
+    /// session integrity remain fatal.
     pub async fn list_objects(
         &self,
         parent: Option<ObjectHandle>,
@@ -146,12 +179,57 @@ impl Storage {
         parent: Option<ObjectHandle>,
         cancel: Option<&CancelToken>,
     ) -> Result<Vec<ObjectInfo>, Error> {
+        Ok(self
+            .list_objects_detailed_with_cancel(parent, cancel)
+            .await?
+            .objects)
+    }
+
+    /// List objects and retain diagnostics for narrowly tolerated per-handle
+    /// metadata failures.
+    ///
+    /// Currently, only an explicit `GeneralError` response to one
+    /// `GetObjectInfo` request is tolerated. The handle list has already been
+    /// received, `GetObjectInfo` is read-only, and the protocol response closes
+    /// that transaction cleanly, so later siblings can still be queried.
+    /// Transport/session failures, malformed responses, cancellation, stale
+    /// handles, and every other error remain fatal.
+    pub async fn list_objects_detailed(
+        &self,
+        parent: Option<ObjectHandle>,
+    ) -> Result<ObjectCollection, Error> {
+        self.list_objects_detailed_with_cancel(parent, None).await
+    }
+
+    /// Like [`list_objects_detailed`](Self::list_objects_detailed), but with a
+    /// cooperative cancellation token.
+    pub async fn list_objects_detailed_with_cancel(
+        &self,
+        parent: Option<ObjectHandle>,
+        cancel: Option<&CancelToken>,
+    ) -> Result<ObjectCollection, Error> {
         let mut listing = self.list_objects_stream_with_cancel(parent, cancel).await?;
         let mut objects = Vec::with_capacity(listing.total());
-        while let Some(result) = listing.next().await {
-            objects.push(result?);
+        let mut skipped = Vec::new();
+        while let Some(result) = listing.next_classified().await {
+            match result {
+                Ok(object) => objects.push(object),
+                Err(error) if error.disposition == ListingErrorDisposition::SkipObject => {
+                    diag_debug!(
+                        "list_objects: skipping handle {} on storage {} after a completed per-object metadata error: {}",
+                        error.handle.0,
+                        self.id.0,
+                        error.source
+                    );
+                    skipped.push(SkippedObject {
+                        handle: error.handle,
+                        error: error.source,
+                    });
+                }
+                Err(error) => return Err(error.source),
+            }
         }
-        Ok(objects)
+        Ok(ObjectCollection { objects, skipped })
     }
 
     /// List objects in a folder as a streaming [`ObjectListing`].
