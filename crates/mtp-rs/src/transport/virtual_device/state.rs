@@ -100,6 +100,16 @@ pub(super) struct VirtualDeviceState {
     /// operation future, which no cancel-armed hook can reproduce. Set via
     /// [`force_operation_wedge`](super::registry::force_operation_wedge).
     pub(super) pending_operation_wedge: bool,
+
+    /// Test hook: object handles whose `GetObjectInfo` answers with a response
+    /// code instead of an ObjectInfo dataset, mapped to that code. The object
+    /// stays present and readable by every other operation, which is the point:
+    /// this models a device that enumerates a handle and then won't describe it
+    /// (Sphaira on the Nintendo Switch does this for one handle out of 50,
+    /// issue #22). Sticky rather than one-shot, so a re-listing behaves the same
+    /// way twice. Set via
+    /// [`force_object_info_error`](super::registry::force_object_info_error).
+    pub(super) forced_object_info_errors: HashMap<u32, u16>,
 }
 
 /// Maximum number of entries in [`VirtualDeviceState::dropped_paths`]; oldest
@@ -151,6 +161,7 @@ impl VirtualDeviceState {
             forced_partial_read_caps: VecDeque::new(),
             pending_cancel_wedge: false,
             pending_operation_wedge: false,
+            forced_object_info_errors: HashMap::new(),
         }
     }
 

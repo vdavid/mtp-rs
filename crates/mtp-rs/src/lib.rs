@@ -74,9 +74,10 @@ pub use transport::UsbSpeed;
 pub use transport::virtual_device::config::{VirtualDeviceConfig, VirtualStorageConfig};
 #[cfg(feature = "virtual-device")]
 pub use transport::virtual_device::registry::{
-    clear_dropped_paths, dropped_paths_since_pause, force_cancel_wedge, force_operation_wedge,
-    force_partial_read_caps, pause_watcher, register_virtual_device, rekey_virtual_object,
-    rescan_virtual_device, unregister_virtual_device, was_path_dropped, WatcherGuard,
+    clear_dropped_paths, clear_object_info_errors, dropped_paths_since_pause, force_cancel_wedge,
+    force_object_info_error, force_operation_wedge, force_partial_read_caps, pause_watcher,
+    register_virtual_device, rekey_virtual_object, rescan_virtual_device,
+    unregister_virtual_device, was_path_dropped, WatcherGuard,
 };
 #[cfg(feature = "virtual-device")]
 pub use transport::virtual_device::RescanSummary;

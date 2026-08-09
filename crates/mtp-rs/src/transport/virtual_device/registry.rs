@@ -4,6 +4,7 @@
 //! can be opened via `open_by_location()` or `open_by_serial()`.
 
 use super::config::VirtualDeviceConfig;
+use super::handlers::GENERAL_ERROR;
 use super::state::{RescanSummary, VirtualDeviceState};
 use crate::mtp::MtpDeviceInfo;
 use crate::ptp::ObjectHandle;
@@ -367,6 +368,69 @@ pub fn force_partial_read_caps(serial: &str, caps: Vec<usize>) -> bool {
     };
     drop(active); // Release the registry lock before acquiring the state lock.
     state_arc.lock().unwrap().forced_partial_read_caps = caps.into();
+    true
+}
+
+/// Make `GetObjectInfo` for `handle` answer with a response code instead of an
+/// ObjectInfo dataset, while the object stays present and readable by every
+/// other operation (test hook).
+///
+/// Pass `None` for `response_code` to use `GeneralError` (0x2002), the only code
+/// the library currently treats as skippable. Returns `false` if no active
+/// device has the given serial. Sticky, not one-shot: a second listing of the
+/// same folder behaves the same way. Clear it with
+/// [`clear_object_info_errors`].
+///
+/// # When to use
+///
+/// To reproduce a device that enumerates a handle and then refuses to describe
+/// it: the listing knows the folder has N entries but can only read N-1 of them.
+/// Sphaira (Nintendo Switch homebrew) does this for one handle out of 50
+/// ([#22](https://github.com/vdavid/mtp-rs/issues/22)), and it's the precondition
+/// for the whole tolerant-listing contract:
+///
+/// - [`Storage::list_objects`](crate::Storage::list_objects) returns the readable
+///   siblings instead of failing outright.
+/// - [`Storage::collect_objects`](crate::Storage::collect_objects) additionally
+///   reports the handle and its error.
+/// - [`ObjectListing::next`](crate::ObjectListing::next) yields
+///   [`ListingItem::Skipped`](crate::ListingItem::Skipped) rather than `Err`.
+/// - Marking **every** handle in a folder turns the folder into a hard error
+///   rather than an empty listing.
+///
+/// Without this hook that whole path needs either a Nintendo Switch or a
+/// hand-built mock transport, so downstream consumers (file managers, FUSE
+/// mounts) had no way to test how they render a partially-readable folder.
+pub fn force_object_info_error(
+    serial: &str,
+    handle: crate::mtp::ObjectHandle,
+    response_code: Option<u16>,
+) -> bool {
+    let active = active_states().lock().unwrap();
+    let state_arc = match active.iter().find(|(s, _)| s == serial) {
+        Some((_, state)) => Arc::clone(state),
+        None => return false,
+    };
+    drop(active); // Release the registry lock before acquiring the state lock.
+    state_arc
+        .lock()
+        .unwrap()
+        .forced_object_info_errors
+        .insert(handle.to_ptp().0, response_code.unwrap_or(GENERAL_ERROR));
+    true
+}
+
+/// Clear every forced `GetObjectInfo` error on this device, so its objects
+/// describe themselves normally again. Returns `false` if no active device has
+/// the given serial.
+pub fn clear_object_info_errors(serial: &str) -> bool {
+    let active = active_states().lock().unwrap();
+    let state_arc = match active.iter().find(|(s, _)| s == serial) {
+        Some((_, state)) => Arc::clone(state),
+        None => return false,
+    };
+    drop(active); // Release the registry lock before acquiring the state lock.
+    state_arc.lock().unwrap().forced_object_info_errors.clear();
     true
 }
 

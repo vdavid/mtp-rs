@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 /// Response code constants as u16.
 const OK: u16 = 0x2001;
-const GENERAL_ERROR: u16 = 0x2002;
+pub(super) const GENERAL_ERROR: u16 = 0x2002;
 const SESSION_NOT_OPEN: u16 = 0x2003;
 const OPERATION_NOT_SUPPORTED: u16 = 0x2005;
 const INVALID_STORAGE_ID: u16 = 0x2008;
@@ -214,6 +214,17 @@ fn handle_get_object_info(
     params: &[u32],
 ) {
     let handle = ObjectHandle(params.first().copied().unwrap_or(0));
+
+    // Test hook: a device that enumerated this handle but won't describe it. The
+    // object itself stays present and readable, so the listing has something to
+    // be tolerant *about*.
+    if let Some(&code) = state.forced_object_info_errors.get(&handle.0) {
+        state
+            .response_queue
+            .push_back(build_response(code, tx_id, &[]));
+        return;
+    }
+
     match build_object_info(handle, state) {
         Some(payload) => {
             state

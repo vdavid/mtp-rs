@@ -639,6 +639,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_undescribable_object_leaves_its_siblings_readable() {
+        use crate::mtp::ListingItem;
+
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+
+        let serial = "object-info-error-22";
+        let config = test_config_with_serial(dir.path(), serial);
+        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        let storages = device.storages().await.unwrap();
+
+        // Pick a real object, then make the device refuse to describe it while
+        // leaving it present: exactly what Sphaira does for one handle out of 50.
+        let all = storages[0].list_objects(None).await.unwrap();
+        assert_eq!(all.len(), 3);
+        let victim = all.iter().find(|o| o.filename == "b.txt").unwrap().handle;
+        assert!(crate::force_object_info_error(serial, victim, None));
+
+        // The plain listing keeps the siblings instead of failing outright.
+        let objects = storages[0].list_objects(None).await.unwrap();
+        let mut names: Vec<_> = objects.iter().map(|o| o.filename.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["a.txt", "c.txt"]);
+
+        // The collecting API additionally says which handle it couldn't read, so a
+        // consumer can tell "2 files" from "2 files and one we couldn't see".
+        let collection = storages[0].collect_objects(None).await.unwrap();
+        assert_eq!(collection.objects.len(), 2);
+        assert_eq!(collection.skipped.len(), 1);
+        assert_eq!(collection.skipped[0].handle, victim);
+
+        // And the streaming API reports it as an item, not an error.
+        let mut listing = storages[0].list_objects_stream(None).await.unwrap();
+        let mut streamed = 0;
+        let mut skipped = 0;
+        while let Some(item) = listing.next().await {
+            match item.expect("a skipped object must not surface as a fatal error") {
+                ListingItem::Object(_) => streamed += 1,
+                ListingItem::Skipped(s) => {
+                    assert_eq!(s.handle, victim);
+                    skipped += 1;
+                }
+            }
+        }
+        assert_eq!((streamed, skipped), (2, 1));
+
+        // Clearing the hook restores the object, proving nothing was destroyed.
+        assert!(crate::clear_object_info_errors(serial));
+        assert_eq!(storages[0].list_objects(None).await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_folder_of_undescribable_objects_is_an_error_not_an_empty_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+
+        let serial = "object-info-error-all-22";
+        let config = test_config_with_serial(dir.path(), serial);
+        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        let storages = device.storages().await.unwrap();
+
+        for obj in storages[0].list_objects(None).await.unwrap() {
+            assert!(crate::force_object_info_error(serial, obj.handle, None));
+        }
+
+        // A device that describes nothing is broken, not the owner of an empty
+        // folder. Reporting `Ok(vec![])` here would read as "everything was
+        // deleted" to anything syncing.
+        let err = storages[0]
+            .list_objects(None)
+            .await
+            .expect_err("a folder where every handle failed must not read as empty");
+        assert!(
+            matches!(err, crate::mtp::Error::Other { ref detail } if detail == "GeneralError"),
+            "expected the device's own error to survive, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn cancel_wedge_surfaces_device_reset() {
         use crate::mtp::DEFAULT_CANCEL_TIMEOUT;
 
