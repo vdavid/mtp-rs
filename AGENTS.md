@@ -105,6 +105,10 @@ range, window_size)` (returns `WindowedDownload`), and buffered `Storage::downlo
   `MoveObject`/`CopyObject` (D.2.25/D.2.26) spell the same destination `0x00000000`, and
   `move_and_copy_keep_handle_zero_for_the_root_destination` in `mtp::backend::usb` pins that down. The virtual device
   normalizes `SEND_ROOT` to `ROOT` on receive and still accepts `0`, since low-level `ptp::` callers may send either.
+  **Hardware-verified by A/B on a Pixel 9 Pro XL** (macOS/nusb, 2026-08-10): the pre-fix binary failed both
+  `mkdir /<name>` and a root `put` with `InvalidObjectHandle` (surfacing as "remote path not found"), and the fixed
+  binary created a root folder, uploaded a root file, verified it, and deleted both. So the old "Android can't create in
+  the storage root" line in these docs was describing this bug, not Android.
 - **Android**: Object handles are NOT stable. MediaProvider re-keys object IDs across a media rescan, so a handle a host cached when it last listed a folder can be silently invalidated before a later operation (upload, delete) into that folder: the device then returns `InvalidObjectHandle`/`InvalidParentObject`, not for a missing object but for a stale ID. Hosts should treat those codes on a previously-valid handle as "re-list the parent and re-resolve, then retry once", not as a hard not-found. (A downstream, Cmdr, hit this as a 307 MB upload failing at `SendObjectInfo` and surfacing as "Path not found" on the intact *source* file.) Reproducible against the virtual device with `rekey_virtual_object` (see Testing).
 - **Fujifilm cameras**: Report `AccessCapability::ReadWrite` but return `StoreReadOnly` on writes. Advertised ops lie.
 - **Samsung**: Returns `InvalidObjectHandle` for root listing; needs recursive traversal with filtering

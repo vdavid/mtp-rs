@@ -30,6 +30,19 @@ The `[p]` bracket stops the pattern from matching its own `pgrep`/`pkill`. A
 stray `ptpcamerad` grab is the most common cause of "device present on USB but
 `open device - Timeout`" on macOS.
 
+**The symptom differs by holder, so don't pattern-match on one message.**
+`device is already in use` (an exclusive-access refusal) and `open device -
+Timeout` are the same class of problem with different owners. Before blaming a
+daemon, check the obvious ones:
+
+- **Another MTP app of your own**, which is the easiest to overlook because it
+  isn't a daemon and won't show up in a `ptpcamerad` hunt: Cmdr, a live
+  `mtp-mount`, Android File Transfer, a second `mtp-rs` process. On 2026-08-10 a
+  Pixel 9 Pro XL refused five consecutive opens with `already in use` while Cmdr
+  held it, and the run that finally worked coincided with Cmdr quitting.
+- **A running `adb` server**, which holds the device and looks identical
+  (`adb kill-server`, then `adb start-server` when you're done).
+
 ### 2. Recover a wedged device: quiet reopens first, reset last
 
 **Before anything else, check nothing else owns the interface.** A running `adb`
