@@ -1864,7 +1864,11 @@ mod tests {
                 .is_some(),
             "fs watcher never armed"
         );
-        let _ = std::fs::remove_file(&probe);
+        // The probe file STAYS. Deleting it queues an `ObjectRemoved` that FSEvents
+        // can deliver after the drain below has already declared things quiet, and
+        // the caller's first polled event is then the probe's removal rather than
+        // its own creation ("expected ObjectAdded, got ObjectRemoved"). Leaving one
+        // stray file in a tempdir costs nothing; the late removal costs an hour.
         while poll_event_with_retry(device, Duration::from_millis(500))
             .await
             .is_some()
@@ -1953,11 +1957,10 @@ mod tests {
 
         let device = MtpDevice::builder().open_virtual(config).await.unwrap();
 
-        // Drain any startup events (macOS FSEvents may report the watched dir).
-        while poll_event_with_retry(&device, Duration::from_millis(500))
-            .await
-            .is_some()
-        {}
+        // Prove the watcher is live before handing the device back. The bare drain
+        // this used to do only *hoped* it was, which is the same arming race that
+        // made `fs_watcher_detects_file_creation` flake.
+        wait_for_watcher_ready(&device, &backing_dir).await;
 
         (device, backing_dir, dir)
     }
@@ -2086,6 +2089,7 @@ mod tests {
         };
 
         let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        wait_for_watcher_ready(&device, &backing_dir).await;
 
         // Create the file AFTER the watcher is running, so we get a clean event sequence
         std::fs::write(backing_dir.join("will_be_removed.txt"), "bye").unwrap();
@@ -2143,6 +2147,11 @@ mod tests {
         };
 
         let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        // Not just anti-flake here: this test asserts the watcher does NOT emit a
+        // duplicate, so an unarmed watcher would pass it for entirely the wrong
+        // reason. Proving the watcher is live is what makes the assertion mean
+        // something.
+        wait_for_watcher_ready(&device, &backing_dir).await;
         let storages = device.storages().await.unwrap();
 
         // Upload via MTP: should produce exactly the MTP-generated events

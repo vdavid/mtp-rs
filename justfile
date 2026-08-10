@@ -67,15 +67,27 @@ clippy:
     @echo "[+] Clippy passed"
 
 # Run tests
+#
+# The `fs_watcher_*` tests run in their own pass, not in the main parallel pool.
+# They wait on real OS filesystem-event delivery, and inside a ~400-test parallel
+# run a loaded machine starves them past their poll budget: they fail as a group
+# while passing every time on their own. That reads like a watcher bug and isn't
+# one, so it costs an afternoon every time someone rediscovers it. Keep them
+# separate rather than inflating their timeouts, which only makes the suite
+# slower before it still fails.
 test:
     @echo "[*] Running tests..."
-    @cargo test --quiet
+    @cargo test --quiet -- --skip fs_watcher
+    @echo "[*] Running filesystem-watcher tests (own pass, serialized)..."
+    @cargo test --quiet fs_watcher -- --test-threads=1
     @echo "[+] Tests passed"
 
-# Run tests with all features enabled
+# Run tests with all features enabled (same fs_watcher split as `test`)
 test-all:
     @echo "[*] Running tests with all features..."
-    @cargo test --all-features --quiet
+    @cargo test --all-features --quiet -- --skip fs_watcher
+    @echo "[*] Running filesystem-watcher tests (own pass, serialized)..."
+    @cargo test --all-features --quiet fs_watcher -- --test-threads=1
     @echo "[+] All feature tests passed"
 
 # Build documentation
