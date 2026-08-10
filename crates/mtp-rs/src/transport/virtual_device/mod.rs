@@ -1828,6 +1828,49 @@ mod tests {
         ));
     }
 
+    // Every `fs_watcher_*` test below carries `#[serial_test::serial(fs_watcher)]`.
+    //
+    // They wait on real OS filesystem notifications, and each one spins up its own
+    // `notify` watcher over its own tempdir. Run six of those concurrently inside a
+    // 400-test parallel suite and macOS FSEvents delivery slips past the 5s budget
+    // in `poll_event_with_retry`, so they fail as a group with "expected event from
+    // fs watcher, got nothing" while passing every time in isolation. That reads
+    // like a watcher bug and isn't one, which is the expensive part.
+    //
+    // The `fs_watcher` key scopes the serialization to these tests: they queue
+    // behind each other, not behind every `#[serial]` test in the workspace. Don't
+    // "fix" a future flake here by inflating the timeout; the contention is the
+    // problem, and a longer timeout just makes the suite slower before it fails.
+
+    /// Block until the filesystem watcher is actually armed, then leave the event
+    /// queue empty.
+    ///
+    /// `notify` arms its FSEvents stream on a background thread, so a write issued
+    /// straight after `open_virtual` can land *before* the watcher is listening and
+    /// produce no event at all. The test then fails as "expected event from fs
+    /// watcher, got nothing", which reads like a watcher bug rather than a race.
+    ///
+    /// So probe instead of guessing: write a throwaway file and wait for the
+    /// watcher to report *something*. That's proof it's live, where a fixed sleep
+    /// is only a hope. Then drain, so the caller's own assertion sees only its own
+    /// event. Tests that already open with a drain loop get this for free, which is
+    /// why they were the ones that didn't flake.
+    async fn wait_for_watcher_ready(device: &MtpDevice, backing_dir: &std::path::Path) {
+        let probe = backing_dir.join(".watcher-ready-probe");
+        std::fs::write(&probe, b"probe").unwrap();
+        assert!(
+            poll_event_with_retry(device, Duration::from_secs(10))
+                .await
+                .is_some(),
+            "fs watcher never armed"
+        );
+        let _ = std::fs::remove_file(&probe);
+        while poll_event_with_retry(device, Duration::from_millis(500))
+            .await
+            .is_some()
+        {}
+    }
+
     /// Helper: poll for an event, retrying on Timeout up to the deadline.
     async fn poll_event_with_retry(
         device: &MtpDevice,
@@ -1848,6 +1891,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(fs_watcher)]
     async fn fs_watcher_detects_file_creation() {
         let dir = tempfile::tempdir().unwrap();
         // Canonicalize the backing dir to avoid macOS /var vs /private/var mismatches
@@ -1866,6 +1910,7 @@ mod tests {
         };
 
         let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        wait_for_watcher_ready(&device, &backing_dir).await;
 
         // Write a file directly to the backing dir (bypassing MTP)
         std::fs::write(backing_dir.join("external.txt"), "hello from outside").unwrap();
@@ -1918,6 +1963,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(fs_watcher)]
     async fn fs_watcher_detects_file_creation_in_subdirectory() {
         let (device, backing_dir, _dir) =
             virtual_device_with_subdirectory("test-fswatch-subdir-create").await;
@@ -1936,6 +1982,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(fs_watcher)]
     async fn fs_watcher_detects_file_rename_in_subdirectory() {
         let (device, backing_dir, _dir) =
             virtual_device_with_subdirectory("test-fswatch-subdir-rename").await;
@@ -1985,6 +2032,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(fs_watcher)]
     async fn fs_watcher_detects_file_removal_in_subdirectory() {
         let (device, backing_dir, _dir) =
             virtual_device_with_subdirectory("test-fswatch-subdir-remove").await;
@@ -2019,6 +2067,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(fs_watcher)]
     async fn fs_watcher_detects_file_removal() {
         let dir = tempfile::tempdir().unwrap();
         let backing_dir = dir.path().canonicalize().unwrap();
@@ -2076,6 +2125,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(fs_watcher)]
     async fn fs_watcher_dedup_suppresses_mtp_events() {
         let dir = tempfile::tempdir().unwrap();
         let backing_dir = dir.path().canonicalize().unwrap();
