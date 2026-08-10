@@ -20,7 +20,13 @@ all-features = true
 
 [dependencies]
 # USB transport (Phase 3+)
-nusb = "0.2"
+# Floor is 0.2.5, not 0.2, because two fixes below that are ones we'd hit:
+# 0.2.4 fixes a deadlock in `wait_next_complete` when completion callbacks arrive
+# out of order (the exact allocate/submit/wait_next_complete path
+# `send_bulk_streaming` uses for uploads), and 0.2.5 fixes a macOS memory leak in
+# `control_in` (the SIC cancel and DEVICE_RESET path). A lockfile bump would only
+# fix this repo; the floor is what makes consumers get them too.
+nusb = "0.2.5"
 
 # Async runtime agnostic
 futures = "0.3"
