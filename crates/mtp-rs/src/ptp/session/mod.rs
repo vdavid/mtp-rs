@@ -211,6 +211,27 @@ impl PtpSession {
     ///
     /// Returns an error if the device rejects the session or communication fails.
     pub async fn open(transport: Arc<dyn Transport>, session_id: u32) -> Result<Self, Error> {
+        Self::open_with_reuse(transport, session_id, false).await
+    }
+
+    /// Open a session without closing a matching device-side session that already exists.
+    ///
+    /// This is for devices that keep a session open across host processes and accept the
+    /// transaction counter restarting from one. Unlike [`open`](Self::open), a
+    /// [`ResponseCode::SessionAlreadyOpen`] response is treated as success and no `CloseSession`
+    /// command is sent.
+    pub async fn open_reusing_existing(
+        transport: Arc<dyn Transport>,
+        session_id: u32,
+    ) -> Result<Self, Error> {
+        Self::open_with_reuse(transport, session_id, true).await
+    }
+
+    async fn open_with_reuse(
+        transport: Arc<dyn Transport>,
+        session_id: u32,
+        reuse_existing: bool,
+    ) -> Result<Self, Error> {
         let session = Self::new(transport, SessionId(session_id));
 
         // PTP spec: OpenSession is a session-less operation, so use tx_id=0.
@@ -223,6 +244,14 @@ impl PtpSession {
         }
 
         if response.code == ResponseCode::SessionAlreadyOpen {
+            if reuse_existing {
+                diag_debug!(
+                    "open: device reports SessionAlreadyOpen (id={}); reusing existing session",
+                    session_id
+                );
+                return Ok(session);
+            }
+
             diag_debug!(
                 "open: device reports SessionAlreadyOpen (id={}); closing and reopening. \
                  If this persists right after a cancel-wedge reset (#18), the caller reopened \
@@ -728,6 +757,23 @@ mod tests {
         // Should succeed by closing and reopening
         let session = PtpSession::open(transport, 1).await.unwrap();
         assert_eq!(session.session_id(), SessionId(1));
+    }
+
+    #[tokio::test]
+    async fn test_open_session_already_open_reuses_without_close() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(response_with_params(
+            0,
+            ResponseCode::SessionAlreadyOpen,
+            &[],
+        ));
+
+        let session = PtpSession::open_reusing_existing(transport, 0xBAAA_AAAD)
+            .await
+            .unwrap();
+
+        assert_eq!(session.session_id(), SessionId(0xBAAA_AAAD));
+        assert_eq!(mock.get_sends().len(), 1, "must not send CloseSession");
     }
 
     #[tokio::test]

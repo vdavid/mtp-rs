@@ -443,6 +443,7 @@ pub struct MtpDeviceBuilder {
     timeout: Duration,
     known_devices: Vec<(u16, u16)>,
     backend: Backend,
+    reuse_existing_session_id: Option<u32>,
 }
 
 impl MtpDeviceBuilder {
@@ -452,6 +453,7 @@ impl MtpDeviceBuilder {
             timeout: NusbTransport::DEFAULT_TIMEOUT,
             known_devices: Vec::new(),
             backend: Backend::default(),
+            reuse_existing_session_id: None,
         }
     }
 
@@ -581,6 +583,28 @@ impl MtpDeviceBuilder {
         self
     }
 
+    /// Reuse a device-side PTP session with the given stable ID when it is already open.
+    ///
+    /// The default open behavior closes an existing session and starts a fresh one. This opt-in is
+    /// for USB devices that persist a session across host processes and accept the transaction
+    /// counter restarting from one. It prevents the open path from sending `CloseSession` after a
+    /// `SessionAlreadyOpen` response.
+    #[must_use]
+    pub fn reuse_existing_session(mut self, session_id: u32) -> Self {
+        self.reuse_existing_session_id = Some(session_id);
+        self
+    }
+
+    async fn open_ptp_session(
+        &self,
+        transport: Arc<dyn Transport>,
+    ) -> Result<PtpSession, crate::PtpError> {
+        match self.reuse_existing_session_id {
+            Some(session_id) => PtpSession::open_reusing_existing(transport, session_id).await,
+            None => PtpSession::open(transport, 1).await,
+        }
+    }
+
     /// Open the first available device.
     pub async fn open_first(self) -> Result<MtpDevice, Error> {
         if let Some(device) = self.try_open_wpd_first().await? {
@@ -697,8 +721,7 @@ impl MtpDeviceBuilder {
         let transport = NusbTransport::open_with_timeout(device, self.timeout).await?;
         let transport: Arc<dyn Transport> = Arc::new(transport);
 
-        // Open session (use session ID 1)
-        let session = Arc::new(PtpSession::open(transport.clone(), 1).await?);
+        let session = Arc::new(self.open_ptp_session(transport.clone()).await?);
 
         // Get device info
         let device_info = session.get_device_info().await?;
@@ -828,8 +851,7 @@ impl MtpDeviceBuilder {
         let transport = crate::transport::virtual_device::VirtualTransport::new(config);
         let transport: Arc<dyn Transport> = Arc::new(transport);
 
-        // Open session (use session ID 1)
-        let session = Arc::new(PtpSession::open(transport.clone(), 1).await?);
+        let session = Arc::new(self.open_ptp_session(transport.clone()).await?);
 
         // Get device info
         let device_info = session.get_device_info().await?;
@@ -901,6 +923,12 @@ mod tests {
         // Custom value
         let custom = MtpDeviceBuilder::new().timeout(Duration::from_secs(45));
         assert_eq!(custom.timeout, Duration::from_secs(45));
+    }
+
+    #[test]
+    fn builder_reuses_existing_session() {
+        let builder = MtpDeviceBuilder::new().reuse_existing_session(0xBAAA_AAAD);
+        assert_eq!(builder.reuse_existing_session_id, Some(0xBAAA_AAAD));
     }
 
     #[test]
