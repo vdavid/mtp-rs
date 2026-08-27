@@ -14,6 +14,10 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-27
+
+Library `0.31.0`, CLI `0.8.1`. Some MTP responders can only hand over whole objects, and until now a consumer's fallback for them could only be tested on hardware. A virtual device can model one now.
+
 ### Added
 
 - **[lib] A virtual device can now model a responder that only hands over whole objects.** `VirtualDeviceConfig` gained `supports_partial_object` (feature `virtual-device`), the 32-bit `GetPartialObject` twin of the existing `supports_partial_object_64`. Set both to `false` and `Capabilities::supports_partial_download` reports `false`, every ranged read fails `Error::Unsupported`, and `download(handle, ByteRange::Full)` is the only way to the bytes. That's the shape of libhaze (Sphaira on the Nintendo Switch) and of simple PTP responders, and it's what a consumer's whole-object fallback path needs in order to be testable without that hardware. Defaults to `true`, so existing configs built with `..Default::default()` behave exactly as before.
