@@ -15,7 +15,7 @@ MtpDevice (unchanged)
 
 ## Module structure
 
-- `config.rs`: `VirtualDeviceConfig`, `VirtualStorageConfig` (public types)
+- `config.rs`: `VirtualDeviceConfig`, `VirtualStorageConfig` (public types). `supports_partial_object` and `supports_partial_object_64` shape the read capability: each one gates both the `OperationsSupported` entry and the dispatch arm, so an un-advertised op answers `Operation_Not_Supported` rather than being quietly served. Both `false` makes `Capabilities::supports_partial_download` report `false` and leaves `GetObject` as the only way to read an object, which is libhaze (Sphaira on the Switch) and most simple PTP responders
 - `state.rs`: `VirtualDeviceState`, `VirtualObject`, `PendingCommand`, handle management
 - `builders.rs`: binary payload builders (DeviceInfo, StorageInfo, ObjectInfo, containers)
 - `handlers.rs`: protocol operation handlers dispatched by opcode

@@ -14,6 +14,14 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Added
+
+- **[lib] A virtual device can now model a responder that only hands over whole objects.** `VirtualDeviceConfig` gained `supports_partial_object` (feature `virtual-device`), the 32-bit `GetPartialObject` twin of the existing `supports_partial_object_64`. Set both to `false` and `Capabilities::supports_partial_download` reports `false`, every ranged read fails `Error::Unsupported`, and `download(handle, ByteRange::Full)` is the only way to the bytes. That's the shape of libhaze (Sphaira on the Nintendo Switch) and of simple PTP responders, and it's what a consumer's whole-object fallback path needs in order to be testable without that hardware. Defaults to `true`, so existing configs built with `..Default::default()` behave exactly as before.
+
+### Changed
+
+- **[lib] A virtual device now refuses a partial-read operation it doesn't advertise**, answering `Operation_Not_Supported` instead of serving it anyway. Previously `supports_partial_object_64: false` only removed the op from `OperationsSupported` while the dispatch still handled it, so a consumer that ignored the capability flag and called the operation regardless passed its tests and failed on hardware. Only affects a virtual device configured with a partial-read op turned off.
+
 ## [0.30.0] - 2026-08-10
 
 Library `0.30.0`, CLI `0.8.0`. Two independently-written Nintendo Switch MTP responders turned up three things at once: a listing that threw away 49 good files because of one bad one, a root filter that discarded every entry, and, underneath both, a root-parent value we'd been sending wrong since the beginning. That last one was never a Switch problem. It's why creating a file or folder in an Android phone's storage root has never worked, which these docs blamed on Android for months.

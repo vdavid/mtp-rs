@@ -34,7 +34,6 @@ pub(super) fn build_device_info(state: &VirtualDeviceState) -> Vec<u8> {
         OperationCode::GetObjectHandles.into(),
         OperationCode::GetObjectInfo.into(),
         OperationCode::GetObject.into(),
-        OperationCode::GetPartialObject.into(),
         OperationCode::GetThumb.into(),
         OperationCode::SendObjectInfo.into(),
         OperationCode::SendObject.into(),
@@ -43,6 +42,9 @@ pub(super) fn build_device_info(state: &VirtualDeviceState) -> Vec<u8> {
         OperationCode::CopyObject.into(),
         OperationCode::GetObjectPropValue.into(),
     ];
+    if state.config.supports_partial_object {
+        ops.push(OperationCode::GetPartialObject.into());
+    }
     if state.config.supports_partial_object_64 {
         ops.push(OperationCode::GetPartialObject64.into());
     }

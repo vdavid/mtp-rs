@@ -64,8 +64,17 @@ pub(super) fn dispatch(
                     handle_get_object_info(state, op_code, tx_id, params)
                 }
                 OperationCode::GetObject => handle_get_object(state, op_code, tx_id, params),
+                // An operation the device left out of OperationsSupported has to be
+                // refused, not quietly served: a consumer that ignores the capability
+                // flag must fail here exactly as it would against real hardware.
+                OperationCode::GetPartialObject if !state.config.supports_partial_object => {
+                    unsupported(state, tx_id)
+                }
                 OperationCode::GetPartialObject => {
                     handle_get_partial_object(state, op_code, tx_id, params)
+                }
+                OperationCode::GetPartialObject64 if !state.config.supports_partial_object_64 => {
+                    unsupported(state, tx_id)
                 }
                 OperationCode::GetPartialObject64 => {
                     handle_get_partial_object_64(state, op_code, tx_id, params)
@@ -84,16 +93,18 @@ pub(super) fn dispatch(
                 OperationCode::SetObjectPropValue => {
                     handle_set_object_prop_value(state, tx_id, params, data_payload)
                 }
-                _ => {
-                    state.response_queue.push_back(build_response(
-                        OPERATION_NOT_SUPPORTED,
-                        tx_id,
-                        &[],
-                    ));
-                }
+                _ => unsupported(state, tx_id),
             }
         }
     }
+}
+
+/// Answer `Operation_Not_Supported`, the response a real responder gives for an
+/// operation it left out of `OperationsSupported`.
+fn unsupported(state: &mut VirtualDeviceState, tx_id: u32) {
+    state
+        .response_queue
+        .push_back(build_response(OPERATION_NOT_SUPPORTED, tx_id, &[]));
 }
 
 fn handle_get_device_info(state: &mut VirtualDeviceState, op_code: u16, tx_id: u32) {

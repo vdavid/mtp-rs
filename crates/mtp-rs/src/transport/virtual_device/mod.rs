@@ -244,6 +244,8 @@ impl Transport for VirtualTransport {
 mod tests {
     use super::config::{VirtualDeviceConfig, VirtualStorageConfig};
     use crate::mtp::{ByteRange, MtpDevice, ObjectFormat};
+    use crate::ptp::OperationCode;
+    use crate::Error;
     use std::time::Duration;
 
     fn test_config(dir: &std::path::Path) -> VirtualDeviceConfig {
@@ -934,6 +936,90 @@ mod tests {
         // And a plain read_range with an explicit length.
         let mid = storages[0].read_range(obj.handle, 100, 50).await.unwrap();
         assert_eq!(mid, content[100..150]);
+    }
+
+    #[tokio::test]
+    async fn whole_object_download_is_the_only_read_on_a_no_partial_device() {
+        // libhaze (Sphaira on the Nintendo Switch) handles neither partial-read
+        // operation, so a host can only ask for whole objects. Consumers need this
+        // shape to test their own fallback: without it, every virtual device serves
+        // ranged reads and the fallback path never runs.
+        let dir = tempfile::tempdir().unwrap();
+        let content: Vec<u8> = (0..5000).map(|i| (i % 256) as u8).collect();
+        std::fs::write(dir.path().join("data.bin"), &content).unwrap();
+
+        let config = VirtualDeviceConfig {
+            serial: "test-no-partial".into(),
+            supports_partial_object: false,
+            supports_partial_object_64: false,
+            ..test_config(dir.path())
+        };
+        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        assert!(!device.capabilities().supports_partial_download);
+        let storages = device.storages().await.unwrap();
+        let obj = storages[0].list_objects(None).await.unwrap()[0].clone();
+
+        // Whole-object streaming works: GetObject needs no partial-read op.
+        let full = storages[0]
+            .download(obj.handle, ByteRange::Full)
+            .await
+            .unwrap();
+        assert_eq!(full.size(), content.len() as u64);
+        assert_eq!(collect_download(full).await, content);
+
+        // Every ranged read is refused before it reaches the wire.
+        assert!(matches!(
+            storages[0].read_range(obj.handle, 100, 50).await,
+            Err(Error::Unsupported)
+        ));
+        assert!(matches!(
+            storages[0].download(obj.handle, ByteRange::From(100)).await,
+            Err(Error::Unsupported)
+        ));
+        let mut windowed = storages[0]
+            .download_windowed(obj.handle, ByteRange::Full, 1024)
+            .await
+            .unwrap();
+        assert!(matches!(
+            windowed.next_window().await,
+            Some(Err(Error::Unsupported))
+        ));
+
+        // The session survives all of that: a refusal must not wedge the device.
+        assert_eq!(storages[0].list_objects(None).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unadvertised_partial_op_is_refused_on_the_wire() {
+        // The capability flag and the dispatch have to agree. A device that leaves an
+        // operation out of OperationsSupported and then serves it anyway would let a
+        // consumer bug (calling the op regardless of the capability) pass in tests and
+        // fail on hardware.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"0123456789").unwrap();
+
+        for (partial_32, partial_64, op) in [
+            (false, true, OperationCode::GetPartialObject),
+            (true, false, OperationCode::GetPartialObject64),
+        ] {
+            let config = VirtualDeviceConfig {
+                serial: format!("test-refuses-{:04x}", u16::from(op)),
+                supports_partial_object: partial_32,
+                supports_partial_object_64: partial_64,
+                ..test_config(dir.path())
+            };
+            let mut state = super::state::VirtualDeviceState::new(config);
+            state.session_open = true;
+            let params = [1u32, 0, 4, 0];
+            super::handlers::dispatch(&mut state, u16::from(op), 7, &params, None);
+
+            let response = state.response_queue.pop_back().expect("a response");
+            assert_eq!(
+                u16::from_le_bytes([response[6], response[7]]),
+                0x2005,
+                "{op:?} was advertised as unsupported but still answered"
+            );
+        }
     }
 
     #[tokio::test]

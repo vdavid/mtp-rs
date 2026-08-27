@@ -47,8 +47,26 @@ pub struct VirtualDeviceConfig {
     /// offset partial read. Real Android devices do; many PTP cameras (e.g. the
     /// Panasonic Lumix DMC-TZ61) only advertise the 32-bit `GetPartialObject`.
     /// Set `false` to model such a camera and exercise the 32-bit fallback path.
-    /// The 32-bit `GetPartialObject` is always advertised regardless.
+    ///
+    /// An operation this is `false` for is refused with `Operation_Not_Supported`,
+    /// not just left out of `OperationsSupported`, so a consumer that ignores the
+    /// capability and calls it anyway fails the way a real device makes it fail.
     pub supports_partial_object_64: bool,
+    /// Whether the device advertises `GetPartialObject` (0x101B), the 32-bit
+    /// offset partial read.
+    ///
+    /// Set this and [`supports_partial_object_64`](Self::supports_partial_object_64)
+    /// both to `false` to model a responder that can only hand over whole objects:
+    /// [`Capabilities::supports_partial_download`](crate::mtp::Capabilities::supports_partial_download)
+    /// then reports `false`, every ranged read fails [`Error::Unsupported`](crate::Error::Unsupported),
+    /// and `download(handle, ByteRange::Full)` is the only way to get the bytes.
+    /// libhaze (Sphaira on the Nintendo Switch) is one such responder, and simple
+    /// PTP responders are another. That combination is what a consumer's
+    /// whole-object fallback path needs in order to be testable at all.
+    ///
+    /// Like the 64-bit flag, `false` means the operation is *refused*, not merely
+    /// unadvertised.
+    pub supports_partial_object: bool,
     /// How long `receive_interrupt` waits when no events are pending.
     /// Simulates the USB interrupt endpoint blocking behavior.
     /// Default: 50ms for production use. Use `Duration::ZERO` in tests
@@ -103,6 +121,7 @@ impl Default for VirtualDeviceConfig {
             storages: Vec::new(),
             supports_rename: true,
             supports_partial_object_64: true,
+            supports_partial_object: true,
             event_poll_interval: Duration::from_millis(50),
             watch_backing_dirs: true,
             undescribable_objects: Vec::new(),
