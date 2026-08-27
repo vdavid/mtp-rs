@@ -257,7 +257,7 @@ impl PtpSession {
 
 **Upload cancellation**: If an upload future is dropped after `SendObjectInfo` succeeds but before `SendObject` completes, a partial/empty object may remain on the device. The protocol has no abort mechanism. Callers should track the handle and delete incomplete objects if needed.
 
-**Session cleanup**: When `MtpDevice` is dropped, `CloseSession` is sent automatically.
+**Session cleanup**: `MtpDevice::close()` sends `CloseSession` best-effort, ignoring errors. Dropping an `MtpDevice` sends nothing: `Drop` can't run async work in a runtime-agnostic crate, the same reason in-session recovery is lazy. A device-side session can therefore outlive the host process, and the next `PtpSession::open` meets `SessionAlreadyOpen`; it closes and reopens so the transaction counter starts clean.
 
 ## Error handling
 
