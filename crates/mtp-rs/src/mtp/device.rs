@@ -307,7 +307,11 @@ impl MtpDevice {
         self.backend.next_event().await
     }
 
-    /// Close the connection (best-effort; also happens on drop).
+    /// Explicitly close the connection.
+    ///
+    /// On the USB backend this sends a best-effort `CloseSession`; dropping [`MtpDevice`] does not.
+    /// This still applies after [`MtpDeviceBuilder::reuse_existing_session`]. On devices such as the
+    /// Teenage Engineering TP-7, an explicit close makes the device leave MTP mode.
     pub async fn close(self) -> Result<(), Error> {
         self.backend.close().await
     }
@@ -467,6 +471,16 @@ impl MtpDeviceBuilder {
         self
     }
 
+    #[cfg(windows)]
+    fn diagnose_reuse_ignored_by_wpd(&self) {
+        if let Some(session_id) = self.reuse_existing_session_id {
+            diag_debug!(
+                "reuse_existing_session({}) ignored because the selected WPD backend does not use PTP sessions",
+                session_id
+            );
+        }
+    }
+
     /// If the configured backend selects WPD (Windows), try to open the first WPD device.
     ///
     /// Returns `Ok(None)` when WPD isn't selected, or when `Auto` found no WPD device (so the caller
@@ -476,9 +490,10 @@ impl MtpDeviceBuilder {
         if matches!(self.backend, Backend::Auto | Backend::Wpd) {
             match crate::mtp::backend::wpd::WpdBackend::open_first().await {
                 Ok(b) => {
+                    self.diagnose_reuse_ignored_by_wpd();
                     return Ok(Some(MtpDevice {
                         backend: Arc::new(b),
-                    }))
+                    }));
                 }
                 Err(e) if self.backend == Backend::Wpd || !matches!(e, Error::NoDevice) => {
                     return Err(e)
@@ -499,9 +514,10 @@ impl MtpDeviceBuilder {
         if matches!(self.backend, Backend::Auto | Backend::Wpd) {
             match crate::mtp::backend::wpd::WpdBackend::open_by_serial(serial).await {
                 Ok(b) => {
+                    self.diagnose_reuse_ignored_by_wpd();
                     return Ok(Some(MtpDevice {
                         backend: Arc::new(b),
-                    }))
+                    }));
                 }
                 Err(e) if self.backend == Backend::Wpd || !matches!(e, Error::NoDevice) => {
                     return Err(e)
@@ -536,9 +552,10 @@ impl MtpDeviceBuilder {
             match crate::mtp::backend::wpd::WpdBackend::open_for_usb(serial.clone(), vid, pid).await
             {
                 Ok(b) => {
+                    self.diagnose_reuse_ignored_by_wpd();
                     return Ok(Some(MtpDevice {
                         backend: Arc::new(b),
-                    }))
+                    }));
                 }
                 Err(e) if self.backend == Backend::Wpd || !matches!(e, Error::NoDevice) => {
                     return Err(e)
@@ -589,6 +606,10 @@ impl MtpDeviceBuilder {
     /// for USB devices that persist a session across host processes and accept the transaction
     /// counter restarting from one. It prevents the open path from sending `CloseSession` after a
     /// `SessionAlreadyOpen` response.
+    ///
+    /// This setting applies only to the USB backend. It is ignored if [`Backend::Auto`] selects WPD
+    /// on Windows, or when [`Backend::Wpd`] is selected explicitly. Calling [`MtpDevice::close`]
+    /// still sends `CloseSession` on USB; drop the device instead when its session must remain open.
     #[must_use]
     pub fn reuse_existing_session(mut self, session_id: u32) -> Self {
         self.reuse_existing_session_id = Some(session_id);
@@ -925,10 +946,46 @@ mod tests {
         assert_eq!(custom.timeout, Duration::from_secs(45));
     }
 
-    #[test]
-    fn builder_reuses_existing_session() {
-        let builder = MtpDeviceBuilder::new().reuse_existing_session(0xBAAA_AAAD);
-        assert_eq!(builder.reuse_existing_session_id, Some(0xBAAA_AAAD));
+    #[cfg(feature = "virtual-device")]
+    #[tokio::test]
+    async fn builder_reuses_existing_session_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = crate::VirtualDeviceConfig {
+            model: "Session Reuse Test".into(),
+            serial: "session-reuse-test".into(),
+            storages: vec![crate::VirtualStorageConfig {
+                description: "Internal Storage".into(),
+                capacity: 1024,
+                backing_dir: dir.path().to_path_buf(),
+                read_only: false,
+            }],
+            event_poll_interval: Duration::ZERO,
+            watch_backing_dirs: false,
+            ..Default::default()
+        };
+        let transport: Arc<dyn Transport> = Arc::new(
+            crate::transport::virtual_device::VirtualTransport::new(config),
+        );
+        let session_id = 0xBAAA_AAAD;
+
+        let first = MtpDeviceBuilder::new()
+            .reuse_existing_session(session_id)
+            .open_ptp_session(transport.clone())
+            .await
+            .unwrap();
+        drop(first);
+
+        let reused = MtpDeviceBuilder::new()
+            .reuse_existing_session(session_id)
+            .open_ptp_session(transport)
+            .await
+            .unwrap();
+
+        assert_eq!(reused.session_id().0, session_id);
+        assert_eq!(
+            reused.get_device_info().await.unwrap().model,
+            "Session Reuse Test"
+        );
     }
 
     #[test]
