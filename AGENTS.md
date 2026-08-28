@@ -119,6 +119,10 @@ range, window_size)` (returns `WindowedDownload`), and buffered `Storage::downlo
   `MtpDeviceBuilder::reuse_existing_session(0xBAAA_AAAD)` to reuse its stable session without sending
   `CloseSession` when `OpenSession` reports `SessionAlreadyOpen`. Dropping `MtpDevice` leaves the session
   alone; explicitly calling `MtpDevice::close()` still sends `CloseSession` and exits MTP mode.
+  **Hardware-verified A/B on TP-7 firmware 2.5.7 / MTP 1.1.11** (macOS/nusb, 2026-08-27): with
+  session reuse disabled, the first CLI process succeeded and the second found the recorder back in
+  `audio-midi` mode; with reuse enabled, two consecutive CLI processes both succeeded and left it in
+  `mtp` mode.
 
 ## Testing
 
