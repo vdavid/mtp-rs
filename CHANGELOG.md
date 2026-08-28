@@ -14,6 +14,18 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-08-28
+
+Library `0.32.0`, CLI `0.8.2`. A device that keeps its MTP session alive across host processes can now be driven without knocking it out of MTP mode, and both published crates ship their license texts.
+
+### Added
+
+- **[lib] Reuse an existing device-side PTP session instead of closing and reopening it.** New `MtpDeviceBuilder::reuse_existing_session(id)` (and the low-level `PtpSession::open_reusing_existing`) opt in to a stable session ID that survives across host processes: when `OpenSession` reports `SessionAlreadyOpen`, the open path keeps the existing session rather than sending `CloseSession`. This is USB-only (ignored when WPD is selected on Windows) and opt-in, so the default close-and-reopen behavior is unchanged. It's what a one-process-per-command client needs on hardware like the Teenage Engineering TP-7, which treats `CloseSession` as a request to leave MTP mode. Hardware-verified by A/B on a TP-7 (firmware 2.5.7 / MTP 1.1.11). Thanks to [@worm-emoji](https://github.com/worm-emoji) (#29).
+
+### Fixed
+
+- **[workspace] Both published crates now carry their license texts.** `LICENSE-MIT` and `LICENSE-APACHE` lived only at the repo root, outside either package, so neither crates.io tarball contained them. MIT's notice has to travel with the software, so this was a compliance gap. Each crate directory now has its own copy.
+
 ## [0.31.0] - 2026-08-27
 
 Library `0.31.0`, CLI `0.8.1`. Some MTP responders can only hand over whole objects, and until now a consumer's fallback for them could only be tested on hardware. A virtual device can model one now.
