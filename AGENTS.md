@@ -66,7 +66,8 @@ backend-agnostic variants (`NotFound`, `StaleHandle`, `AccessDenied`, `Unsupport
 `ptp::PtpError`); `ptp::` keeps its detailed response-code errors for camera/protocol users.
 
 **Entry points:** `MtpDevice::open_first()`, `PtpDevice::open_first()`, `NusbTransport::list_mtp_devices()`, `mtp::watch_devices()` (hotplug stream), `MtpDevice::reset_by_serial()` (session-less transport reset),
-`MtpDeviceBuilder::open_virtual()` (feature-gated)
+`MtpDeviceBuilder::open_virtual()` (feature-gated), `MtpDeviceBuilder::reuse_existing_session(id)`
+(USB-only opt-in for a stable session that survives across host processes)
 
 **Key types:** `ObjectHandle`, `StorageId` (opaque `u64` newtypes, session-scoped tokens — not wire
 values), `ObjectFormat` (raw MTP format code + category helpers), `Capabilities` (replaces the old
@@ -113,6 +114,11 @@ range, window_size)` (returns `WindowedDownload`), and buffered `Storage::downlo
 - **Fujifilm cameras**: Report `AccessCapability::ReadWrite` but return `StoreReadOnly` on writes. Advertised ops lie.
 - **Samsung**: Returns `InvalidObjectHandle` for root listing; needs recursive traversal with filtering
 - **Panasonic Lumix DMC-TZ61** (and likely other PTP cameras): Reports `20480000T000000` (month 0, day 0) as "no date" in ObjectInfo datetimes. Receive-side datetime parsing is lenient for this reason: unparseable datetimes become `None` instead of failing the dataset parse. Send-side packing stays strict.
+- **Teenage Engineering TP-7**: Keeps its device-side MTP session open across host processes and treats
+  `CloseSession` as a request to leave MTP mode. Use
+  `MtpDeviceBuilder::reuse_existing_session(0xBAAA_AAAD)` to reuse its stable session without sending
+  `CloseSession` when `OpenSession` reports `SessionAlreadyOpen`. Dropping `MtpDevice` leaves the session
+  alone; explicitly calling `MtpDevice::close()` still sends `CloseSession` and exits MTP mode.
 
 ## Testing
 
