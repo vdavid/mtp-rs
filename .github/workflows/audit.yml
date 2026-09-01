@@ -46,7 +46,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Use the official rustsec audit-check action which handles installation
       # and database updates automatically
@@ -70,7 +70,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # cargo-deny checks licenses, bans, advisories, and sources
       # Configuration can be customized via deny.toml in the repo root
@@ -98,7 +98,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust nightly toolchain
         uses: dtolnay/rust-toolchain@nightly
