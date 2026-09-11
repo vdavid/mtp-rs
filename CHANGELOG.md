@@ -14,6 +14,10 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Added
+
+- **[cli] `get` downloads whole folders.** When the remote path is a folder (the storage root included), `get` copies it and everything below it, empty subfolders too, into the local path. `--replace` merges into an existing local directory, replacing files the device also has. The tree is listed before anything is written, so a device-supplied name that can't be a local filename fails up front. Objects the device won't describe are reported like `ls` does: a stderr warning and a `skipped` array in `--json`. JSON output from `get` now carries a `kind` field (`"file"` or `"folder"`).
+
 ## [0.32.0] - 2026-08-28
 
 Library `0.32.0`, CLI `0.8.2`. A device that keeps its MTP session alive across host processes can now be driven without knocking it out of MTP mode, and both published crates ship their license texts.

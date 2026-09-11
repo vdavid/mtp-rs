@@ -33,6 +33,7 @@ mtp-rs ls /Music --recursive
 # Upload and download files.
 mtp-rs put ./song.mp3 /Music/song.mp3 --replace
 mtp-rs get /Music/song.mp3 ./song.mp3
+mtp-rs get /DCIM/Camera ./Camera
 
 # Create and remove remote objects.
 mtp-rs mkdir /Upload
