@@ -36,6 +36,7 @@ mtp-rs ls /Music --recursive
 # Upload and download files.
 mtp-rs put ./song.mp3 /Music/song.mp3 --replace
 mtp-rs get /Music/song.mp3 ./song.mp3
+mtp-rs get /DCIM/Camera ./Camera
 
 # Create and remove remote objects.
 mtp-rs mkdir /Upload
@@ -175,16 +176,37 @@ Uploads are streamed; large files are not buffered in memory.
 
 ### `get`
 
-Download a remote file to a local path.
+Download a remote file, or a whole remote folder, to a local path.
 
 ```sh
 mtp-rs get /Music/song.mp3 ./song.mp3
 mtp-rs get /Music/song.mp3 ./song.mp3 --replace
+mtp-rs get /DCIM/Camera ./Camera
+mtp-rs get /DCIM/Camera ./Camera --replace
 ```
 
 `get --replace` writes to a temporary file first and replaces the destination
 only after the download succeeds, so an interrupted transfer does not destroy
 the existing local file.
+
+When `REMOTE_PATH` is a folder (the storage root `/` included), `LOCAL_PATH`
+becomes the local copy of that folder: its files and subfolders, empty ones
+too, land directly inside it. `LOCAL_PATH` must not exist yet unless you pass
+`--replace`, which merges into an existing directory: files the device also has
+are replaced, anything else there is left alone.
+
+Behavior:
+
+- The whole remote tree is listed before anything is written, so a remote name
+  that can't be a local filename (`..`, or one containing `/`, `\`, or a null
+  byte) fails the command before any file lands on disk.
+- If a transfer fails partway, the files already downloaded stay; the file in
+  flight does not leave a partial copy behind.
+- Objects the device lists but won't describe are left out and reported, as in
+  `ls`: a warning on stderr, and a `skipped` array (always present) in `--json`.
+
+In `--json`, a folder download reports `"kind": "folder"` with `files`,
+`folders`, and `bytes` totals; a file download reports `"kind": "file"`.
 
 ### `mkdir`
 

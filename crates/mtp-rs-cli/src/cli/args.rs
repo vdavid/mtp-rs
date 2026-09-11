@@ -61,7 +61,7 @@ pub enum Command {
     /// Upload a local file to a remote path.
     Put(PutArgs),
 
-    /// Download a remote file to a local path.
+    /// Download a remote file, or a whole remote folder, to a local path.
     Get(GetArgs),
 
     /// Create one remote folder.
@@ -142,13 +142,14 @@ pub struct PutArgs {
 
 #[derive(Debug, Args)]
 pub struct GetArgs {
-    /// Remote file path.
+    /// Remote file or folder path. A folder is downloaded with everything below it.
     pub remote_path: String,
 
-    /// Local destination path.
+    /// Local destination path. For a folder, this becomes the local copy of it.
     pub local_path: std::path::PathBuf,
 
-    /// Replace an existing local file.
+    /// Replace an existing local file. For a folder, merge into an existing local
+    /// directory, replacing files the device also has.
     #[arg(long)]
     pub replace: bool,
 }
@@ -254,6 +255,7 @@ mod tests {
             ["mtp-rs", "ls", "/"].as_slice(),
             ["mtp-rs", "put", "local.bin", "/remote.bin"].as_slice(),
             ["mtp-rs", "get", "/remote.bin", "local.bin"].as_slice(),
+            ["mtp-rs", "get", "/DCIM", "photos", "--replace"].as_slice(),
             ["mtp-rs", "mkdir", "/Upload"].as_slice(),
             ["mtp-rs", "rm", "/Upload/old.bin", "--yes"].as_slice(),
             ["mtp-rs", "rename", "/Upload/old.bin", "new.bin"].as_slice(),
