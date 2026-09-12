@@ -37,15 +37,7 @@ Reports from this thread:
 
 ## Active threads
 
-### #32: `get` downloads whole folders (PR opened 2026-09-11)
-
-Contributor: [@max619](https://github.com/max619). Motivation: syncing photos off an Android phone, and the CLI had no
-way to copy a folder. When the remote path is a folder (the storage root included), `get REMOTE LOCAL` copies the whole
-tree, and `LOCAL` becomes the copy: it must not exist unless `--replace` merges into it. The PR lists the whole tree
-first (per-folder `collect_objects`), validates device-supplied names with `path::validate_component` before writing
-anything, reports unreadable objects the way `ls` does, and adds a `kind` field to `get`'s JSON. It ships docs, a
-CHANGELOG entry, and four virtual-device CLI tests. Formatting, clippy, and the CLI tests pass on the PR head
-(`c245489`, checked locally 2026-09-12); GitHub CI hasn't run on it (only GitGuardian reported). Under review.
+None right now.
 
 ## Closed and merged
 
@@ -395,6 +387,19 @@ the crate.
 `ptpcamerad` holding the interface). @worm-emoji then delivered an A/B on firmware 2.5.7 / MTP 1.1.11: with reuse off,
 the second process found the recorder in `audio-midi` mode; with reuse on, consecutive processes stayed in `mtp` mode.
 Details in "Known device quirks" in `AGENTS.md`.
+
+### #32: `get` downloads whole folders (merged 2026-09-12)
+
+Contributor: [@max619](https://github.com/max619) (Max Bagryantsev), who wanted to sync photos off an Android phone and
+found the CLI couldn't copy a folder. When the remote path is a folder (the storage root included), `get REMOTE LOCAL`
+copies the whole tree, and `LOCAL` becomes the copy: it must not exist unless `--replace` merges into it. It lists the
+whole tree first, reports objects the device won't describe the way `ls` does, and adds a `kind` field to `get`'s JSON.
+It arrived with docs, a CHANGELOG entry, and four virtual-device CLI tests, green on formatting, clippy, and every CI
+job, so it was rebase-merged as-is (`ab2a7ad`, author kept).
+
+Follow-up `5ff0b8a` added a listing progress count, a complete per-OS local-name check (Windows' forbidden characters
+and reserved names), and a collision check that probes the destination filesystem for case sensitivity. Goes out in
+`mtp-rs-cli` 0.9.0.
 
 ## Device quirks reference
 
