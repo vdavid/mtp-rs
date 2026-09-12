@@ -14,6 +14,10 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [mtp-rs-cli 0.9.0] - 2026-09-12
+
+CLI `0.9.0` only; the library stays at `0.32.0`. `get` copies whole folders, so pulling a phone's camera roll is one command.
+
 ### Added
 
 - **[cli] `get` downloads whole folders.** When the remote path is a folder (the storage root included), `get` copies it and everything below it, empty subfolders too, into the local path. `--replace` merges into an existing local directory, replacing files the device also has. Objects the device won't describe are reported like `ls` does: a stderr warning and a `skipped` array in `--json`. JSON output from `get` now carries a `kind` field (`"file"` or `"folder"`). Contributed by [@max619](https://github.com/max619) in [#32](https://github.com/vdavid/mtp-rs/pull/32).
