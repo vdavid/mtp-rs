@@ -197,9 +197,16 @@ are replaced, anything else there is left alone.
 
 Behavior:
 
-- The whole remote tree is listed before anything is written, so a remote name
-  that can't be a local filename (`..`, or one containing `/`, `\`, or a null
-  byte) fails the command before any file lands on disk.
+- The whole remote tree is listed before anything is written, with a running
+  count on stderr (on a phone, listing thousands of photos takes minutes).
+- A remote name that can't exist in the local folder fails the command before
+  any file lands on disk: `.`, `..`, or a name containing `/`, `\`, or a null
+  byte, and on Windows also the characters `<>:"|?*`, a trailing dot or space,
+  and reserved names like `CON` or `com1.txt`.
+- So do two remote names that would land on the same local file, like
+  `IMG.jpg` and `img.JPG` on a case-insensitive disk. `get` asks the
+  destination disk whether case matters, since a Linux machine can still be
+  writing to a FAT or exFAT card.
 - If a transfer fails partway, the files already downloaded stay; the file in
   flight does not leave a partial copy behind.
 - Objects the device lists but won't describe are left out and reported, as in

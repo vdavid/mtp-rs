@@ -215,7 +215,7 @@ sync: if one learns a new distinction, so does the other.
 
 **Consumers**: `mtp-rs ls` prints a stderr warning in both plain and `--json` modes and always emits
 a `skipped` array (empty when nothing was skipped, so a script reads one field unconditionally);
-`doctor` reports `unreadable_root_objects`; `collect_objects_recursive` aggregates skips across a
+`mtp-rs get` on a folder does the same for the objects it couldn't download; `doctor` reports `unreadable_root_objects`; `collect_objects_recursive` aggregates skips across a
 whole tree walk.
 
 **Testing it**: `force_object_info_error(serial, handle, code)` on a virtual device (by handle, in

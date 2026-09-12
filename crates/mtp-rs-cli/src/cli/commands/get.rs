@@ -1,6 +1,7 @@
 use mtp_rs::mtp::Storage;
 use mtp_rs::{ObjectHandle, ObjectInfo};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
@@ -49,10 +50,31 @@ struct SkippedRow {
 /// Everything a folder download will write, gathered before writing any of it.
 #[derive(Debug, Default)]
 struct FolderPlan {
-    /// Local folders below the destination root, parents before children.
-    folders: Vec<PathBuf>,
+    /// Folders below the destination root, parents before children.
+    folders: Vec<PlannedFolder>,
     files: Vec<PlannedFile>,
     skipped: Vec<SkippedRow>,
+}
+
+impl FolderPlan {
+    /// Every planned folder and file as `(remote path, local path)`.
+    fn entries(&self) -> impl Iterator<Item = (&str, &Path)> {
+        let folders = self
+            .folders
+            .iter()
+            .map(|folder| (folder.remote_path.as_str(), folder.local_path.as_path()));
+        let files = self
+            .files
+            .iter()
+            .map(|file| (file.remote_path.as_str(), file.local_path.as_path()));
+        folders.chain(files)
+    }
+}
+
+#[derive(Debug)]
+struct PlannedFolder {
+    remote_path: String,
+    local_path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -131,15 +153,16 @@ async fn run_directory(
     path: &RemotePath,
     folder: Option<ObjectInfo>,
 ) -> Result<(), CliError> {
-    if tokio::fs::metadata(&args.local_path)
-        .await
-        .is_ok_and(|metadata| !metadata.is_dir())
-    {
-        return Err(CliError::new(
-            CliErrorKind::Other,
-            "remote path is a folder but the local path is not a directory",
-        ));
-    }
+    let root_existed = match tokio::fs::metadata(&args.local_path).await {
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(CliError::new(
+                CliErrorKind::Other,
+                "remote path is a folder but the local path is not a directory",
+            ));
+        }
+        Ok(_) => true,
+        Err(_) => false,
+    };
 
     let remote_root = if path.is_root() {
         "/".to_string()
@@ -175,13 +198,19 @@ async fn run_directory(
         }
     }
 
-    for local_folder in std::iter::once(&args.local_path).chain(&plan.folders) {
-        tokio::fs::create_dir_all(local_folder).await.map_err(|e| {
-            CliError::new(
-                CliErrorKind::Other,
-                format!("create local folder {}: {e}", local_folder.display()),
-            )
-        })?;
+    // The collision check asks the destination's own filesystem, so the root folder has to exist
+    // for it. Nothing else gets written until the plan is known to fit.
+    create_local_folder(&args.local_path).await?;
+    if let Err(err) = check_no_collisions(&plan, &args.local_path).await {
+        if !root_existed {
+            // Still empty: the case probe removes its own file.
+            let _ = tokio::fs::remove_dir(&args.local_path).await;
+        }
+        return Err(err);
+    }
+
+    for local_folder in &plan.folders {
+        create_local_folder(&local_folder.local_path).await?;
     }
 
     let mut bytes = 0;
@@ -234,7 +263,24 @@ async fn plan_folder(
     verbose: bool,
 ) -> Result<FolderPlan, CliError> {
     let mut plan = FolderPlan::default();
+    let walked = walk_folder(storage, root, remote_root, local_root, verbose, &mut plan).await;
+    // Ends the progress line either way, so an error starts on a line of its own.
+    finish_progress();
+    walked.map(|()| plan)
+}
+
+async fn walk_folder(
+    storage: &Storage,
+    root: Option<ObjectHandle>,
+    remote_root: String,
+    local_root: &Path,
+    verbose: bool,
+    plan: &mut FolderPlan,
+) -> Result<(), CliError> {
     let mut to_visit = vec![(root, remote_root, local_root.to_path_buf())];
+    // Listing costs a USB round trip per object (~15 s per 1,000 on Android), so a camera roll
+    // would otherwise sit silent for minutes before the first download starts.
+    print_listing_progress(plan);
 
     while let Some((parent, remote_folder, local_folder)) = to_visit.pop() {
         // Collect rather than list: an unreadable entry should be reported, not quietly missing
@@ -251,17 +297,15 @@ async fn plan_folder(
             }));
 
         for object in collection.objects {
-            // The name comes from the device and becomes a local path component, so a `..` or a
-            // separator in it would write outside the destination.
-            path::validate_component(&object.filename).map_err(|_| {
-                CliError::new(
+            if let Some(problem) = local_name_problem(&object.filename, cfg!(windows)) {
+                return Err(CliError::new(
                     CliErrorKind::RemotePath,
                     format!(
-                        "remote object in {remote_folder} has a name that can't be used locally: {:?}",
+                        "remote object in {remote_folder} has a name that can't be used locally ({problem}): {:?}",
                         object.filename
                     ),
-                )
-            })?;
+                ));
+            }
             let remote_path = if remote_folder == "/" {
                 format!("/{}", object.filename)
             } else {
@@ -270,7 +314,10 @@ async fn plan_folder(
             let local_path = local_folder.join(&object.filename);
 
             if object.is_folder() {
-                plan.folders.push(local_path.clone());
+                plan.folders.push(PlannedFolder {
+                    remote_path: remote_path.clone(),
+                    local_path: local_path.clone(),
+                });
                 to_visit.push((Some(object.handle), remote_path, local_path));
             } else {
                 plan.files.push(PlannedFile {
@@ -280,9 +327,48 @@ async fn plan_folder(
                 });
             }
         }
+        print_listing_progress(plan);
     }
 
-    Ok(plan)
+    Ok(())
+}
+
+fn print_listing_progress(plan: &FolderPlan) {
+    eprint!(
+        "\rlisting: {}, {}",
+        count(plan.files.len(), "file"),
+        count(plan.folders.len(), "folder")
+    );
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+}
+
+/// Refuses a plan where two entries would land on the same local path, which would otherwise
+/// fail halfway through (or, with `--replace`, silently keep only one of them).
+async fn check_no_collisions(plan: &FolderPlan, local_root: &Path) -> Result<(), CliError> {
+    let case_insensitive = is_case_insensitive(local_root).await.map_err(|e| {
+        CliError::new(
+            CliErrorKind::Other,
+            format!("check local folder {}: {e}", local_root.display()),
+        )
+    })?;
+    match find_collision(plan.entries(), case_insensitive) {
+        Some((first, second)) => Err(CliError::new(
+            CliErrorKind::RemotePath,
+            format!(
+                "{first} and {second} would be saved to the same local path; nothing was downloaded"
+            ),
+        )),
+        None => Ok(()),
+    }
+}
+
+async fn create_local_folder(path: &Path) -> Result<(), CliError> {
+    tokio::fs::create_dir_all(path).await.map_err(|e| {
+        CliError::new(
+            CliErrorKind::Other,
+            format!("create local folder {}: {e}", path.display()),
+        )
+    })
 }
 
 /// Streams one remote file to `local_path` through a temporary sibling, so an interrupted
@@ -389,6 +475,91 @@ async fn download_file(
     Ok(bytes)
 }
 
+/// Why a device-supplied name can't be a file or folder name on this machine, or `None` if it can.
+/// `windows` is a parameter rather than a `cfg` so both rule sets are testable on any host.
+fn local_name_problem(name: &str, windows: bool) -> Option<&'static str> {
+    // A separator or `..` would write outside the destination, and a null byte cuts the path short.
+    if name.is_empty() {
+        return Some("empty");
+    }
+    if name == "." || name == ".." {
+        return Some("`.` and `..` aren't names");
+    }
+    if name.contains(['/', '\\']) {
+        return Some("contains a path separator");
+    }
+    if name.contains('\0') {
+        return Some("contains a null byte");
+    }
+    if !windows {
+        return None;
+    }
+    if name
+        .chars()
+        .any(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') || u32::from(c) < 0x20)
+    {
+        return Some("contains a character Windows doesn't allow");
+    }
+    if name.ends_with(['.', ' ']) {
+        return Some("ends with a dot or space, which Windows drops");
+    }
+    // Windows reserves these with any extension too: `con.txt` is the console.
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    let port = stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"));
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || port.is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
+        || matches!(port, Some("¹" | "²" | "³"))
+    {
+        return Some("a reserved device name on Windows");
+    }
+    None
+}
+
+/// The remote paths of the first two entries that would land on the same local path.
+fn find_collision<'a>(
+    entries: impl IntoIterator<Item = (&'a str, &'a Path)>,
+    case_insensitive: bool,
+) -> Option<(&'a str, &'a str)> {
+    let mut seen: HashMap<(Option<&Path>, String), &str> = HashMap::new();
+    for (remote_path, local_path) in entries {
+        let name = local_path
+            .file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_default();
+        let name = if case_insensitive {
+            name.to_lowercase()
+        } else {
+            name.into_owned()
+        };
+        if let Some(first) = seen.insert((local_path.parent(), name), remote_path) {
+            return Some((first, remote_path));
+        }
+    }
+    None
+}
+
+/// Whether names that differ only in case reach the same file inside `dir`, which must exist.
+/// Asks the filesystem rather than going by OS: Linux is case-sensitive, but the FAT and exFAT
+/// cards and sticks that photos often get copied to aren't, and a macOS volume can be either.
+async fn is_case_insensitive(dir: &Path) -> std::io::Result<bool> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let probe = format!(".mtp-rs-case-probe-{nonce}-{}", std::process::id());
+    let lower = dir.join(&probe);
+    tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lower)
+        .await?;
+    let upper_exists = tokio::fs::try_exists(dir.join(probe.to_uppercase())).await;
+    tokio::fs::remove_file(&lower).await?;
+    upper_exists
+}
+
 fn count(n: usize, noun: &str) -> String {
     format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
 }
@@ -404,4 +575,114 @@ fn temp_download_path(destination: &Path) -> PathBuf {
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     parent.join(format!(".{name}.mtp-rs-{nonce}-{}.tmp", std::process::id()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_that_are_paths_are_refused_everywhere() {
+        for windows in [false, true] {
+            for name in ["", ".", "..", "a/b", "a\\b", "a\0b"] {
+                assert!(
+                    local_name_problem(name, windows).is_some(),
+                    "{name:?} should be refused (windows: {windows})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn names_windows_cannot_store_are_refused_only_there() {
+        for name in [
+            "a:b",
+            "what?",
+            "star*",
+            "pipe|",
+            "quote\"",
+            "<tag>",
+            "tab\tname",
+            "trailing.",
+            "trailing ",
+            "CON",
+            "con.txt",
+            "LPT1",
+            "COM¹.log",
+            "nul",
+        ] {
+            assert!(
+                local_name_problem(name, true).is_some(),
+                "{name:?} should be refused on Windows"
+            );
+            assert_eq!(
+                local_name_problem(name, false),
+                None,
+                "{name:?} is fine elsewhere"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_names_pass_everywhere() {
+        for windows in [false, true] {
+            for name in [
+                "IMG_0001.jpg",
+                ".hidden",
+                "Screenshot 2026-09-12 at 23.20.png",
+                "résumé.pdf",
+                "CONSOLE.txt",
+                "com10",
+            ] {
+                assert_eq!(
+                    local_name_problem(name, windows),
+                    None,
+                    "{name:?} (windows: {windows})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn names_differing_only_in_case_collide_only_when_case_is_ignored() {
+        let entries = [
+            ("/DCIM/IMG.jpg", Path::new("out/IMG.jpg")),
+            ("/DCIM/img.JPG", Path::new("out/img.JPG")),
+        ];
+        assert_eq!(find_collision(entries, false), None);
+        assert_eq!(
+            find_collision(entries, true),
+            Some(("/DCIM/IMG.jpg", "/DCIM/img.JPG"))
+        );
+    }
+
+    #[test]
+    fn a_repeated_name_collides_even_when_case_matters() {
+        let entries = [
+            ("/DCIM/a.jpg", Path::new("out/a.jpg")),
+            ("/DCIM/a.jpg", Path::new("out/a.jpg")),
+        ];
+        assert_eq!(
+            find_collision(entries, false),
+            Some(("/DCIM/a.jpg", "/DCIM/a.jpg"))
+        );
+    }
+
+    #[test]
+    fn the_same_name_in_different_folders_does_not_collide() {
+        let entries = [
+            ("/A/x.jpg", Path::new("out/A/x.jpg")),
+            ("/B/X.jpg", Path::new("out/B/X.jpg")),
+        ];
+        assert_eq!(find_collision(entries, true), None);
+    }
+
+    #[tokio::test]
+    async fn case_probe_matches_the_platform_default_and_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let insensitive = is_case_insensitive(dir.path()).await.unwrap();
+        // Holds for the default filesystems of each OS (APFS, NTFS, ext4), which is what CI runs.
+        assert_eq!(insensitive, cfg!(any(target_os = "macos", windows)));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
 }

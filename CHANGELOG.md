@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This file covers both published crates in the workspace:
 
 - `mtp-rs` (the library)
-- `mtp-rs-cli` (the CLI binary, new in this release)
+- `mtp-rs-cli` (the CLI binary)
 
 Entries are grouped by release. Each entry tags which crate it applies to with **[lib]**, **[cli]**, or **[workspace]** for repo-wide changes.
 
@@ -16,7 +16,8 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ### Added
 
-- **[cli] `get` downloads whole folders.** When the remote path is a folder (the storage root included), `get` copies it and everything below it, empty subfolders too, into the local path. `--replace` merges into an existing local directory, replacing files the device also has. The tree is listed before anything is written, so a device-supplied name that can't be a local filename fails up front. Objects the device won't describe are reported like `ls` does: a stderr warning and a `skipped` array in `--json`. JSON output from `get` now carries a `kind` field (`"file"` or `"folder"`).
+- **[cli] `get` downloads whole folders.** When the remote path is a folder (the storage root included), `get` copies it and everything below it, empty subfolders too, into the local path. `--replace` merges into an existing local directory, replacing files the device also has. Objects the device won't describe are reported like `ls` does: a stderr warning and a `skipped` array in `--json`. JSON output from `get` now carries a `kind` field (`"file"` or `"folder"`). Contributed by [@max619](https://github.com/max619) in [#32](https://github.com/vdavid/mtp-rs/pull/32).
+- **[cli] A folder download fails up front, before writing anything, when the copy couldn't be faithful.** The tree is listed first, with a running count on stderr (a phone camera roll takes minutes to list). A device-supplied name that can't exist locally stops the command: `..` and separators everywhere, plus Windows' forbidden characters, trailing dots and spaces, and reserved names like `CON` on Windows. So do two names that would land on the same local file, like `IMG.jpg` and `img.JPG`: `get` asks the destination disk whether case matters, since a case-sensitive Linux machine can still be writing to a case-insensitive FAT or exFAT card. Without this, the copy failed halfway, or with `--replace` silently kept only one of the two files.
 
 ## [0.32.0] - 2026-08-28
 

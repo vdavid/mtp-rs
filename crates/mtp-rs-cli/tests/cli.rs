@@ -176,6 +176,24 @@ fn get_downloads_a_folder_tree() {
 }
 
 #[test]
+fn get_folder_shows_listing_progress_before_downloading() {
+    let fixture = CliFixture::new();
+    let dcim = fixture.backing_dir.join("DCIM");
+    std::fs::create_dir_all(dcim.join("Camera")).unwrap();
+    std::fs::write(dcim.join("Camera").join("a.jpg"), b"a").unwrap();
+    std::fs::write(dcim.join("Camera").join("b.jpg"), b"b").unwrap();
+    let local = fixture._tempdir.path().join("photos");
+
+    let output = fixture.output(&["--device", SERIAL, "get", "/DCIM", path_str(&local)]);
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("listing: 2 files, 1 folder\n"),
+        "a big tree lists for minutes on Android, so the walk must say what it's doing\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn get_folder_refuses_an_existing_destination_unless_replace_merges() {
     let fixture = CliFixture::new();
     let music = fixture.backing_dir.join("Music");
