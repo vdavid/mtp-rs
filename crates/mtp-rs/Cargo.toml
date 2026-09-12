@@ -64,7 +64,7 @@ windows = { version = "=0.62.2", default-features = false, features = [
 ] }
 # Direct dep (same version `windows` already pulls in transitively) so the `#[implement]` macro's
 # generated `::windows_core` paths resolve — used to implement the WPD event callback COM object.
-windows-core = "=0.62.2"
+windows-core = "=0.100.0"
 
 [dev-dependencies]
 tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "time", "fs", "io-util"] }
