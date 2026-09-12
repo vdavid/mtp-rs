@@ -458,7 +458,7 @@ storage.upload(Some(download.handle), file_info, data).await?;
 | Samsung Galaxy S23 Ultra (SM-S918B)                                                                                | 14      | No root listing                                                                                               |
 | [Amazon Kindle Paperwhite 12th Generation (2024)](https://github.com/vdavid/mtp-rs/pull/2#issuecomment-4264713119) | -       | Full support                                                                                                  |
 | [Fairphone 5](https://github.com/vdavid/mtp-rs/issues/6#issuecomment-4234861708) (e/OS 3.0.4, LineageOS-derived)   | 13      | Full support                                                                                                  |
-| [Garmin Forerunner 955](https://github.com/vdavid/mtp-rs/pull/10)                                                  | -       | Works for app use; integration suite has one failing test under investigation                                 |
+| [Garmin Forerunner 955](https://github.com/vdavid/mtp-rs/pull/10)                                                  | -       | Read-only integration suite passes; uploads need split headers (applied automatically)                        |
 | Garmin Venu 2/2S                                                                                                   | -       | Detected via `MTP` interface string (no standard MTP class)                                                   |
 | [Panasonic Lumix DMC-TZ61](https://github.com/vdavid/mtp-rs/issues/12)                                             | -       | Read-only PTP camera; reads, streaming download, cancel, and reset all work, writes unsupported by the device |
 
