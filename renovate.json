@@ -35,6 +35,29 @@
       "addLabels": ["needs-hardware-test"]
     },
     {
+      "description": "windows is the WPD backend's whole COM layer and a 0.x crate. CI builds it on Windows but has no device to run it against. Never auto-merge it. Bump windows-core to the same version in the same PR (see docs/dependency-updates.md).",
+      "matchPackageNames": ["windows"],
+      "automerge": false,
+      "groupName": null,
+      "addLabels": ["needs-hardware-test"]
+    },
+    {
+      "description": "windows-core must stay on exactly the version windows pulls in: it's a direct dependency only so the #[implement] macro's paths resolve. Bumped alone, it can't compile. It moves by hand together with windows.",
+      "matchPackageNames": ["windows-core"],
+      "enabled": false
+    },
+    {
+      "description": "serial_test 4 needs Rust 1.93.1, and CI runs our tests on the 1.85 MSRV. Lift this hold when the MSRV reaches 1.93.1.",
+      "matchPackageNames": ["serial_test"],
+      "allowedVersions": "<4.0.0"
+    },
+    {
+      "description": "CI runs Rust at the MSRV (rust-version in Cargo.toml) and at stable. A bumped toolchain literal silently stops CI from checking the MSRV, so the toolchain only moves with a deliberate MSRV raise (see docs/dependency-updates.md).",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["rust"],
+      "enabled": false
+    },
+    {
       "description": "The libmtp comparison benchmark is a manual dev tool outside default-members, built only with libmtp installed locally. CI never compiles it, so a bump here can't be verified.",
       "matchFileNames": ["benchmarks/mtp-rs-vs-libmtp/**"],
       "enabled": false

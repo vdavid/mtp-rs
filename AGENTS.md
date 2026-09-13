@@ -647,6 +647,7 @@ Run `just check` before committing. `cargo fmt`, `cargo clippy -D warnings`, tes
 - [docs/architecture.md](docs/architecture.md), [docs/protocol.md](docs/protocol.md)
 - [docs/debugging.md](docs/debugging.md): debugging hub. Real-device setup and recovery (ptpcamerad blocker, software reset, fast-fail timeouts, device gotchas) plus USB capture. Read before touching physical hardware.
 - [docs/releasing.md](docs/releasing.md): how to publish a new version to crates.io
+- [docs/dependency-updates.md](docs/dependency-updates.md): playbook for Renovate PRs. How the config groups and automerges, how to read a red PR, crates that must move together, per-dependency holds (`nusb`, `windows`, `serial_test`), and everything an MSRV raise touches. Read before merging or closing a dependency PR.
 - [docs/notes/android-wedges-and-the-reset-kill-switch.md](docs/notes/android-wedges-and-the-reset-kill-switch.md): what a day of hardware work established about wedged Android MTP sessions. The two wedge signatures (Samsung errors, Pixel hangs), the dropped-future trigger, why the transport reset kills a Pixel's MTP function, what recovers what, and which claims rest on a single observation. Read before changing reset or recovery guidance.
 - [docs/notes/community-threads.md](docs/notes/community-threads.md): required reading before working on issues or PRs. Recap of every GitHub thread so far, known device quirks, and recurring contributors. Update after work that affects community-facing context.
 - [MTP v1.1 Spec](https://github.com/vdavid/mtp-v1_1-spec-md)
