@@ -25,6 +25,13 @@ the [full command reference](crates/mtp-rs-cli/docs/cli.md).
 - [mtp-mount](https://github.com/vdavid/mtp-mount): mount a phone or camera as a normal folder, via FUSE. Unlike gvfs,
   it can also _write_, so `cp` and `rsync` onto the device work.
 
+## Built with mtp-rs
+
+- [Android Bridge](https://android-bridge.com/): a macOS app for moving files to and from an Android phone, with
+  drag-and-drop, SHA-256 copy verification, and resumable moves.
+
+Built something on `mtp-rs`? Open an issue and I'll add it.
+
 ## Development
 
 ```sh

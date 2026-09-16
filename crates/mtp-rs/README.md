@@ -454,8 +454,10 @@ storage.upload(Some(download.handle), file_info, data).await?;
 
 | Device                                                                                                             | Android | Notes                                                                                                         |
 |--------------------------------------------------------------------------------------------------------------------|---------|---------------------------------------------------------------------------------------------------------------|
-| Google Pixel 9 Pro XL                                                                                              | 15      | Full support                                                                                                  |
+| Google Pixel 9 Pro XL                                                                                              | 17      | Full support                                                                                                  |
+| [Google Pixel 8 Pro](https://github.com/vdavid/mtp-rs/issues/6#issuecomment-5651477534)                            | 17      | Full support                                                                                                  |
 | Samsung Galaxy S23 Ultra (SM-S918B)                                                                                | 14      | No root listing                                                                                               |
+| [Samsung Galaxy S23 and S23+](https://github.com/vdavid/mtp-rs/issues/6#issuecomment-5653736162)                   | -       | Used by [Android Bridge](https://android-bridge.com/); integration suite not run                              |
 | [Amazon Kindle Paperwhite 12th Generation (2024)](https://github.com/vdavid/mtp-rs/pull/2#issuecomment-4264713119) | -       | Full support                                                                                                  |
 | [Fairphone 5](https://github.com/vdavid/mtp-rs/issues/6#issuecomment-4234861708) (e/OS 3.0.4, LineageOS-derived)   | 13      | Full support                                                                                                  |
 | [Garmin Forerunner 955](https://github.com/vdavid/mtp-rs/pull/10)                                                  | -       | Read-only integration suite passes; uploads need split headers (applied automatically)                        |
@@ -524,6 +526,16 @@ Note that `libptp` is much more mature, though!
 [winmtp](https://crates.io/crates/winmtp) wraps the Windows WPD COM API and is Windows-only. `mtp-rs`
 runs on Linux, macOS, and Windows behind one cross-platform API — raw USB on Linux/macOS, and the same
 WPD COM stack winmtp uses on Windows.
+
+## Built with mtp-rs
+
+- [Android Bridge](https://android-bridge.com/): a macOS app for moving files to and from an Android phone, with
+  drag-and-drop, SHA-256 copy verification, and resumable moves.
+- [Cmdr](https://github.com/vdavid/cmdr): an AI-native file manager that browses MTP devices alongside local folders.
+- [mtp-mount](https://github.com/vdavid/mtp-mount): mounts a phone or camera as a normal folder over FUSE, writes
+  included, so `cp` and `rsync` onto the device work.
+
+Built something on `mtp-rs`? Open an issue and I'll add it.
 
 ## Implementation notes
 

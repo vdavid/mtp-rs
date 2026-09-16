@@ -4,7 +4,7 @@ Catch-up reading for any agent that picks up issue or PR work, so you don't have
 start. Read this first when triaging a new issue or PR, and update it after work that affects community-facing context
 (see [Updating this doc](#updating-this-doc) at the bottom).
 
-Last updated: 2026-09-12.
+Last updated: 2026-09-16.
 
 ## Intentionally / continuously open threads
 
@@ -27,13 +27,15 @@ Reports from this thread:
   2026-05-03**: the full read-only suite passes (11/11). The destructive tests have never passed on it: the first try
   died on the Android-only `Download` folder, and @dasJ didn't re-run after the tests learned the folder priority list
   (v0.13.3, 2026-05-05).
-- **Google Pixel 8 Pro** (reported by [@max619](https://github.com/max619) on 2026-09-11): "tests are passing". No
-  Android version, mtp-rs version, or read-only vs. destructive detail yet. The same person opened PR #32 that day. Not
-  in the README table yet.
-- **Samsung Galaxy S23+** (reported by [@WildBenji](https://github.com/WildBenji) on 2026-09-11): works in their app
-  [Android Bridge](https://android-bridge.com/), a free, unsigned macOS file-transfer app built on mtp-rs
-  (drag-and-drop, SHA-256 copy verification, resumable moves). Integration suite not run. A different model from the
-  S23 Ultra already in the README table. Not in the table yet.
+- **Google Pixel 8 Pro** (reported by [@max619](https://github.com/max619) on 2026-09-11, details on 2026-09-13):
+  Android 17, both the read-only and destructive suites pass. In the README table as full support. The same person
+  opened PR #32 that day, which merged and shipped in `mtp-rs-cli` 0.9.0.
+- **Samsung Galaxy S23 and S23+** (reported by [@WildBenji](https://github.com/WildBenji) on 2026-09-11, S23 added on
+  2026-09-13): works in their app [Android Bridge](https://android-bridge.com/), a free, unsigned macOS file-transfer
+  app built on mtp-rs (drag-and-drop, SHA-256 copy verification, resumable moves). The integration suite was never run
+  and the Android version is unknown, so the table says "used by Android Bridge" rather than claiming full support.
+  Both are different models from the S23 Ultra already in the table. They agreed to the listing and to Android Bridge
+  being linked, which is what the "Built with mtp-rs" section in both READMEs now does.
 
 ## Active threads
 
@@ -456,10 +458,12 @@ Cross-cutting summary of every quirk currently handled or known. Sorted by devic
   contributor: asks the design question before the PR, tests against two independent responders, ships regression
   tests with hardware evidence, and re-tests fixes promptly.
 - [@worm-emoji](https://github.com/worm-emoji): TP-7 session reuse (#29). Delivered a clean hardware A/B when asked.
-- [@max619](https://github.com/max619): Max Bagryantsev. Pixel 8 Pro report in #6, CLI folder download PR #32
-  (both 2026-09-11).
+- [@max619](https://github.com/max619): Max Bagryantsev. Pixel 8 Pro report in #6 and CLI folder download PR #32 (both
+  2026-09-11); the PR shipped in `mtp-rs-cli` 0.9.0. Answers follow-up questions within a couple of days, and runs the
+  destructive suite as well as the read-only one.
 - [@WildBenji](https://github.com/WildBenji): Author of [Android Bridge](https://android-bridge.com/), a macOS app on
-  mtp-rs. Galaxy S23+ report in #6 (2026-09-11).
+  mtp-rs. Galaxy S23 and S23+ reports in #6 (2026-09-11). Acts on feedback quickly (added screenshots to the site when
+  asked) and is happy to be listed and linked. The app's source stays closed for now, until they see how it evolves.
 
 ## Updating this doc
 
