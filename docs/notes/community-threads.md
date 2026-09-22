@@ -4,7 +4,7 @@ Catch-up reading for any agent that picks up issue or PR work, so you don't have
 start. Read this first when triaging a new issue or PR, and update it after work that affects community-facing context
 (see [Updating this doc](#updating-this-doc) at the bottom).
 
-Last updated: 2026-09-16.
+Last updated: 2026-09-22.
 
 ## Intentionally / continuously open threads
 
@@ -36,6 +36,16 @@ Reports from this thread:
   and the Android version is unknown, so the table says "used by Android Bridge" rather than claiming full support.
   Both are different models from the S23 Ultra already in the table. They agreed to the listing and to Android Bridge
   being linked, which is what the "Built with mtp-rs" section in both READMEs now does.
+
+- **Montblanc Digital Paper e-Ink** (reported by [@ChristianSimonSU](https://github.com/ChristianSimonSU) on
+  2026-09-22): works on macOS, where they say mtp-rs is the only way to use the device locally. Not a general-purpose
+  MTP store: the responder exposes no internal filesystem, only two hot folders (`Import to Montblanc Digital Paper`
+  and `Export from Montblanc Digital Paper`). mtp-rs creates subdirectories inside them and manipulates files fine
+  (`mtp-rs ls` confirms), but the device's own ingest only picks up files sitting directly in the import folder, so
+  subfolders are invisible to the device UI. That is firmware policy above MTP: the responder accepts the
+  `SendObjectInfo` for the association and reports success, and no protocol field says "folders will be ignored", so
+  there is nothing for the library to detect or work around. Integration suite not run; no VID/PID or `doctor` output
+  yet.
 
 ## Active threads
 
@@ -435,6 +445,7 @@ Cross-cutting summary of every quirk currently handled or known. Sorted by devic
 | Switch responders (DBI, Sphaira) | Root objects report the containing storage ID as their parent                                                                              | Root filter accepts the storage ID, unless it's also an enumerated handle            | #20 (@oenderg, 2026-08-08)           |
 | Sphaira (Nintendo Switch)    | `GetObjectInfo` fails with `GeneralError` for one handle in an otherwise readable folder                                                       | `collect_objects` skips it and reports it in `skipped`; all-skipped is still an error | #22 / #23 (@oenderg, 2026-08-08)     |
 | Teenage Engineering TP-7     | Keeps its session across host processes; `CloseSession` makes it leave MTP mode                                                                | Opt-in `MtpDeviceBuilder::reuse_existing_session(0xBAAA_AAAD)`                       | #29 (@worm-emoji, 2026-08-26)        |
+| Montblanc Digital Paper e-Ink | Hot-folder responder: no internal filesystem exposed, only an import and an export folder; created subfolders are accepted and listed but ignored by the device's ingest | None possible (invisible to MTP); documented in the tested-devices table                | #6 (@ChristianSimonSU, 2026-09-22)   |
 
 ## Recurring contributors
 
@@ -464,6 +475,10 @@ Cross-cutting summary of every quirk currently handled or known. Sorted by devic
 - [@WildBenji](https://github.com/WildBenji): Author of [Android Bridge](https://android-bridge.com/), a macOS app on
   mtp-rs. Galaxy S23 and S23+ reports in #6 (2026-09-11). Acts on feedback quickly (added screenshots to the site when
   asked) and is happy to be listed and linked. The app's source stays closed for now, until they see how it evolves.
+
+- [@ChristianSimonSU](https://github.com/ChristianSimonSU): Montblanc Digital Paper e-Ink report in #6 (2026-09-22).
+  Tests on macOS via the CLI, and reports device-side behavior (what the device UI does with uploaded files), not just
+  protocol results.
 
 ## Updating this doc
 

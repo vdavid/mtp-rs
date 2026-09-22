@@ -412,6 +412,24 @@ mtp-rs put ./MyApp.prg /GARMIN/APPS/MyApp.prg --replace --verify
 Garmin remains just one workflow; the CLI does not include Garmin-specific
 commands.
 
+### Hot-folder devices (e.g. Montblanc Digital Paper)
+
+Some e-ink notepads expose no general filesystem at all, only an import and an
+export folder. Copy into the import folder and read results back from the
+export folder:
+
+```sh
+mtp-rs ls /
+mtp-rs put ./notes.pdf "/Import to Montblanc Digital Paper/notes.pdf" --replace
+mtp-rs get "/Export from Montblanc Digital Paper/notes.pdf" ./notes.pdf
+```
+
+Keep files at the top level of the import folder. `mkdir` and uploads into a
+subfolder succeed at the protocol level and show up in `mtp-rs ls`, but the
+device's own ingest only scans the folder's top level, so anything nested never
+reaches the device UI. Nothing in the protocol advertises that, so the CLI
+cannot warn about it.
+
 ### Generic Backup
 
 Download files by path after listing folders:
