@@ -463,7 +463,7 @@ storage.upload(Some(download.handle), file_info, data).await?;
 | [Garmin Forerunner 955](https://github.com/vdavid/mtp-rs/pull/10)                                                  | -       | Read-only integration suite passes; uploads need split headers (applied automatically)                        |
 | Garmin Venu 2/2S                                                                                                   | -       | Detected via `MTP` interface string (no standard MTP class)                                                   |
 | [Panasonic Lumix DMC-TZ61](https://github.com/vdavid/mtp-rs/issues/12)                                             | -       | Read-only PTP camera; reads, streaming download, cancel, and reset all work, writes unsupported by the device |
-| [Montblanc Digital Paper e-Ink](https://github.com/vdavid/mtp-rs/issues/6#issuecomment-5779843809)               | -       | Reads and writes work on macOS; the device only exposes two hot folders and its own ingest ignores subfolders |
+| [Montblanc Digital Paper e-Ink](https://github.com/vdavid/mtp-rs/issues/6#issuecomment-5795262094)               | -       | Android-based; CLI works on macOS (suite not run). Device only ingests files newly written to its import folder |
 
 **Samsung quirk**: Samsung devices return `InvalidObjectHandle` when listing the root folder with handle 0.
 The library automatically detects this and falls back to recursive listing with filtering. This is transparent to users.

@@ -424,11 +424,12 @@ mtp-rs put ./notes.pdf "/Import to Montblanc Digital Paper/notes.pdf" --replace
 mtp-rs get "/Export from Montblanc Digital Paper/notes.pdf" ./notes.pdf
 ```
 
-Keep files at the top level of the import folder. `mkdir` and uploads into a
-subfolder succeed at the protocol level and show up in `mtp-rs ls`, but the
-device's own ingest only scans the folder's top level, so anything nested never
-reaches the device UI. Nothing in the protocol advertises that, so the CLI
-cannot warn about it.
+Upload files straight into the top level of the import folder. The device
+reacts to files newly written there, not to what the folder contains: `mkdir`,
+uploads into a subfolder, and `mv` into the import folder all succeed and show
+up in `mtp-rs ls`, but the device never picks those files up. To make a file
+that is already on the device appear, upload it again with `put --replace`.
+Nothing in the protocol advertises any of this, so the CLI cannot warn about it.
 
 ### Generic Backup
 
