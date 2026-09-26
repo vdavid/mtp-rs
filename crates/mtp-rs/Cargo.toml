@@ -50,7 +50,7 @@ num_enum = "0.7"
 tracing = { version = "0.1", optional = true }
 
 # Windows WPD (Windows Portable Devices) COM backend. Pure-Rust projection, no C deps / no SDK
-# import libs needed (links system COM DLLs via raw-dylib). See docs/windows-wpd-backend-plan.md.
+# import libs needed (links system COM DLLs via raw-dylib). See AGENTS.md § Windows WPD backend.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", default-features = false, features = [
     "Win32_Foundation",

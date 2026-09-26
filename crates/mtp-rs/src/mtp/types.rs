@@ -2,8 +2,7 @@
 //!
 //! These types are deliberately independent of any single backend's wire format. The PTP-over-USB
 //! backend ([`crate::ptp`]) and the Windows WPD-over-COM backend both produce and consume them,
-//! converting from their own representations at the boundary. See
-//! `docs/windows-wpd-backend-plan.md` for the design.
+//! converting from their own representations at the boundary.
 //!
 //! Where a value originates in the PTP layer, a `From` impl (and a `pub(crate)` `to_ptp` helper for
 //! the reverse) bridges the two so the `UsbBackend` converts only at its edge.

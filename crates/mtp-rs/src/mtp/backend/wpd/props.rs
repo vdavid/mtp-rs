@@ -38,7 +38,7 @@ pub(crate) unsafe fn take_pwstr(p: PWSTR) -> String {
 
 /// Map a windows-rs / WPD `HRESULT` error into the neutral [`Error`].
 ///
-/// Mirrors the table in `docs/windows-wpd-backend-plan.md`. We match on the raw `HRESULT` so we
+/// We match on the raw `HRESULT` so we
 /// don't depend on every named constant being projected; the well-known values are stable.
 pub(crate) fn map_hresult(e: WinError) -> Error {
     // HRESULT_FROM_WIN32(x) == 0x8007_0000 | (x & 0xFFFF) for the FACILITY_WIN32 codes we care about.

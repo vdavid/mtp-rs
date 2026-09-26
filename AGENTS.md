@@ -41,7 +41,7 @@ docs/                        # Protocol, architecture, debugging, release proces
 mtp:: (MtpDevice, Storage, FileDownload, ObjectListing)   <-- backend-neutral high-level API
   |  Box<dyn MtpBackend>  (mtp::backend, pub(crate))
   +-- UsbBackend (mtp::backend::usb): PTP over Transport (nusb | virtual | mock)
-  +-- WpdBackend (planned, cfg(windows)): WPD over COM
+  +-- WpdBackend (mtp::backend::wpd, cfg(windows)): WPD over COM
 ptp:: (PtpSession)            <-- Cameras, protocol work (USB-only by nature)
   |
 transport:: (Transport trait)
@@ -52,13 +52,13 @@ nusb (USB)  or  VirtualTransport (filesystem, feature = "virtual-device")
 The `mtp::` layer is **backend-neutral**: it speaks neutral types (`mtp::{ObjectHandle, StorageId,
 ObjectInfo, ObjectFormat, DeviceInfo, StorageInfo, Capabilities, DateTime}`) and the neutral
 `mtp::Error`, and dispatches through the `MtpBackend` trait. `MtpDevice`/`Storage` are thin façades
-over `Box<dyn MtpBackend>`; `UsbBackend` is the sole implementation today and holds the `PtpSession`,
+over `Box<dyn MtpBackend>`; `UsbBackend` holds the `PtpSession`,
 converting PTP↔neutral only at its boundary (via `to_ptp`/`from_ptp` on the neutral types and
 `From<PtpError> for mtp::Error`). All device-quirk logic (root-listing fast path, Android/Samsung/Fuji
 fallbacks, >4 GB size resolution, SIC cancel, recovery, the upload partial-handle contract) lives in
 `UsbBackend`. The virtual device and mock are **not** separate backends — they're `Transport`s under
-`UsbBackend`, so every existing test exercises the real backend path. A Windows WPD backend is the
-planned second `MtpBackend` (see `docs/windows-wpd-backend-plan.md`).
+`UsbBackend`, so every existing test exercises the real backend path. `WpdBackend` is the second
+`MtpBackend`, on Windows; see § Windows WPD backend.
 
 **Errors:** `mtp::Error` (re-exported as the crate-root `Error`) is the neutral high-level error with
 backend-agnostic variants (`NotFound`, `StaleHandle`, `AccessDenied`, `Unsupported`, `Busy`,
@@ -584,7 +584,7 @@ Unit tests for the API live in `transport/virtual_device/registry.rs` (`pause_re
 
 The `mtp::backend::wpd` backend implements `MtpBackend` over the Windows Portable Devices COM API
 (`windows` crate, `cfg(windows)`), as a sibling to `UsbBackend` — *not* a `Transport`, because WPD
-speaks MTP itself and blocks the raw opcodes. See `docs/windows-wpd-backend-plan.md`. Quirks and
+speaks MTP itself and blocks the raw opcodes. Quirks and
 semantics that differ from the USB/PTP backend, all hardware-verified on a Pixel 9 Pro XL:
 
 - **Threading**: one dedicated `std::thread` per open device owns *all* COM pointers (they're
@@ -625,10 +625,17 @@ semantics that differ from the USB/PTP backend, all hardware-verified on a Pixel
   defaults if the probe yields nothing). `supports_thumbnails` is `true`: `thumbnail()` reads the
   `WPD_RESOURCE_THUMBNAIL` resource on the worker (verified non-empty for a real JPEG on the Pixel);
   whether a *given* object has one is resolved at call time (objects without a thumbnail fail at
-  `GetStream` → `Unsupported`/`NotFound`). Events (`next_event`) still return `Unsupported` (Phase 4).
+  `GetStream` → `Unsupported`/`NotFound`).
+- **Events**: an `IPortableDeviceEventCallback` (`events.rs`), registered with `Advise` on the worker
+  thread that owns the device, feeds a channel that `next_event` reads. It waits indefinitely, and a
+  closed channel means the session ended (`Error::Disconnected`).
 - **Selection**: on Windows, `open_first`/`open_by_serial` default to WPD (`Backend::Auto`), falling
   back to USB when no WPD device is present; `Backend::Usb` forces PTP-over-USB (e.g. a Zadig-bound
   camera), `Backend::Wpd` forces WPD.
+- **Toolchain**: build on Windows with the MSVC toolchain. The GNU one (`x86_64-pc-windows-gnu`)
+  breaks on a non-ASCII user profile path (MinGW's ANSI `ld` failed on `C:\Users\Felhasználó`);
+  MSVC's `link.exe` is Unicode-safe. `raw-dylib` means no Windows SDK import libs are needed either
+  way.
 
 ## Things to avoid
 

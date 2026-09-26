@@ -5,8 +5,7 @@
 //!
 //! Tokens are **deterministic**: a given WPD id always hashes to the same token, even across
 //! processes. That matters for the CLI, which runs one process per command and must accept a
-//! [`StorageId`] it printed in an earlier invocation (see the "Cross-process handle stability" note
-//! in `docs/windows-wpd-backend-plan.md`). A per-session counter would break that; a hash of the
+//! [`StorageId`] it printed in an earlier invocation. A per-session counter would break that; a hash of the
 //! stable WPD storage id does not.
 //!
 //! The map only needs the **reverse** direction (token → string) stored, since the forward direction

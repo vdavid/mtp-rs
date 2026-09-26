@@ -3,7 +3,7 @@
 //! Implements the backend-neutral [`MtpBackend`](crate::mtp::backend::MtpBackend) trait against the
 //! Windows Portable Devices COM API. WPD is *not* a USB transport — it speaks MTP for us and exposes
 //! a high-level object model — so this backend is a sibling to [`UsbBackend`](super::usb::UsbBackend),
-//! not another `Transport`. See `docs/windows-wpd-backend-plan.md`.
+//! not another `Transport`. Its quirks are documented in `AGENTS.md` § Windows WPD backend.
 //!
 //! ## Threading
 //!
