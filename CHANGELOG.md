@@ -14,6 +14,22 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-10-07
+
+Library `0.33.0`, CLI `0.9.1`. Copies can keep their dates: a windowed download hands back the file's modification time for free, dates say honestly whether they carry a time zone, and the virtual device does dates in both directions, so all of it is testable without a phone.
+
+### Added
+
+- **[lib] `WindowedDownload::modified()` and `WindowedDownload::created()`.** `download_windowed` already fetches the object's `ObjectInfo` to learn its size; it now keeps the dates from it too, so a copy that keeps the source's date no longer needs a second `GetObjectInfo` per file ([#36](https://github.com/vdavid/mtp-rs/issues/36)).
+- **[lib] `DateTime` knows whether the device gave a time zone.** New `offset: Option<UtcOffset>` field on both `mtp::DateTime` and `ptp::DateTime`, filled from a `Z` or `±hhmm` suffix. Most devices write none: Android writes the phone's local time without a zone, and `None` means exactly that, never UTC. New methods: `to_unix_seconds()` (answers only when there's an offset), `to_unix_seconds_with_fallback(zone)` (you pick the zone for a zoneless value), `from_unix_seconds(secs, offset)`, `with_offset(offset)`, and `mtp::DateTime::new`. `UtcOffset` is exported from the crate root, `mtp::`, and `ptp::`. Values with an offset are written with it, so `from_unix_seconds(secs, UtcOffset::UTC)` sends `…Z`, which Android reads correctly (it ignores any other offset and assumes phone-local time).
+- **[lib] The virtual device has dates.** Objects report their backing file's modification time as `DateModified` (and its birth time as `DateCreated` where the filesystem records one), and an upload's `DateModified` becomes the file's modification time, the way Android stamps it. A test seeds a date with `File::set_modified` on the backing file. New `VirtualDeviceConfig` fields: `utc_offset` (the device clock's zone, default UTC) and `dates_include_offset` (default `false`: zoneless, like Android). Both have defaults, so configs built with `..Default::default()` keep compiling.
+
+### Changed
+
+- **[lib] Breaking: `DateTime` gained a public `offset` field**, so a struct literal needs `offset: None` (or use `DateTime::new`). Applies to `mtp::DateTime` and `ptp::DateTime`.
+- **[lib] Datetime parsing is exact.** Month lengths and leap years are real, so `20230229T…` and `20240431T…` no longer parse, and `DateTime::new`/`is_valid` reject them too. Numeric fields must be digits (a `+` sign used to slip through), tenths of a second (`.s`) are accepted and dropped, and a string with any other trailing text yields `None`: an unrecognized suffix might be an offset, and reporting the value as zoneless would shift it silently. As before, an unparseable date in an `ObjectInfo` reads as "no date" without failing the listing.
+- **[cli] Built on `mtp-rs` 0.33.0.** No behavior change.
+
 ## [mtp-rs-cli 0.9.0] - 2026-09-12
 
 CLI `0.9.0` only; the library stays at `0.32.0`. `get` copies whole folders, so pulling a phone's camera roll is one command.
