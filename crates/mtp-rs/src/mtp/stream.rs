@@ -1,7 +1,7 @@
 //! Streaming download/upload support (backend-neutral façade types).
 
 use crate::mtp::backend::{DownloadBody, MtpBackend};
-use crate::mtp::{Error, ObjectHandle};
+use crate::mtp::{DateTime, Error, ObjectHandle, ObjectInfo};
 use bytes::Bytes;
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -217,25 +217,32 @@ pub struct WindowedDownload {
     offset: u64,
     /// Max bytes requested per window.
     window_size: u32,
+    /// From the `ObjectInfo` fetched at construction.
+    modified: Option<DateTime>,
+    /// From the `ObjectInfo` fetched at construction.
+    created: Option<DateTime>,
 }
 
 impl WindowedDownload {
     /// Create a windowed download starting at `start_offset`.
     ///
-    /// `window_size` is clamped to at least 1 byte: a zero window can't make progress.
+    /// `window_size` is clamped to at least 1 byte: a zero window can't make progress. Size and
+    /// dates come from `info`.
     pub(crate) fn new(
         backend: Arc<dyn MtpBackend>,
         handle: ObjectHandle,
-        total_size: u64,
+        info: &ObjectInfo,
         start_offset: u64,
         window_size: u32,
     ) -> Self {
         Self {
             backend,
             handle,
-            total_size,
+            total_size: info.size,
             offset: start_offset,
             window_size: window_size.max(1),
+            modified: info.modified,
+            created: info.created,
         }
     }
 
@@ -244,6 +251,21 @@ impl WindowedDownload {
     #[must_use]
     pub fn size(&self) -> u64 {
         self.total_size
+    }
+
+    /// The object's modification time from the `ObjectInfo` fetched to start the download, so
+    /// keeping a copy's date costs no extra round trip. `None` when the device reported none (or
+    /// one that doesn't parse). Usually zoneless: see [`DateTime`] for resolving it.
+    #[must_use]
+    pub fn modified(&self) -> Option<DateTime> {
+        self.modified
+    }
+
+    /// The object's creation time, from the same `ObjectInfo` as [`modified`](Self::modified).
+    /// Many devices leave it empty.
+    #[must_use]
+    pub fn created(&self) -> Option<DateTime> {
+        self.created
     }
 
     /// Byte offset of the next window to be read.

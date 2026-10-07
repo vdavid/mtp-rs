@@ -1320,6 +1320,162 @@ mod tests {
         );
     }
 
+    // ---- Dates (DateModified / DateCreated) ----
+
+    /// 2024-03-15T14:30:22Z.
+    const SEEDED_UNIX: i64 = 1_710_513_022;
+
+    fn set_mtime(path: &std::path::Path, unix: i64) {
+        let time = std::time::UNIX_EPOCH + Duration::from_secs(unix as u64);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+    }
+
+    fn mtime_unix(path: &std::path::Path) -> i64 {
+        let modified = std::fs::metadata(path).unwrap().modified().unwrap();
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    fn offset(minutes: i16) -> crate::mtp::UtcOffset {
+        crate::mtp::UtcOffset::from_minutes(minutes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn object_info_reports_the_backing_files_modified_time_zoneless() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("photo.jpg");
+        std::fs::write(&path, b"jpeg").unwrap();
+        set_mtime(&path, SEEDED_UNIX);
+
+        let device = MtpDevice::builder()
+            .open_virtual(test_config(dir.path()))
+            .await
+            .unwrap();
+        let storages = device.storages().await.unwrap();
+        let obj = storages[0].list_objects(None).await.unwrap()[0].clone();
+
+        // The default clock is UTC, written without a zone the way Android
+        // writes the phone's local time.
+        assert_eq!(
+            obj.modified,
+            crate::mtp::DateTime::new(2024, 3, 15, 14, 30, 22)
+        );
+    }
+
+    #[tokio::test]
+    async fn reported_dates_follow_the_configured_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("photo.jpg");
+        std::fs::write(&path, b"jpeg").unwrap();
+        set_mtime(&path, SEEDED_UNIX);
+
+        for include in [false, true] {
+            let config = VirtualDeviceConfig {
+                utc_offset: offset(120),
+                dates_include_offset: include,
+                ..test_config(dir.path())
+            };
+            let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+            let storages = device.storages().await.unwrap();
+            let modified = storages[0].list_objects(None).await.unwrap()[0]
+                .modified
+                .unwrap();
+
+            assert_eq!(
+                (modified.hour, modified.minute),
+                (16, 30),
+                "include={include}"
+            );
+            assert_eq!(modified.offset, include.then(|| offset(120)));
+            assert_eq!(
+                modified.to_unix_seconds_with_fallback(offset(120)),
+                Some(SEEDED_UNIX)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn windowed_download_reports_the_object_dates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.bin");
+        std::fs::write(&path, b"payload").unwrap();
+        set_mtime(&path, SEEDED_UNIX);
+
+        let device = MtpDevice::builder()
+            .open_virtual(test_config(dir.path()))
+            .await
+            .unwrap();
+        let storages = device.storages().await.unwrap();
+        let obj = storages[0].list_objects(None).await.unwrap()[0].clone();
+
+        let dl = storages[0]
+            .download_windowed(obj.handle, ByteRange::Full, 4)
+            .await
+            .unwrap();
+        assert_eq!(
+            dl.modified(),
+            crate::mtp::DateTime::new(2024, 3, 15, 14, 30, 22)
+        );
+        // DateCreated is the file's birth time where the host filesystem
+        // records one, so compare against what ObjectInfo itself reports.
+        assert_eq!(dl.created(), obj.created);
+    }
+
+    #[tokio::test]
+    async fn upload_stores_the_modified_date_it_was_sent() {
+        let utc = crate::mtp::DateTime::from_unix_seconds(SEEDED_UNIX, crate::mtp::UtcOffset::UTC)
+            .unwrap();
+        let zoneless = crate::mtp::DateTime {
+            offset: None,
+            ..utc
+        };
+        let cases = [
+            // An explicit offset is an instant, whatever the device's clock says.
+            ("utc.txt", utc, SEEDED_UNIX),
+            (
+                "ist.txt",
+                utc.with_offset(offset(330)),
+                SEEDED_UNIX - 330 * 60,
+            ),
+            // A zoneless date is device-local time: here UTC+1.
+            ("local.txt", zoneless, SEEDED_UNIX - 3600),
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = VirtualDeviceConfig {
+            utc_offset: offset(60),
+            ..test_config(dir.path())
+        };
+        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        let storages = device.storages().await.unwrap();
+
+        for (name, sent, want_unix) in cases {
+            let info = crate::mtp::NewObjectInfo::file(name, 5).with_modified(sent);
+            let handle = storages[0]
+                .upload(None, info, bytes_stream(b"hello"))
+                .await
+                .unwrap();
+
+            assert_eq!(mtime_unix(&dir.path().join(name)), want_unix, "{name}");
+            let reported = storages[0].get_object_info(handle).await.unwrap();
+            assert_eq!(
+                reported
+                    .modified
+                    .unwrap()
+                    .to_unix_seconds_with_fallback(offset(60)),
+                Some(want_unix),
+                "{name}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn upload_file() {
         let dir = tempfile::tempdir().unwrap();

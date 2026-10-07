@@ -5,9 +5,10 @@
 
 use super::state::VirtualDeviceState;
 use crate::ptp::{
-    pack_string, pack_u16, pack_u16_array, pack_u32, pack_u64, EventCode, ObjectFormatCode,
-    ObjectHandle, OperationCode, StorageId,
+    pack_string, pack_u16, pack_u16_array, pack_u32, pack_u64, DateTime, EventCode,
+    ObjectFormatCode, ObjectHandle, OperationCode, StorageId,
 };
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Build a DeviceInfo binary payload from the virtual device config.
 pub(super) fn build_device_info(state: &VirtualDeviceState) -> Vec<u8> {
@@ -188,6 +189,48 @@ pub(super) fn build_event(code: EventCode, params: &[u32]) -> Vec<u8> {
     buf
 }
 
+/// Pack a file timestamp as an ObjectInfo datetime on the device's clock, or as
+/// the empty "no date" string when there's none or MTP can't write it.
+fn pack_file_time(time: Option<SystemTime>, state: &VirtualDeviceState) -> Vec<u8> {
+    let config = &state.config;
+    let formatted = time
+        .and_then(unix_seconds)
+        .and_then(|secs| DateTime::from_unix_seconds(secs, config.utc_offset))
+        .map(|dt| DateTime {
+            offset: dt.offset.filter(|_| config.dates_include_offset),
+            ..dt
+        })
+        .and_then(|dt| dt.format())
+        .unwrap_or_default();
+    pack_string(&formatted)
+}
+
+/// Whole seconds since the Unix epoch, rounded down (so before the epoch too).
+fn unix_seconds(time: SystemTime) -> Option<i64> {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_secs()).ok(),
+        Err(before) => {
+            let before = before.duration();
+            let secs = i64::try_from(before.as_secs()).ok()?;
+            Some(if before.subsec_nanos() > 0 {
+                -secs - 1
+            } else {
+                -secs
+            })
+        }
+    }
+}
+
+/// The `SystemTime` at whole seconds since the Unix epoch.
+pub(super) fn system_time_from_unix(secs: i64) -> SystemTime {
+    let magnitude = Duration::from_secs(secs.unsigned_abs());
+    if secs >= 0 {
+        UNIX_EPOCH + magnitude
+    } else {
+        UNIX_EPOCH - magnitude
+    }
+}
+
 /// Build an ObjectInfo payload from filesystem metadata.
 pub(super) fn build_object_info(
     handle: ObjectHandle,
@@ -253,10 +296,9 @@ pub(super) fn build_object_info(
     buf.extend_from_slice(&pack_u32(0));
     // Filename
     buf.extend_from_slice(&pack_string(&filename));
-    // DateCreated: empty
-    buf.push(0x00);
-    // DateModified: empty
-    buf.push(0x00);
+    // DateCreated, DateModified
+    buf.extend_from_slice(&pack_file_time(metadata.created().ok(), state));
+    buf.extend_from_slice(&pack_file_time(metadata.modified().ok(), state));
     // Keywords: empty
     buf.push(0x00);
 

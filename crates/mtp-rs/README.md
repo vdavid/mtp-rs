@@ -252,6 +252,17 @@ println ! ("{:.1}%", download.offset() as f64 / download.size() as f64 * 100.0);
 }
 ```
 
+`download.modified()` and `download.created()` return the file's dates at no extra cost. Most devices, Android included, write them without a time zone, in the device's local time, so `DateTime::offset` is usually `None`. The library doesn't guess the zone: `to_unix_seconds()` answers only when the device gave an offset, and `to_unix_seconds_with_fallback(zone)` lets you pick one, often the computer's own local offset:
+
+```rust
+use mtp_rs::UtcOffset;
+
+if let Some(modified) = download.modified() {
+    let local = UtcOffset::from_minutes(120).unwrap(); // say, Stockholm in summer
+    let unix_secs = modified.to_unix_seconds_with_fallback(local);
+}
+```
+
 For raw throughput when nothing else needs the device during the read, `download(handle, ByteRange::Full)` reads the whole file in one continuous transfer instead. It holds the PTP session for the entire download, so the device can't service other operations meanwhile, and it yields chunks as they arrive:
 
 ```rust

@@ -50,7 +50,7 @@ nusb (USB)  or  VirtualTransport (filesystem, feature = "virtual-device")
 ```
 
 The `mtp::` layer is **backend-neutral**: it speaks neutral types (`mtp::{ObjectHandle, StorageId,
-ObjectInfo, ObjectFormat, DeviceInfo, StorageInfo, Capabilities, DateTime}`) and the neutral
+ObjectInfo, ObjectFormat, DeviceInfo, StorageInfo, Capabilities, DateTime, UtcOffset}`) and the neutral
 `mtp::Error`, and dispatches through the `MtpBackend` trait. `MtpDevice`/`Storage` are thin façades
 over `Box<dyn MtpBackend>`; `UsbBackend` holds the `PtpSession`,
 converting PTP↔neutral only at its boundary (via `to_ptp`/`from_ptp` on the neutral types and
@@ -114,6 +114,7 @@ range, window_size)` (returns `WindowedDownload`), and buffered `Storage::downlo
 - **Fujifilm cameras**: Report `AccessCapability::ReadWrite` but return `StoreReadOnly` on writes. Advertised ops lie.
 - **Samsung**: Returns `InvalidObjectHandle` for root listing; needs recursive traversal with filtering
 - **Panasonic Lumix DMC-TZ61** (and likely other PTP cameras): Reports `20480000T000000` (month 0, day 0) as "no date" in ObjectInfo datetimes. Receive-side datetime parsing is lenient for this reason: unparseable datetimes become `None` instead of failing the dataset parse. Send-side packing stays strict.
+- **Datetimes are usually zoneless, and that's kept honest.** `DateTime::offset` is `None` unless the string ended in `Z` or `±hhmm`; `None` means wall-clock time in the device's zone, never UTC, so `to_unix_seconds()` answers only with an offset and `to_unix_seconds_with_fallback(zone)` makes the consumer pick one. Android writes phone-local time with no zone and, on receive, honors `Z` but reads any `±hhmm` as phone-local (verified against AOSP `frameworks/av` `media/mtp/MtpUtils.cpp` `parseDateTime`/`formatDateTime` on `main`, 2026-10-07). Parsing is exact (real month lengths, leap years, digits only); an unrecognized suffix yields `None` rather than a zoneless value, since it might be an offset we'd be ignoring.
 - **Teenage Engineering TP-7**: Keeps its device-side MTP session open across host processes and treats
   `CloseSession` as a request to leave MTP mode. Use
   `MtpDeviceBuilder::reuse_existing_session(0xBAAA_AAAD)` to reuse its stable session without sending
@@ -135,7 +136,7 @@ range, window_size)` (returns `WindowedDownload`), and buffered `Storage::downlo
 
 - **Unit**: `cargo test --workspace` (uses mock transport)
 - **Filesystem-watcher tests run in their own pass** (`just test` does this for you: everything else, then `fs_watcher` with `--test-threads=1`). They wait on real OS filesystem-event delivery, so inside the ~400-test parallel pool a loaded machine starves them past their poll budget and they fail as a group while passing every time alone. Don't fold them back in, and don't "fix" a flake there by inflating the timeout. Each one also calls `wait_for_watcher_ready` first, which writes a probe file and waits for the watcher to report it: `notify` arms its stream on a background thread, so a write issued straight after `open_virtual` can land before anything is listening. The probe file is deliberately left in place, since deleting it queues a late `ObjectRemoved` that lands after the drain and steals the next test's first event.
-- **Virtual device**: `cargo test -p mtp-rs --features virtual-device` (full protocol tests against local filesystem). `VirtualDeviceConfig` implements `Default`, so build it as `VirtualDeviceConfig { storages: vec![...], ..Default::default() }` and state only the fields a test actually exercises; new fields must land with a default so consumers don't break (see CONTRIBUTING.md). `VirtualStorageConfig` has no `Default` (an unset `backing_dir` fails silently). Fault injection: `force_partial_read_caps` (short/stall reads), `force_cancel_wedge` / `force_operation_wedge` (#18), `force_object_info_error` and `VirtualDeviceConfig::undescribable_objects` (partially-readable folders, #22). Capability shaping: `supports_partial_object` / `supports_partial_object_64` pick which partial-read ops the device advertises AND serves (both `false` models libhaze/Sphaira, where `download(ByteRange::Full)` is the only read).
+- **Virtual device**: `cargo test -p mtp-rs --features virtual-device` (full protocol tests against local filesystem). `VirtualDeviceConfig` implements `Default`, so build it as `VirtualDeviceConfig { storages: vec![...], ..Default::default() }` and state only the fields a test actually exercises; new fields must land with a default so consumers don't break (see CONTRIBUTING.md). `VirtualStorageConfig` has no `Default` (an unset `backing_dir` fails silently). Fault injection: `force_partial_read_caps` (short/stall reads), `force_cancel_wedge` / `force_operation_wedge` (#18), `force_object_info_error` and `VirtualDeviceConfig::undescribable_objects` (partially-readable folders, #22). Capability shaping: `supports_partial_object` / `supports_partial_object_64` pick which partial-read ops the device advertises AND serves (both `false` models libhaze/Sphaira, where `download(ByteRange::Full)` is the only read). Dates: objects report their backing file's mtime (and birth time) on the clock set by `utc_offset` (default UTC, zoneless unless `dates_include_offset`), and an upload's `DateModified` becomes the file's mtime, so a fixture seeds a date with `File::set_modified`.
 - **Integration**: `cargo test -p mtp-rs --test integration -- --ignored --nocapture` (needs device). Destructive tests pick a writable root folder from a priority list (Android `Download`, Garmin `Music`, Kindle `documents`, etc.); set `MTP_TEST_FOLDER=Name` to override. See `crates/mtp-rs/tests/integration.rs` header for full details.
 - **CLI**: `cargo test -p mtp-rs-cli --features virtual-device` (runs the built binary against a virtual device)
 - **Property**: `cargo test --workspace --all-features` (proptest fuzzing)
@@ -369,7 +370,9 @@ bounded `GetPartialObject64` transactions instead of one held-open stream. It
 returns a `WindowedDownload` whose `next_window()` reads the next window and
 RELEASES the one-per-device PTP session on return. Companions:
 `download_windowed_from_offset` (resumable), `download_windowed_default`, the
-`DEFAULT_DOWNLOAD_WINDOW` const (8 MiB).
+`DEFAULT_DOWNLOAD_WINDOW` const (8 MiB). `modified()` / `created()` hand back the
+dates from the `ObjectInfo` it already fetched to learn the size, so keeping a
+copy's date costs no extra `GetObjectInfo`.
 
 The motivation is the session monopoly: `download` owns the single PTP session
 for the WHOLE file, whatever the range, so

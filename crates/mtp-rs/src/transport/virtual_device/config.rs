@@ -93,6 +93,36 @@ pub struct VirtualDeviceConfig {
     ///
     /// Defaults to empty: every object describes itself.
     pub undescribable_objects: Vec<String>,
+    /// The UTC offset of the virtual device's clock: the zone it reports dates in
+    /// and reads zoneless dates from.
+    ///
+    /// The device reports each object's `DateModified` from its backing file's
+    /// modification time, and `DateCreated` from its birth time where the host
+    /// filesystem records one. A `DateModified` received in `SendObjectInfo`
+    /// becomes the uploaded file's modification time, the way Android's
+    /// `MtpServer` stamps it after the data phase: an offset on the received
+    /// value is honored, and a zoneless one is read at this offset. So a
+    /// fixture seeds a date by setting the backing file's modification time:
+    ///
+    /// ```no_run
+    /// # fn main() -> std::io::Result<()> {
+    /// use std::time::{Duration, UNIX_EPOCH};
+    ///
+    /// let file = std::fs::File::options().write(true).open("/tmp/mtp-test/photo.jpg")?;
+    /// file.set_modified(UNIX_EPOCH + Duration::from_secs(1_710_513_022))?;
+    /// // Reported as "20240315T143022" with the default UTC clock.
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Dates are whole seconds, as on the wire. Defaults to UTC, which keeps
+    /// tests independent of the machine's zone.
+    pub utc_offset: crate::mtp::UtcOffset,
+    /// Whether reported dates carry [`utc_offset`](Self::utc_offset) as a suffix
+    /// (`Z` or `±hhmm`). `false` writes them zoneless, the way Android does,
+    /// so a consumer's handling of zoneless dates gets exercised. Defaults to
+    /// `false`.
+    pub dates_include_offset: bool,
 }
 
 /// A ready-to-extend starting point: an obviously-fake identity plus the
@@ -125,6 +155,8 @@ impl Default for VirtualDeviceConfig {
             event_poll_interval: Duration::from_millis(50),
             watch_backing_dirs: true,
             undescribable_objects: Vec::new(),
+            utc_offset: crate::mtp::UtcOffset::UTC,
+            dates_include_offset: false,
         }
     }
 }

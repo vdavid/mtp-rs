@@ -5,6 +5,7 @@ use super::config::{VirtualDeviceConfig, VirtualStorageConfig};
 use crate::ptp::{EventCode, ObjectHandle, StorageId};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// Per-storage state.
 #[derive(Debug)]
@@ -34,6 +35,9 @@ pub(super) struct PendingSendInfo {
     pub size: u64,
     pub is_folder: bool,
     pub assigned_handle: ObjectHandle,
+    /// The `DateModified` from `SendObjectInfo`, resolved to an instant on the
+    /// device's clock. Stamped on the file once `SendObject` writes it.
+    pub modified: Option<SystemTime>,
 }
 
 /// A command waiting for its data phase from the host.

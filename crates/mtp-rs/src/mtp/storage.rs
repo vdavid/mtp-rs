@@ -503,17 +503,18 @@ impl Storage {
         range: ByteRange,
         window_size: u32,
     ) -> Result<WindowedDownload, Error> {
-        let size = self.backend.object_info(handle).await?.size;
+        let info = self.backend.object_info(handle).await?;
         let offset = range.offset();
-        if offset > size {
+        if offset > info.size {
             return Err(Error::invalid_data(format!(
-                "windowed download offset {offset} is past the object size {size}"
+                "windowed download offset {offset} is past the object size {}",
+                info.size
             )));
         }
         Ok(WindowedDownload::new(
             Arc::clone(&self.backend),
             handle,
-            size,
+            &info,
             offset,
             window_size,
         ))

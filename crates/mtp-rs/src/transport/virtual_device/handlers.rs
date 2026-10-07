@@ -5,7 +5,7 @@
 
 use super::builders::{
     build_data_container, build_device_info, build_event, build_object_info, build_response,
-    build_storage_info,
+    build_storage_info, system_time_from_unix,
 };
 use super::state::{PendingSendInfo, VirtualDeviceState};
 use crate::ptp::{
@@ -495,6 +495,10 @@ fn handle_send_object_info(
         size: info.size,
         is_folder,
         assigned_handle: new_handle,
+        modified: info
+            .modified
+            .and_then(|dt| dt.to_unix_seconds_with_fallback(state.config.utc_offset))
+            .map(system_time_from_unix),
     });
 
     // Create the object on disk immediately, matching real devices: PTP's
@@ -640,6 +644,16 @@ fn handle_send_object(state: &mut VirtualDeviceState, tx_id: u32, data_payload: 
             .response_queue
             .push_back(build_response(GENERAL_ERROR, tx_id, &[]));
         return;
+    }
+
+    // Stamp the received DateModified after the data lands, as Android's
+    // `MtpServer::doSendObject` does with `futimens`. Like Android, a failure to
+    // stamp leaves the time of writing and doesn't fail the upload.
+    if let Some(modified) = pending.modified {
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(&full_path)
+            .and_then(|f| f.set_modified(modified));
     }
 
     let handle = pending.assigned_handle;
