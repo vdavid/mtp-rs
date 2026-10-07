@@ -7,6 +7,10 @@
 //! Where a value originates in the PTP layer, a `From` impl (and a `pub(crate)` `to_ptp` helper for
 //! the reverse) bridges the two so the `UsbBackend` converts only at its edge.
 
+/// The UTC offset an MTP datetime can carry. Shared with the low-level [`crate::ptp`] layer, since
+/// it's a plain value with no wire or backend detail.
+pub use crate::ptp::UtcOffset;
+
 use crate::ptp::{
     AccessCapability, DateTime as PtpDateTime, DeviceInfo as PtpDeviceInfo,
     FilesystemType as PtpFs, ObjectFormatCode, ObjectHandle as PtpObjectHandle,
@@ -126,14 +130,51 @@ impl From<ObjectFormatCode> for ObjectFormat {
     }
 }
 
-/// A calendar date and time as reported by a device (no timezone).
+/// A calendar date and time as a device reports it, plus the UTC offset when the device gave one.
+///
+/// MTP writes datetimes as `YYYYMMDDThhmmss`, optionally followed by tenths of a second (`.s`) and
+/// an offset (`Z` or `±hhmm`). Most devices leave the offset out: Android writes the phone's local
+/// time with no zone, so [`offset`](Self::offset) is `None` and the fields are wall-clock time in a
+/// zone only the device knows. The library doesn't guess that zone. To get an instant, call
+/// [`to_unix_seconds`](Self::to_unix_seconds) (which answers only when the device gave an offset)
+/// or [`to_unix_seconds_with_fallback`](Self::to_unix_seconds_with_fallback) with the zone you
+/// decide the device is in (often the host's own local offset for that date).
+///
+/// Tenths of a second are accepted on receive and dropped, so a time is whole seconds. Equality is
+/// field by field: `12:00Z` and `13:00+0100` are the same instant but not equal values.
+///
+/// # Writing a date to a device
+///
+/// [`NewObjectInfo::with_modified`](crate::mtp::NewObjectInfo::with_modified) sends the value as
+/// written, offset included. Android honors a `Z` (UTC) suffix but ignores any other offset and
+/// reads the value as phone-local time (AOSP `MtpUtils.cpp` `parseDateTime`), so send either UTC
+/// (`from_unix_seconds(secs, UtcOffset::UTC)`) or a zoneless phone-local time.
+///
+/// # Example
+///
+/// ```
+/// use mtp_rs::mtp::{DateTime, UtcOffset};
+///
+/// // A zoneless value, the way Android reports it: no instant without a zone.
+/// let local = DateTime::new(2026, 10, 7, 14, 30, 0).unwrap();
+/// assert_eq!(local.offset, None);
+/// assert_eq!(local.to_unix_seconds(), None);
+///
+/// // Decide the device is on Stockholm summer time (UTC+2) and resolve it.
+/// let cest = UtcOffset::from_minutes(120).unwrap();
+/// assert_eq!(local.to_unix_seconds_with_fallback(cest), Some(1_791_376_200));
+///
+/// // Build a UTC value to send with an upload.
+/// let utc = DateTime::from_unix_seconds(1_791_376_200, UtcOffset::UTC).unwrap();
+/// assert_eq!((utc.hour, utc.offset), (12, Some(UtcOffset::UTC)));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DateTime {
-    /// Year (e.g. 2026).
+    /// Year, 0-9999.
     pub year: u16,
     /// Month, 1-12.
     pub month: u8,
-    /// Day, 1-31.
+    /// Day, 1 to the month's real length (leap years included).
     pub day: u8,
     /// Hour, 0-23.
     pub hour: u8,
@@ -141,6 +182,9 @@ pub struct DateTime {
     pub minute: u8,
     /// Second, 0-59.
     pub second: u8,
+    /// The UTC offset the device wrote, or `None` when it wrote none (the usual case). `None`
+    /// means "wall-clock time in the device's zone", never UTC.
+    pub offset: Option<UtcOffset>,
 }
 
 impl From<PtpDateTime> for DateTime {
@@ -152,11 +196,50 @@ impl From<PtpDateTime> for DateTime {
             hour: d.hour,
             minute: d.minute,
             second: d.second,
+            offset: d.offset,
         }
     }
 }
 
 impl DateTime {
+    /// A zoneless date and time, validated: month lengths and leap years are real, so
+    /// `2023-02-29` is `None`. Add an offset with [`with_offset`](Self::with_offset).
+    #[must_use]
+    pub fn new(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> Option<Self> {
+        PtpDateTime::new(year, month, day, hour, minute, second).map(Into::into)
+    }
+
+    /// The same wall-clock fields, marked as being at `offset` from UTC.
+    #[must_use]
+    pub fn with_offset(self, offset: UtcOffset) -> Self {
+        Self {
+            offset: Some(offset),
+            ..self
+        }
+    }
+
+    /// The instant at `secs` seconds since the Unix epoch, as wall-clock time at `offset`. The
+    /// result carries that offset. `None` when the year falls outside 0-9999, which MTP can't write.
+    #[must_use]
+    pub fn from_unix_seconds(secs: i64, offset: UtcOffset) -> Option<Self> {
+        PtpDateTime::from_unix_seconds(secs, offset).map(Into::into)
+    }
+
+    /// Seconds since the Unix epoch, when the value carries an offset. `None` for a zoneless value
+    /// (see the type docs) or for fields that don't form a real date.
+    #[must_use]
+    pub fn to_unix_seconds(&self) -> Option<i64> {
+        self.to_ptp().to_unix_seconds()
+    }
+
+    /// Seconds since the Unix epoch, reading a zoneless value as wall-clock time at `fallback`. A
+    /// value that carries its own offset uses that one. `None` only for fields that don't form a
+    /// real date.
+    #[must_use]
+    pub fn to_unix_seconds_with_fallback(&self, fallback: UtcOffset) -> Option<i64> {
+        self.to_ptp().to_unix_seconds_with_fallback(fallback)
+    }
+
     /// Convert to the PTP wire datetime (used when packing an upload's `ObjectInfo`).
     #[must_use]
     pub(crate) fn to_ptp(self) -> PtpDateTime {
@@ -167,6 +250,7 @@ impl DateTime {
             hour: self.hour,
             minute: self.minute,
             second: self.second,
+            offset: self.offset,
         }
     }
 }

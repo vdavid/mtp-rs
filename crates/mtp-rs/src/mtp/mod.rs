@@ -57,5 +57,5 @@ pub use stream::{
 };
 pub use types::{
     Capabilities, DateTime, DeviceInfo, FilesystemType, ObjectFormat, ObjectHandle, ObjectInfo,
-    StorageId, StorageInfo, StorageType,
+    StorageId, StorageInfo, StorageType, UtcOffset,
 };

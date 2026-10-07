@@ -150,6 +150,7 @@ mod tests {
             hour: 10,
             minute: 30,
             second: 0,
+            offset: None,
         };
         let info = NewObjectInfo::file("test.txt", 100).with_modified(dt);
         assert_eq!(info.modified, Some(dt));

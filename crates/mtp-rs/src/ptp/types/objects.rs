@@ -324,6 +324,7 @@ mod tests {
                 hour: 14,
                 minute: 30,
                 second: 22,
+                offset: None,
             })
             .unwrap(),
         );
@@ -336,6 +337,7 @@ mod tests {
                 hour: 9,
                 minute: 0,
                 second: 0,
+                offset: None,
             })
             .unwrap(),
         );
@@ -501,6 +503,7 @@ mod tests {
                 hour: 10,
                 minute: 30,
                 second: 0,
+                offset: None,
             }),
             modified: Some(DateTime {
                 year: 2024,
@@ -509,6 +512,7 @@ mod tests {
                 hour: 11,
                 minute: 45,
                 second: 30,
+                offset: None,
             }),
             keywords: "test,photo".to_string(),
         };

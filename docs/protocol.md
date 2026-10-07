@@ -385,9 +385,14 @@ Must follow SendObjectInfo.
 | AssociationDesc      | u32    | Yes               | 0x00000000 normally            |
 | SequenceNumber       | u32    | No                | Unused                         |
 | Filename             | String | Yes               | Object name                    |
-| DateCreated          | String | No                | "YYYYMMDDThhmmss"              |
-| DateModified         | String | No                | "YYYYMMDDThhmmss"              |
+| DateCreated          | String | No                | See datetime format below      |
+| DateModified         | String | No                | See datetime format below      |
 | Keywords             | String | No                | Unused                         |
+
+Datetime format: `YYYYMMDDThhmmss`, then optional tenths of a second (`.s`), then an optional UTC
+offset (`Z` or `±hhmm`). An empty string means no date. Without an offset the value is local time in
+a zone the string doesn't name; Android always writes it that way, in the phone's zone. `DateTime`
+keeps the offset in `offset` (`None` when absent) and drops the tenths.
 
 ## Object format codes
 

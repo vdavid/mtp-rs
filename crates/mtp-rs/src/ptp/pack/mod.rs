@@ -4,7 +4,7 @@
 
 mod datetime;
 
-pub use datetime::{pack_datetime, unpack_datetime, DateTime};
+pub use datetime::{pack_datetime, unpack_datetime, DateTime, UtcOffset};
 
 // --- Primitive packing functions ---
 

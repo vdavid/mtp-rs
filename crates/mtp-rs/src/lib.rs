@@ -58,7 +58,7 @@ pub use mtp::{Error, UploadError};
 pub use mtp::{
     Backend, ByteRange, Capabilities, DateTime, DeviceEvent, DeviceInfo, FileDownload, ListingItem,
     MtpDevice, MtpDeviceBuilder, NewObjectInfo, ObjectCollection, ObjectFormat, ObjectHandle,
-    ObjectInfo, ObjectListing, Progress, SkippedObject, Storage, StorageId, StorageInfo,
+    ObjectInfo, ObjectListing, Progress, SkippedObject, Storage, StorageId, StorageInfo, UtcOffset,
     WindowedDownload, DEFAULT_CANCEL_TIMEOUT, DEFAULT_DOWNLOAD_WINDOW,
 };
 
