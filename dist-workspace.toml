@@ -23,5 +23,8 @@ publish-jobs = ["./publish-homebrew-formula"]
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Path that installers should place binaries in. Most users of the installer have no Rust toolchain.
 install-path = "~/.local/bin"
+# Build only the packages dist ships (`-p mtp-rs-cli`). The default `--workspace` build pulls in
+# benchmarks/mtp-rs-vs-libmtp, whose libmtp-sys needs a C libmtp the runners lack.
+precise-builds = true
 # Whether to install an updater program
 install-updater = false
