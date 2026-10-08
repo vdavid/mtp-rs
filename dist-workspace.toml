@@ -1,0 +1,27 @@
+# Config for `dist` (cargo-dist): prebuilt CLI binaries on GitHub Releases, shell and
+# PowerShell installers, and the Homebrew formula in vdavid/homebrew-tap.
+# After editing, run `dist generate` to regenerate .github/workflows/release.yml.
+[workspace]
+members = ["cargo:."]
+
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.33.0"
+# Only `mtp-rs-cli-vX.Y.Z` tags trigger a release. The lib's `vX.Y.Z` tags have no binary to ship.
+tag-namespace = "mtp-rs-cli"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell", "homebrew"]
+# The Homebrew tap the formula is pushed to
+tap = "vdavid/homebrew-tap"
+# Formula name: matches the binary, so it's `brew install vdavid/tap/mtp-rs`
+formula = "mtp-rs"
+# Publish jobs to run in CI. Custom, so it can push to the tap with a deploy key (no PAT needed)
+publish-jobs = ["./publish-homebrew-formula"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# Path that installers should place binaries in. Most users of the installer have no Rust toolchain.
+install-path = "~/.local/bin"
+# Whether to install an updater program
+install-updater = false

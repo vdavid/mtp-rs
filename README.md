@@ -11,7 +11,7 @@ This repo ships two crates:
 | Crate                                  | What it is                                                | Page                                                                             |
 |----------------------------------------|-----------------------------------------------------------|----------------------------------------------------------------------------------|
 | **[`mtp-rs`](crates/mtp-rs/)**         | The library. Use it from your own Rust code.              | [crates.io](https://crates.io/crates/mtp-rs) · [docs.rs](https://docs.rs/mtp-rs) |
-| **[`mtp-rs-cli`](crates/mtp-rs-cli/)** | A ready-made `mtp-rs` binary. `cargo install mtp-rs-cli`. | [crates.io](https://crates.io/crates/mtp-rs-cli)                                 |
+| **[`mtp-rs-cli`](crates/mtp-rs-cli/)** | A ready-made `mtp-rs` binary. `brew install vdavid/tap/mtp-rs`. | [crates.io](https://crates.io/crates/mtp-rs-cli)                                 |
 
 For library usage, the API, the device quirks we handle, and tested devices, see the [
 `mtp-rs` README](crates/mtp-rs/README.md).

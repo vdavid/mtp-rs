@@ -10,9 +10,25 @@ Talk to Android phones, Kindles, Garmin watches, media players, and other MTP de
 
 ## Install
 
+No Rust toolchain needed. On macOS or Linux, with [Homebrew](https://brew.sh):
+
 ```sh
-cargo install mtp-rs-cli
+brew install vdavid/tap/mtp-rs
 ```
+
+Or with the install script (macOS and Linux):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/vdavid/mtp-rs/releases/latest/download/mtp-rs-cli-installer.sh | sh
+```
+
+On Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/vdavid/mtp-rs/releases/latest/download/mtp-rs-cli-installer.ps1 | iex"
+```
+
+Prebuilt binaries for each platform are on [GitHub Releases](https://github.com/vdavid/mtp-rs/releases). If you have Rust, `cargo install mtp-rs-cli` works too.
 
 The installed binary is called `mtp-rs`.
 

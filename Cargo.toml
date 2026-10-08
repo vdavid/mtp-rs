@@ -23,3 +23,8 @@ authors = ["David Veszelovszki <veszelovszki@gmail.com>"]
 
 [workspace.lints.clippy]
 # Inherit clippy.toml at the workspace root.
+
+# The profile `dist` builds release binaries with (see dist-workspace.toml).
+[profile.dist]
+inherits = "release"
+lto = "thin"

@@ -1,0 +1,51 @@
+# Pushes the Homebrew formula that `dist` built to vdavid/homebrew-tap.
+#
+# Called by mtp-rs-cli-release.yml (dist's `publish-jobs = ["./publish-homebrew-formula"]`). It's a
+# copy of dist's built-in Homebrew publish job, except it pushes with an SSH deploy key
+# (`HOMEBREW_TAP_DEPLOY_KEY`, write access to the tap repo only) instead of a personal access token.
+name: Publish Homebrew formula
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    env:
+      PLAN: ${{ inputs.plan }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: vdavid/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          persist-credentials: true
+      - name: Fetch the formula dist built
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: Formula/
+          merge-multiple: true
+      - name: Commit and push the formula
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Formula names needn't match app names, so find each release's .rb file in the plan.
+          for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith(".rb")] | any)'); do
+            filename=$(echo "$release" | jq '.artifacts[] | select(endswith(".rb"))' --raw-output)
+            name="${filename%.rb}"
+            version=$(echo "$release" | jq .app_version --raw-output)
+
+            export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+            brew update
+            # Don't reformat user-provided data such as the description and homepage.
+            brew style --except-cops FormulaAudit/Homepage,FormulaAudit/Desc,FormulaAuditStrict --fix "Formula/${filename}" || true
+
+            git add "Formula/${filename}"
+            git commit -m "${name} ${version}"
+          done
+          git push

@@ -6,7 +6,8 @@ cameras that expose MTP storage all use the same file commands.
 
 ## Installation
 
-Install the binary from crates.io:
+Install a prebuilt binary (no Rust toolchain needed) with `brew install vdavid/tap/mtp-rs`, the
+install scripts on [GitHub Releases](https://github.com/vdavid/mtp-rs/releases), or from crates.io:
 
 ```sh
 cargo install mtp-rs-cli

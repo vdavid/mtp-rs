@@ -17,6 +17,7 @@ keywords = ["mtp", "cli", "android", "garmin", "kindle"]
 categories = ["command-line-utilities", "filesystem"]
 readme = "README.md"
 documentation = "https://docs.rs/mtp-rs-cli"
+homepage = "https://github.com/vdavid/mtp-rs"
 
 [[bin]]
 name = "mtp-rs"
