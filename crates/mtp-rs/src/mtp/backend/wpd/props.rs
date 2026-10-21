@@ -245,6 +245,28 @@ mod tests {
         assert_eq!(ole_date_to_datetime(46_243.5).unwrap().offset, None);
     }
 
+    fn hresult(code: u32) -> Error {
+        map_hresult(WinError::from_hresult(windows::core::HRESULT(code as i32)))
+    }
+
+    #[test]
+    fn mtp_response_code_hresults_map_like_the_usb_backend() {
+        // A deleted object's handle on a POCO X7 Pro under Windows 11 (#41): MTP 0x2009
+        // InvalidObjectHandle, wrapped as FACILITY_ITF.
+        assert!(matches!(hresult(0x8004_2009), Error::StaleHandle));
+        assert!(matches!(hresult(0x8004_201A), Error::StaleHandle)); // InvalidParentObject
+        assert!(matches!(hresult(0x8004_2008), Error::NotFound)); // InvalidStorageId
+        assert!(matches!(hresult(0x8004_200C), Error::StorageFull)); // StoreFull
+        assert!(matches!(hresult(0x8004_2019), Error::Busy)); // DeviceBusy
+        assert!(matches!(hresult(0x8004_2005), Error::Unsupported)); // OperationNotSupported
+    }
+
+    #[test]
+    fn other_facility_itf_hresults_stay_other() {
+        // REGDB_E_CLASSNOTREG shares FACILITY_ITF but isn't an MTP response code.
+        assert!(matches!(hresult(0x8004_0154), Error::Other { .. }));
+    }
+
     #[test]
     fn ole_date_zero_negative_and_non_finite_are_no_date() {
         for days in [0.0, -1.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
