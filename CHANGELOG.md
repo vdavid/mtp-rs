@@ -14,6 +14,10 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Fixed
+
+- **[lib] On Windows, a stale or deleted object's handle reports `Error::StaleHandle`, like it does over USB.** The Windows MTP driver passes a device's MTP response code back inside an `HRESULT` (`0x8004_xxxx`), and the WPD backend turned those into `Error::Other`. It now maps them the same way the USB backend maps the raw codes, so `InvalidObjectHandle` is `StaleHandle`, `StoreFull` is `StorageFull`, `DeviceBusy` is `Busy`, and so on. Found by [@IoSonoPiero](https://github.com/IoSonoPiero) on a Xiaomi POCO X7 Pro ([#41](https://github.com/vdavid/mtp-rs/pull/41)).
+
 ## [0.33.1] - 2026-10-21
 
 Library `0.33.1` only; the CLI stays at `0.9.1`, since it doesn't print dates. Files listed on Windows have dates now.
