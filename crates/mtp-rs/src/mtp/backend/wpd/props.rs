@@ -5,7 +5,9 @@
 //! (`GetStringValue`/`GetGuidValue`/`GetUnsignedLargeIntegerValue`) keep us out of raw `PROPVARIANT`
 //! handling, as proven in the Phase 0 spike.
 
+use crate::mtp::error::map_response_code;
 use crate::mtp::{DateTime, Error, ObjectFormat, ObjectHandle, ObjectInfo, StorageId, UtcOffset};
+use crate::ptp::ResponseCode;
 use std::ffi::c_void;
 
 use windows::core::{Error as WinError, GUID, PWSTR};
@@ -96,6 +98,9 @@ pub(crate) fn map_hresult(e: WinError) -> Error {
     const ERROR_DEVICE_REMOVED: u32 = 1617;
     const ERROR_NOT_SUPPORTED: u32 = 50;
 
+    if let Some(code) = mtp_response_code(e.code().0) {
+        return map_response_code(code);
+    }
     match e.code().0 {
         E_ACCESSDENIED | STG_E_ACCESSDENIED => Error::AccessDenied,
         x if x == win32(ERROR_ACCESS_DENIED) => Error::AccessDenied,
@@ -113,6 +118,22 @@ pub(crate) fn map_hresult(e: WinError) -> Error {
             detail: format!("HRESULT {:#010x}: {}", e.code().0 as u32, e.message()),
         },
     }
+}
+
+/// The MTP response code inside an `HRESULT`, when Windows passed one through.
+///
+/// The WPD driver hands a device's MTP response back as a `FACILITY_ITF` failure (`0x8004_xxxx`)
+/// with the response code in the low 16 bits: a deleted object's handle on a POCO X7 Pro under
+/// Windows 11 came back as `0x8004_2009`, MTP `InvalidObjectHandle` (#41). Only the MTP
+/// response-code ranges count (`0x2xxx` standard, `0xAxxx` MTP extensions), since other
+/// `FACILITY_ITF` codes are unrelated COM errors (`0x8004_0154` is `REGDB_E_CLASSNOTREG`).
+fn mtp_response_code(hresult: i32) -> Option<ResponseCode> {
+    let hresult = hresult as u32;
+    if hresult & 0xFFFF_0000 != 0x8004_0000 {
+        return None;
+    }
+    let code = (hresult & 0xFFFF) as u16;
+    matches!(code >> 12, 0x2 | 0xA).then(|| ResponseCode::from(code))
 }
 
 /// Whether a WPD content-type GUID denotes a folder (or a storage/functional object, which we also

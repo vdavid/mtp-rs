@@ -207,8 +207,9 @@ impl From<crate::error::PtpError> for Error {
     }
 }
 
-/// Map a PTP response code to a neutral [`enum@Error`].
-fn map_response_code(code: ResponseCode) -> Error {
+/// Map a PTP response code to a neutral [`enum@Error`]. The WPD backend uses it too, for the MTP
+/// response codes Windows passes through as `HRESULT`s.
+pub(crate) fn map_response_code(code: ResponseCode) -> Error {
     match code {
         // A previously-valid handle/parent going invalid is the Android re-key case (recoverable),
         // not a hard not-found. Callers re-list the parent and retry once.
