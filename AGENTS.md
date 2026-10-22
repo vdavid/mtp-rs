@@ -328,6 +328,19 @@ the bulk IN and interrupt pipes. This approach was validated against libmtp's
   to enter an unrecoverable state.
 - The drain uses maxpacket-sized reads with a 300ms idle timeout (matching
   libmtp and Windows behavior).
+- **Some devices refuse CLASS_CANCEL with a STALL** (Xiaomi POCO X6 Pro on
+  Linux, #43; its sibling X7 Pro accepts it). The device then keeps sending the
+  object, so `cancel_transfer` drains anyway, in 64 KiB reads, until the
+  closing Response arrives: the cancel costs the rest of the transfer, but the
+  session stays in sync. Returning the STALL as an error instead left the rest
+  of the object in the pipe and wedged the phone until a replug.
+- **The drain recognizes the Response only as a short read whose length field
+  matches** (`is_response_container`). File data has `03 00` at bytes 4..6 in
+  about one read in 65,536, so a drain through a whole object that checked only
+  the type code would stop early with data still queued.
+- **A failed `ReceiveStream::cancel` flags the session for recovery** (except
+  on `DeviceReset`, where the caller must reopen quietly), so the next
+  operation drains instead of reading leftover bytes as its response.
 - The interrupt pipe must also be drained: some devices (GoPro) freeze if
   the CancelTransaction event is left unread.
 - **After** the drains, GET_DEVICE_STATUS (0x67) **must** be polled until the

@@ -490,9 +490,17 @@ impl ReceiveStream {
             return Ok(());
         }
         self.done = true;
-        self.transport
+        let result = self
+            .transport
             .cancel_transfer(self.transaction_id, idle_timeout)
-            .await
+            .await;
+        // A failed cancel may have left the rest of the object and its response in the
+        // pipe, so the next operation drains first (#43). Not after `DeviceReset`: that
+        // session is gone, and the caller's reopen needs a quiet device.
+        if matches!(&result, Err(e) if !matches!(e, Error::DeviceReset)) {
+            self.recovery.flag(self.transaction_id);
+        }
+        result
     }
 
     /// Collect all remaining data into a `Vec<u8>`.
@@ -955,6 +963,46 @@ mod tests {
 
         // Stream should be marked done even on error
         assert!(stream.done);
+    }
+
+    /// A cancel that fails leaves the rest of the object and its response in the pipe, so
+    /// the next operation must drain first. Regression for #43: the POCO X6 Pro STALLs the
+    /// CLASS_CANCEL request, and the next op read leftover file bytes as its response.
+    #[tokio::test]
+    async fn failed_cancel_flags_session_for_recovery() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+        mock.queue_response(data_container(1, OperationCode::GetObject, &[1, 2, 3]));
+        mock.queue_cancel_result(Err(crate::PtpError::Io(std::io::Error::other(
+            "endpoint stalled",
+        ))));
+
+        let session = Arc::new(PtpSession::open(transport, 1).await.unwrap());
+        let mut stream = session.get_object_stream(ObjectHandle(1)).await.unwrap();
+        stream.next_chunk().await.unwrap().unwrap();
+
+        assert!(stream.cancel(Duration::from_secs(2)).await.is_err());
+        assert!(
+            session.needs_recovery(),
+            "a failed cancel must flag the session for recovery"
+        );
+    }
+
+    /// After `DeviceReset` the session is gone and the caller must reopen quietly, so a
+    /// recovery drain on the dead session would only add the USB traffic the device can't take.
+    #[tokio::test]
+    async fn cancel_ending_in_device_reset_does_not_flag_recovery() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+        mock.queue_response(data_container(1, OperationCode::GetObject, &[1, 2, 3]));
+        mock.queue_cancel_result(Err(crate::PtpError::DeviceReset));
+
+        let session = Arc::new(PtpSession::open(transport, 1).await.unwrap());
+        let mut stream = session.get_object_stream(ObjectHandle(1)).await.unwrap();
+        stream.next_chunk().await.unwrap().unwrap();
+
+        assert!(stream.cancel(Duration::from_secs(2)).await.is_err());
+        assert!(!session.needs_recovery());
     }
 
     #[tokio::test]

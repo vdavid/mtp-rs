@@ -54,7 +54,24 @@ Reports from this thread:
 
 ## Active threads
 
-None right now.
+### #43: POCO X6 Pro 5G results, a Linux cancel wedge, and a WPD wait (opened 2026-10-22)
+
+Reporter: [@IoSonoPiero](https://github.com/IoSonoPiero) (see #41). Xiaomi POCO X6 Pro 5G, HyperOS 3.0.304.0 (WNLEUXM),
+Android 16 (BP2A.250605.031.A3).
+
+- **Windows 11 (WPD, `c59f64d`)**: read-only 11/12 (`test_ptp_device` `Unsupported`, expected), destructive 6/6.
+- **Linux (Fedora 44, kernel 7.2, `v0.33.2`)**: `test_cancel_download_then_reuse_session` fails every time with
+  `Io("endpoint stalled")`, then the phone stays wedged until a replug. Skipping it, everything passes (read-only 11/11,
+  destructive 6/6). The X7 Pro passes the same test on Linux, and the X6 Pro passes it on Windows.
+- **Cause**: the phone STALLs the CLASS_CANCEL control request, and `cancel_transfer` returned before draining, with
+  the rest of the object in the pipe. `ReceiveStream::cancel` had also marked itself done without flagging recovery, so
+  the next op read file bytes as its response (`got 45616`). Fix on branch `worktree-cancel-refused` (drain after a
+  refused cancel, stricter response detection, flag recovery on a failed cancel; see "Transfer cancellation" in
+  `AGENTS.md`). Waiting for Piero's hardware test.
+- **Open: a 2.5–5 minute wait before `test_rename_file` on Windows** (X6 Pro and X7 Pro), absent on Linux. The test
+  before it is `test_create_delete_folder`. Suspects: dropping the previous `WpdBackend` (the worker joins after
+  `Unadvise`), the recursive WPD folder delete, or the reopen. Asked for a timestamped log and a solo run.
+- **Test-harness gap it exposed**: after the wedge, later tests time out, print `SKIPPING`, and count as passed.
 
 ## Closed and merged
 
