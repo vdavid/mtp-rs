@@ -71,7 +71,9 @@ Android 16 (BP2A.250605.031.A3).
 - **Open: a 2.5–5 minute wait before `test_rename_file` on Windows** (X6 Pro and X7 Pro), absent on Linux. The test
   before it is `test_create_delete_folder`. Suspects: dropping the previous `WpdBackend` (the worker joins after
   `Unadvise`), the recursive WPD folder delete, or the reopen. Asked for a timestamped log and a solo run.
-- **Test-harness gap it exposed**: after the wedge, later tests time out, print `SKIPPING`, and count as passed.
+- **Test-harness gap it exposed**: after the wedge, later tests timed out, printed `SKIPPING`, and counted as passed.
+  Fixed on the same branch: a hardware error fails the test once the device has answered earlier in the run
+  (`should_skip` in `tests/integration.rs`); another app holding the device still skips.
 
 ## Closed and merged
 

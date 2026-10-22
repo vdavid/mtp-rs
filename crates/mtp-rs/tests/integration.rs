@@ -15,6 +15,11 @@
 //! cargo test --test integration -- --ignored --nocapture --test-threads=1 --skip slow
 //! ```
 //!
+//! A test skips on a timeout or a missing device only until the device has
+//! answered once in the run. After that the same error fails the test, since it
+//! means an earlier test left the device wedged (#43). Another app holding the
+//! device always skips.
+//!
 //! One test is opt-in: `test_drop_mid_stream_then_software_reconnect` poisons
 //! the session on purpose and can wedge some camera firmware until a USB
 //! replug, so it only runs with `MTP_RUN_DROP_RECOVERY=1` (and `--release`).
@@ -102,15 +107,19 @@ fn test_timeout() -> std::time::Duration {
 
 /// Open the first MTP device with the E2E test timeout (see [`test_timeout`]).
 async fn open_test_mtp() -> Result<mtp_rs::mtp::MtpDevice, mtp_rs::Error> {
-    mtp_rs::mtp::MtpDevice::builder()
+    let result = mtp_rs::mtp::MtpDevice::builder()
         .timeout(test_timeout())
         .open_first()
-        .await
+        .await;
+    note_device_seen(&result);
+    result
 }
 
 /// Open the first PTP device with the E2E test timeout (see [`test_timeout`]).
 async fn open_test_ptp() -> Result<mtp_rs::ptp::PtpDevice, mtp_rs::PtpError> {
-    mtp_rs::ptp::PtpDevice::open_first_with_timeout(test_timeout()).await
+    let result = mtp_rs::ptp::PtpDevice::open_first_with_timeout(test_timeout()).await;
+    note_device_seen(&result);
+    result
 }
 use serial_test::serial;
 use std::time::Instant;
@@ -139,7 +148,8 @@ macro_rules! tlog {
     }};
 }
 
-/// Handle device errors gracefully - skip test on hardware issues, panic on others.
+/// Handle device errors gracefully: skip the test on a setup problem, panic on others
+/// (see [`should_skip`]).
 macro_rules! try_device {
     ($expr:expr, $context:expr) => {
         match $expr {
@@ -148,13 +158,8 @@ macro_rules! try_device {
                 // Normalize to the neutral error so the helpers work for both
                 // high-level (`mtp::Error`) and low-level (`ptp::PtpError`) calls.
                 let e: mtp_rs::Error = e.into();
-                if is_hardware_error(&e) {
-                    tlog!("SKIPPING: {} - {:?}", $context, e);
-                    print_device_help(&e);
-                    return;
-                } else {
-                    panic!("{} failed: {:?}", $context, e);
-                }
+                skip_or_fail($context, &e);
+                return;
             }
         }
     };
@@ -188,6 +193,59 @@ macro_rules! first_storage {
 fn is_hardware_error(e: &mtp_rs::Error) -> bool {
     use mtp_rs::Error;
     matches!(e, Error::Timeout | Error::NoDevice | Error::Disconnected) || e.is_exclusive_access()
+}
+
+/// Set once any test in this run opens the device.
+static DEVICE_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn note_device_seen<T, E>(result: &Result<T, E>) {
+    if result.is_ok() {
+        DEVICE_SEEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Whether a device error skips the test rather than failing it.
+///
+/// A timeout or a missing device is a setup problem (phone locked, cable out) only until the
+/// device has answered once in this run. After that it means an earlier test wedged the phone,
+/// and skipping would report the rest of the run as passed (#43). Another app holding the
+/// device stays a skip either way: on macOS `ptpcamerad` can grab it between tests.
+fn should_skip(e: &mtp_rs::Error, device_seen: bool) -> bool {
+    e.is_exclusive_access() || (is_hardware_error(e) && !device_seen)
+}
+
+/// Skip on a setup problem (see [`should_skip`]), panic on anything else.
+fn skip_or_fail(context: &str, e: &mtp_rs::Error) {
+    if should_skip(e, DEVICE_SEEN.load(std::sync::atomic::Ordering::Relaxed)) {
+        tlog!("SKIPPING: {} - {:?}", context, e);
+        print_device_help(e);
+    } else if is_hardware_error(e) {
+        panic!(
+            "{context} failed: {e:?}. The device answered earlier in this run, so an earlier test \
+             probably left it wedged"
+        );
+    } else {
+        panic!("{context} failed: {e:?}");
+    }
+}
+
+#[test]
+fn hardware_errors_skip_until_the_device_has_answered() {
+    use mtp_rs::Error;
+    for e in [Error::Timeout, Error::NoDevice, Error::Disconnected] {
+        assert!(should_skip(&e, false), "{e:?} before any open");
+        assert!(!should_skip(&e, true), "{e:?} after a successful open");
+    }
+}
+
+#[test]
+fn exclusive_access_always_skips_and_other_errors_never_do() {
+    use mtp_rs::Error;
+    assert!(should_skip(&Error::ExclusiveAccess, false));
+    assert!(should_skip(&Error::ExclusiveAccess, true));
+    let other = Error::invalid_data("expected Response container type (3), got 45616");
+    assert!(!should_skip(&other, false));
+    assert!(!should_skip(&other, true));
 }
 
 fn print_device_help(e: &mtp_rs::Error) {
@@ -1380,7 +1438,7 @@ mod destructive {
         let device = match crate::open_test_mtp().await {
             Ok(d) => d,
             Err(e) => {
-                tlog!("SKIPPING: open device - {:?}", e);
+                crate::skip_or_fail("open device", &e);
                 return None;
             }
         };
@@ -1391,7 +1449,7 @@ mod destructive {
         let storages = match device.storages().await {
             Ok(s) => s,
             Err(e) => {
-                tlog!("SKIPPING: get storages - {:?}", e);
+                crate::skip_or_fail("get storages", &e);
                 return None;
             }
         };
