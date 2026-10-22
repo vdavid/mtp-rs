@@ -449,13 +449,15 @@ internal storage. Full logs offered, not yet requested.
   file in `Download`.
 - **Windows 11 (WPD)**: read-only 11/12, where `test_ptp_device` fails with `Unsupported` (expected: `ptp::` is
   USB-only, and the phone is bound to the WPD driver). Destructive 5/6, `test_streaming_copy` skipped as above.
-- **Open WPD bug**: `test_upload_download_delete` fails on Windows, the same in two runs. The delete succeeds, but
-  `get_object_info` on the deleted handle returns `Other { detail: "HRESULT 0x80042009: " }` where the test expects
-  `StaleHandle`/`NotFound`. Their reading, which fits: WPD wraps the MTP response code `0x2009` (`InvalidObjectHandle`)
-  as an HRESULT with `FACILITY_ITF` (`0x8004_xxxx`), and `map_hresult` in `mtp::backend::wpd::props` only maps the
-  Win32 file/path-not-found codes. They suggested mapping `0x80042009` to `StaleHandle`. Not fixed yet. Worth checking
-  whether other MTP response codes arrive the same way (`0x8004_20xx`), which would make a general mapping better than
-  a one-off.
+- **WPD bug, fixed in #42 (v0.33.2)**: `test_upload_download_delete` failed on Windows, the same in two runs. The
+  delete succeeded, but `get_object_info` on the deleted handle returned `Other { detail: "HRESULT 0x80042009: " }`
+  where the test expects `StaleHandle`/`NotFound`. Their diagnosis was right: WPD wraps the MTP response code `0x2009`
+  (`InvalidObjectHandle`) as a `FACILITY_ITF` HRESULT (`0x8004_xxxx`), and `map_hresult` only knew Win32 codes. #42
+  maps every `0x8004_xxxx` whose low 16 bits are in an MTP response range (`0x2xxx`, `0xAxxx`) through the USB
+  backend's `map_response_code`, rather than special-casing `0x2009`; other `FACILITY_ITF` codes stay `Other`. Only
+  `0x2009` has been seen in the wild. TDD'd on Windows CI (red, then green), and **hardware-confirmed** by
+  @IoSonoPiero on the POCO X7 Pro under Windows 11 on 2026-10-22 ([comment](https://github.com/vdavid/mtp-rs/pull/42#issuecomment-6336278553)).
+  The README row now says full support on Linux and Windows.
 
 ## Device quirks reference
 
@@ -489,7 +491,7 @@ Cross-cutting summary of every quirk currently handled or known. Sorted by devic
 | Switch responders (DBI, Sphaira) | Root objects report the containing storage ID as their parent                                                                              | Root filter accepts the storage ID, unless it's also an enumerated handle            | #20 (@oenderg, 2026-08-08)           |
 | Sphaira (Nintendo Switch)    | `GetObjectInfo` fails with `GeneralError` for one handle in an otherwise readable folder                                                       | `collect_objects` skips it and reports it in `skipped`; all-skipped is still an error | #22 / #23 (@oenderg, 2026-08-08)     |
 | Teenage Engineering TP-7     | Keeps its session across host processes; `CloseSession` makes it leave MTP mode                                                                | Opt-in `MtpDeviceBuilder::reuse_existing_session(0xBAAA_AAAD)`                       | #29 (@worm-emoji, 2026-08-26)        |
-| Windows WPD (POCO X7 Pro)    | `get_object_info` on a deleted handle fails with `HRESULT 0x80042009` (MTP `InvalidObjectHandle` wrapped as `FACILITY_ITF`), mapped to `Error::Other` | None yet: `map_hresult` should map it to `StaleHandle` | #41 (@IoSonoPiero, 2026-10-21) |
+| Windows WPD (POCO X7 Pro)    | The driver returns MTP response codes wrapped as `FACILITY_ITF` HRESULTs (`0x8004_2009` for `InvalidObjectHandle` on a deleted handle) | `map_hresult` unwraps them and maps them like the USB backend (#42, v0.33.2) | #41 (@IoSonoPiero, 2026-10-21) |
 | Montblanc Digital Paper e-Ink | Android-based hot-folder responder: only an import and an export folder exposed; the device ingests only files newly written directly into the import folder (nested or moved-in files persist and list, but stay invisible on the device) | None possible (invisible to MTP); re-upload with `put --replace`; documented in the CLI reference | #6 (@ChristianSimonSU, 2026-09-22)   |
 
 ## Recurring contributors
