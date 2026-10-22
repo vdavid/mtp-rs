@@ -229,6 +229,9 @@ impl NusbTransport {
     /// Default buffer size for interrupt transfers.
     const INTERRUPT_BUFFER_SIZE: usize = 64;
 
+    /// Read size for draining a transfer the device refused to cancel (see `cancel_transfer`).
+    const REFUSED_CANCEL_DRAIN_READ: usize = 64 * 1024;
+
     /// List all available MTP devices with location IDs.
     pub fn list_mtp_devices() -> Result<Vec<UsbDeviceInfo>, crate::PtpError> {
         Self::list_mtp_devices_with_known(&[])
@@ -829,8 +832,10 @@ impl Transport for NusbTransport {
     /// implement the request; its failure is ignored.
     ///
     /// The sequence is:
-    /// 1. Send CLASS_CANCEL control request (bRequest=0x64, 300ms timeout)
-    /// 2. Drain bulk IN pipe (read + discard until idle_timeout, maxpacket chunks)
+    /// 1. Send CLASS_CANCEL control request (bRequest=0x64, 300ms timeout). A device
+    ///    that STALLs it keeps sending, so the drain then reads the rest of the object
+    /// 2. Drain bulk IN pipe (read + discard until the response or idle_timeout,
+    ///    maxpacket chunks, 64 KiB ones after a refused cancel)
     /// 3. Drain interrupt pipe (consume CancelTransaction event if present)
     /// 4. Poll GET_DEVICE_STATUS (bRequest=0x67) until not Device_Busy,
     ///    clearing any bulk endpoint halts the device reports
@@ -859,7 +864,8 @@ impl Transport for NusbTransport {
         payload[0..2].copy_from_slice(&SIC_CANCEL_EVENT_CODE.to_le_bytes());
         payload[2..6].copy_from_slice(&transaction_id.to_le_bytes());
 
-        self.interface
+        let cancel_result = self
+            .interface
             .control_out(
                 ControlOut {
                     control_type: ControlType::Class,
@@ -871,9 +877,20 @@ impl Transport for NusbTransport {
                 },
                 Duration::from_millis(300),
             )
-            .await
-            .map_err(Self::convert_transfer_error)?;
-        diag_debug!("cancel_transfer: step 1 CLASS_CANCEL sent");
+            .await;
+        // A device that STALLs CLASS_CANCEL (POCO X6 Pro on Linux, #43) keeps sending the
+        // object. Returning here left the rest of it in the pipe and wedged the phone until
+        // a replug, so drain anyway: the device finishes the transfer and closes it with a
+        // response, which leaves the session in sync. That costs the rest of the transfer.
+        let refused = match cancel_result {
+            Ok(_) => false,
+            Err(TransferError::Stall) => true,
+            Err(e) => return Err(Self::convert_transfer_error(e)),
+        };
+        diag_debug!(
+            "cancel_transfer: step 1 CLASS_CANCEL sent (refused={})",
+            refused
+        );
 
         // Step 2: Drain bulk IN pipe.
         //
@@ -889,6 +906,13 @@ impl Transport for NusbTransport {
         {
             let mut ep = self.bulk_in.lock().await;
             let max_packet_size = ep.max_packet_size();
+            // Maxpacket reads are the validated libmtp shape for a real cancel. After a
+            // refused one the whole remaining object comes through, so read big.
+            let read_size = if refused {
+                align_to_packet_size(Self::REFUSED_CANCEL_DRAIN_READ, max_packet_size)
+            } else {
+                align_to_packet_size(max_packet_size, max_packet_size)
+            };
             // Diagnostic counters (surfaced via the `tracing` feature). A #18
             // wedge shows up here as a drain that ends with no closing
             // Response container (at any size: 36 bytes was enough on an S23). Kept unconditionally; the cost is negligible.
@@ -897,8 +921,7 @@ impl Transport for NusbTransport {
             let mut saw_response = false;
             loop {
                 if ep.pending() == 0 {
-                    let aligned_size = align_to_packet_size(max_packet_size, max_packet_size);
-                    ep.submit(Buffer::new(aligned_size));
+                    ep.submit(Buffer::new(read_size));
                 }
 
                 let drain_result = {
@@ -912,20 +935,12 @@ impl Transport for NusbTransport {
                                 Ok(()) => {
                                     drained_packets += 1;
                                     drained_bytes += completion.actual_len;
-                                    // Check for Response container (type code 3 at bytes [4..6]).
-                                    if completion.actual_len >= 6 {
-                                        let type_code = u16::from_le_bytes([
-                                            completion.buffer[4],
-                                            completion.buffer[5],
-                                        ]);
-                                        if type_code == 3 {
-                                            saw_response = true;
-                                            Ok(true) // Response received, done
-                                        } else {
-                                            Ok(false) // Data, keep draining
-                                        }
+                                    let read = &completion.buffer[..completion.actual_len];
+                                    if is_response_container(read, read_size) {
+                                        saw_response = true;
+                                        Ok(true) // Response received, done
                                     } else {
-                                        Ok(false) // keep draining
+                                        Ok(false) // Data, keep draining
                                     }
                                 }
                                 Err(TransferError::Cancelled) => Ok(true),
@@ -1138,6 +1153,21 @@ fn align_to_packet_size(size: usize, packet_size: usize) -> usize {
     }
 }
 
+/// Whether one drained bulk read is the Response container that closes the transaction.
+///
+/// A response is 12–32 bytes and arrives as its own short read, with a length field
+/// matching the read. Checking only the type code at bytes 4..6 isn't enough: a drain that
+/// reads a whole object (a device that refused CLASS_CANCEL, #43) sees `03 00` there in
+/// file data roughly once per 65,536 reads, and would stop with the rest still in the pipe.
+fn is_response_container(read: &[u8], requested: usize) -> bool {
+    if read.len() < 12 || read.len() >= requested {
+        return false;
+    }
+    let length = u32::from_le_bytes([read[0], read[1], read[2], read[3]]) as usize;
+    let type_code = u16::from_le_bytes([read[4], read[5]]);
+    length == read.len() && type_code == 3
+}
+
 /// Derive a stable location identifier from USB topology (bus + port chain).
 ///
 /// Uses FNV-1a to hash `bus_id` and `port_chain` into a deterministic `u64`.
@@ -1166,6 +1196,48 @@ fn location_id_from_topology(dev: &nusb::DeviceInfo) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn response_bytes(code: u16, tx_id: u32, params: &[u32]) -> Vec<u8> {
+        let len = 12 + 4 * params.len();
+        let mut buf = Vec::with_capacity(len);
+        buf.extend_from_slice(&(len as u32).to_le_bytes());
+        buf.extend_from_slice(&3u16.to_le_bytes());
+        buf.extend_from_slice(&code.to_le_bytes());
+        buf.extend_from_slice(&tx_id.to_le_bytes());
+        for p in params {
+            buf.extend_from_slice(&p.to_le_bytes());
+        }
+        buf
+    }
+
+    #[test]
+    fn response_container_is_recognized() {
+        assert!(is_response_container(&response_bytes(0x2001, 7, &[]), 512));
+        assert!(is_response_container(
+            &response_bytes(0x201F, 7, &[1, 2]),
+            65_536
+        ));
+    }
+
+    #[test]
+    fn full_read_of_file_bytes_is_not_a_response() {
+        // File data that happens to carry `03 00` at bytes 4..6. While a refused cancel
+        // drains a whole object, some full-size read eventually does (#43).
+        let mut read = vec![0xAB; 512];
+        read[4] = 3;
+        read[5] = 0;
+        assert!(!is_response_container(&read, 512));
+    }
+
+    #[test]
+    fn short_read_needs_a_matching_length_field() {
+        // The tail of a data phase ends in a short read, and its bytes 4..6 can be `03 00` too.
+        let mut read = vec![0xAB; 100];
+        read[4] = 3;
+        read[5] = 0;
+        assert!(!is_response_container(&read, 512));
+        assert!(!is_response_container(&[0x0C, 0, 0, 0, 3, 0], 512));
+    }
 
     #[test]
     fn parse_device_status_ok() {

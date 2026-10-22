@@ -14,6 +14,10 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Fixed
+
+- **[lib] Cancelling a download no longer wedges a phone that refuses the USB cancel request.** The Xiaomi POCO X6 Pro answers CLASS_CANCEL with a STALL on Linux, and `FileDownload::cancel` returned that as `Error::Io("endpoint stalled")` with the rest of the file still in the pipe, so the next operation read file bytes as its response and the phone stayed stuck until a replug. The cancel now drains the rest of the transfer instead (it costs the remaining bytes, but the session stays usable), and a cancel that fails for any other reason makes the next operation drain the pipe first. Reported by [@IoSonoPiero](https://github.com/IoSonoPiero) in [#43](https://github.com/vdavid/mtp-rs/issues/43).
+
 ## [0.34.1] - 2026-10-23
 
 Library `0.34.1` only; the CLI stays at `0.10.0`. Big files copy at full speed on Windows.
