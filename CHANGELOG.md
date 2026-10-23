@@ -14,9 +14,13 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-10-23
+
+Library `0.34.1` only; the CLI stays at `0.10.0`. Big files copy at full speed on Windows.
+
 ### Fixed
 
-- **[lib] Windowed downloads on Windows no longer slow down as the file goes on.** The WPD backend reopened the object's stream for every window, and on devices whose stream can't seek (`IStream::Seek` is `E_NOTIMPL`) it re-read everything before the window's offset, so a large file took time quadratic in its size. On a Xiaomi POCO X7 Pro, a 194 MB video in 4 MiB windows fell below 1 MB/s by 128 MB; now 186 files (1.04 GB, including two videos of 180 and 194 MB) copy in 39 s, about 26 MB/s, byte-identical to a copy made with File Explorer. The worker keeps the stream of the last window and continues on it when the next window starts where it stopped. Any other request releases it first, since an open stream keeps the device busy. Contributed by [@IoSonoPiero](https://github.com/IoSonoPiero).
+- **[lib] Windowed downloads on Windows no longer slow down as the file goes on.** The WPD backend reopened the object's stream for every window, and on devices whose stream can't seek (`IStream::Seek` is `E_NOTIMPL`) it re-read everything before the window's offset, so a large file took time quadratic in its size. On a Xiaomi POCO X7 Pro, a 194 MB video in 4 MiB windows fell below 1 MB/s by 128 MB; now 186 files (1.04 GB, including two videos of 180 and 194 MB) copy in 39 s, about 26 MB/s, byte-identical to a copy made with File Explorer. The worker keeps the stream of the last window and continues on it when the next window starts where it stopped. Any other request releases it first, since an open stream keeps the device busy, and so does a second with no request, so a paused copy doesn't hold the phone. Contributed by [@IoSonoPiero](https://github.com/IoSonoPiero) in [#46](https://github.com/vdavid/mtp-rs/pull/46).
 
 ## [0.34.0] - 2026-10-23
 
