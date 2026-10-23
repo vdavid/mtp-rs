@@ -466,7 +466,10 @@ Drop safety: unlike `FileDownload` (holds the session open, MUST be consumed or
 `cancel()`led before drop), `WindowedDownload` holds NOTHING between windows, so
 stopping early is just dropping it: no `cancel()`, `Drop` is a no-op. A
 `next_window()` future dropped mid-call self-heals via `TransactionScope` (the
-next op drains).
+next op drains). **On WPD the worker does keep the read stream between windows**
+(§ Windows WPD backend), but any other request releases it first and so does
+one second of quiet, so a listing between windows still runs, and a paused copy
+doesn't keep the phone busy for other apps.
 
 Tested against the virtual device in `transport/virtual_device/mod.rs`
 (`windowed_download_*`), including the headline `..._session_free_between_windows`
@@ -685,8 +688,10 @@ semantics that differ from the USB/PTP backend, all hardware-verified on a Pixel
   there reads on from it. Without this every window reopened the stream and, on forward-only devices,
   re-read the whole prefix: a 194 MB video on a Xiaomi POCO X7 Pro (Windows 11) fell below 1 MB/s by
   128 MB. **An open stream keeps the device busy** (any other request fails with "device busy"), so
-  the worker releases it before serving any other request; a window that follows other work reopens
-  the stream and pays the prefix once.
+  the worker releases it before serving any other request, and after `IDLE_READ_STREAM_RELEASE` (1 s)
+  with no request, so a paused copy doesn't hold the phone. A window that follows other work or a
+  pause reopens the stream and pays the prefix once. The worker drops the kept stream before
+  `CoUninitialize`, also when the request channel closes without a `Shutdown`.
 - **`object_info` is strict; listing is lenient**: a single `object_info` lookup must *fail* for a
   deleted/missing object (it errors `NotFound` when no property resolves), whereas the per-child
   listing reader is lenient (an unreadable child degrades to a default record rather than failing the

@@ -477,6 +477,17 @@ first child's format), so listings now always ask one property at a time. Design
 `GetObjectPropList`. Hardware-checked read-only on 2026-10-23 on a Pixel 9 Pro XL (4–12× faster) and a Galaxy S23
 Ultra (3,248 photos in 0.40 s against 5.5 s), fields identical apart from Android's `created` and image size. Landed by
 fast-forward, so the PR shows as merged with their commit intact; released as lib 0.34.0 and CLI 0.10.0 the same day.
+
+### #46: Keep the WPD stream open between windows (merged 2026-10-23, shipped in v0.34.1)
+
+Contributor: [@IoSonoPiero](https://github.com/IoSonoPiero). On Windows every `download_windowed` window reopened the
+object's stream, and on a forward-only stream (`Seek` is `E_NOTIMPL`) re-read the whole prefix, so a large file took
+quadratic time: a 194 MB video on the POCO X7 Pro fell below 1 MB/s by 128 MB. The WPD worker now keeps the last
+window's stream and continues on it. Their first version kept it across other requests, and the next listing failed
+with "device busy", so any other request releases it first. Their evidence: 186 files (1.04 GB) in 39 s, about 26
+MB/s, SHA-256-identical to an Explorer copy; read-only suite 12/13 (`test_ptp_device` expected). Squash-merged as-is.
+Follow-up: the kept stream is also released after 1 s with no request (a paused copy shouldn't hold the phone), and
+the worker drops it before `CoUninitialize` when the request channel closes without a `Shutdown`.
 Open item: a rerun of the comparison on the POCO by @IoSonoPiero, since the request pattern changed.
 
 ## Device quirks reference

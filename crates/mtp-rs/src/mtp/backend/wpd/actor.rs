@@ -25,6 +25,10 @@ use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, IStream, COINI
 
 /// Bytes read from the device per `IStream::Read`.
 const CHUNK: usize = 256 * 1024;
+/// How long the worker keeps a read stream open for the next window of a windowed download (see
+/// [`OpenRead`]). Back-to-back windows arrive within milliseconds; a longer gap is a pause, and
+/// the next window then reopens the stream and pays the prefix once.
+const IDLE_READ_STREAM_RELEASE: std::time::Duration = std::time::Duration::from_secs(1);
 /// How many chunks the download/upload channels buffer before back-pressuring the producer.
 pub(crate) const DATA_BOUND: usize = 4;
 
@@ -258,7 +262,25 @@ fn worker_main(
     unsafe { dev.register_events(event_tx) };
 
     let mut last_read: Option<OpenRead> = None;
-    while let Ok(req) = req_rx.recv() {
+    loop {
+        // While a read stream is kept for the next window, wait only so long for that window. A
+        // consumer that pauses between windows would otherwise keep the device busy for other
+        // apps for as long as the pause lasts.
+        let req = if last_read.is_some() {
+            match req_rx.recv_timeout(IDLE_READ_STREAM_RELEASE) {
+                Ok(req) => req,
+                Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                    last_read = None;
+                    continue;
+                }
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match req_rx.recv() {
+                Ok(req) => req,
+                Err(_) => break,
+            }
+        };
         // An open read stream keeps the device busy (any other request fails with "device busy"),
         // so it is released before anything but the next read.
         if !matches!(req, Request::ReadRange { .. }) {
@@ -341,7 +363,9 @@ fn worker_main(
         }
     }
 
-    // Drop the device (releases all COM interfaces) before uninitializing COM on this thread.
+    // Release every COM interface (the kept read stream, then the device) before uninitializing
+    // COM on this thread. The loop also ends when the request channel closes without a `Shutdown`.
+    drop(last_read);
     drop(dev);
     unsafe { CoUninitialize() };
 }
