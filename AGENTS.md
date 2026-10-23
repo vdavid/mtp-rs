@@ -564,6 +564,15 @@ device look disconnected.
   drain in a runtime-agnostic crate. `ReceiveStream::drop` flags recovery when
   abandoned mid-stream; `cancel()` is still preferred (drains promptly, vs. on
   the next op). Consumers need no code changes.
+- **A late reply to an earlier transaction is skipped, not fatal** (`is_stale_reply`
+  in `ptp/session/mod.rs`, the libgphoto2 "suspecting old reply" rule). When a
+  response carries an ID *behind* the current one, before any data arrived, the
+  operation drops it and reads again, at most `MAX_STALE_REPLIES` times. Seen on a
+  POCO X6 Pro (#43): after a refused CLASS_CANCEL, the cancelled download's
+  closing reply arrived after the drain had stopped waiting, and the next listing
+  read "expected 119, got 118"; every later command then read its predecessor's
+  leftovers, across processes too. A reply with a *later* ID is still a desync
+  error, and `CloseSession` never skips (a Leica answers it with ID 0).
 - Tested against the mock with a controllable mid-receive suspension
   (`MockTransport::block_receive`) in `ptp/session/mod.rs`
   (`abandoned_receive_*`). The mock's `cancel_transfer` drains its queued

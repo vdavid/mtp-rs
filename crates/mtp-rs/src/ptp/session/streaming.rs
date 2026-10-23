@@ -16,7 +16,20 @@ use futures::Stream;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{PtpSession, RecoveryState, TransactionScope, HEADER_SIZE};
+use super::{
+    is_stale_reply, may_skip_stale_reply, transaction_mismatch, PtpSession, RecoveryState,
+    TransactionScope, HEADER_SIZE,
+};
+
+/// What [`ReceiveStream::consume_container_header`] found at the front of the buffer.
+enum Header {
+    /// A data container; its payload follows.
+    Data,
+    /// The response that closes this transfer.
+    Done,
+    /// A late reply to an earlier transaction, dropped from the buffer.
+    SkippedStaleReply,
+}
 
 /// How much a receiving stream asks the transport for in one bulk read. It holds
 /// about this much at a time, whatever the object's size.
@@ -127,6 +140,8 @@ impl PtpSession {
             short_read: false,
             expect_zero_length_packet: false,
             done: false,
+            stale_replies_skipped: 0,
+            saw_data_container: false,
         })
     }
 
@@ -212,16 +227,7 @@ impl PtpSession {
                 .await?;
         }
 
-        // Receive response
-        let response_bytes = self.transport.receive_bulk(512).await?;
-        let response = ResponseContainer::from_bytes(&response_bytes)?;
-
-        if response.transaction_id != tx_id {
-            return Err(Error::invalid_data(format!(
-                "Transaction ID mismatch: expected {}, got {}",
-                tx_id, response.transaction_id
-            )));
-        }
+        let response = self.receive_response(tx_id, operation).await?;
 
         scope.disarm();
         Ok(response)
@@ -315,6 +321,10 @@ pub struct ReceiveStream {
     /// filled our whole read the device has nothing left to piggyback it on, so it
     /// arrives as a read of its own.
     expect_zero_length_packet: bool,
+    /// Late replies to earlier transactions skipped so far (see `is_stale_reply`).
+    stale_replies_skipped: u32,
+    /// Whether a data container arrived yet; only a reply before any data can be a late one.
+    saw_data_container: bool,
     /// Whether the stream is complete.
     done: bool,
 }
@@ -338,8 +348,8 @@ impl ReceiveStream {
             // Between containers: consume the next header once enough of it is here.
             if !self.in_payload && self.buffer.len() >= HEADER_SIZE {
                 match self.consume_container_header() {
-                    Ok(true) => {}
-                    Ok(false) => {
+                    Ok(Header::Data | Header::SkippedStaleReply) => {}
+                    Ok(Header::Done) => {
                         self.done = true;
                         return None;
                     }
@@ -416,10 +426,7 @@ impl ReceiveStream {
     }
 
     /// Consume the container header sitting at the front of the buffer.
-    ///
-    /// Returns `true` when a data container's payload follows, `false` when the
-    /// response container closed the transfer.
-    fn consume_container_header(&mut self) -> Result<bool, Error> {
+    fn consume_container_header(&mut self) -> Result<Header, Error> {
         match container_type(&self.buffer)? {
             ContainerType::Data => {
                 let length = unpack_u32(&self.buffer[0..4])?;
@@ -438,16 +445,27 @@ impl ReceiveStream {
                 };
                 self.payload_yielded = 0;
                 self.in_payload = true;
-                Ok(true)
+                self.saw_data_container = true;
+                Ok(Header::Data)
             }
             ContainerType::Response => {
                 let response = ResponseContainer::from_bytes(&self.buffer)?;
 
                 if response.transaction_id != self.transaction_id {
-                    return Err(Error::invalid_data(format!(
-                        "Transaction ID mismatch: expected {}, got {}",
-                        self.transaction_id, response.transaction_id
-                    )));
+                    if !self.saw_data_container
+                        && is_stale_reply(response.transaction_id, self.transaction_id)
+                        && may_skip_stale_reply(self.operation, self.stale_replies_skipped)
+                    {
+                        self.stale_replies_skipped += 1;
+                        let length = (unpack_u32(&self.buffer[0..4])? as usize)
+                            .clamp(HEADER_SIZE, self.buffer.len());
+                        self.buffer.advance(length);
+                        return Ok(Header::SkippedStaleReply);
+                    }
+                    return Err(transaction_mismatch(
+                        self.transaction_id,
+                        response.transaction_id,
+                    ));
                 }
 
                 if response.code != ResponseCode::Ok {
@@ -457,7 +475,7 @@ impl ReceiveStream {
                     });
                 }
 
-                Ok(false)
+                Ok(Header::Done)
             }
             other => Err(Error::invalid_data(format!(
                 "Unexpected container type: {other:?}"
@@ -963,6 +981,29 @@ mod tests {
 
         // Stream should be marked done even on error
         assert!(stream.done);
+    }
+
+    /// The streaming download path skips a late reply from an earlier transaction too (#43).
+    #[tokio::test]
+    async fn receive_stream_skips_a_late_reply_from_an_earlier_transaction() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+        mock.queue_response(ok_response(1));
+        let session = Arc::new(PtpSession::open(transport, 1).await.unwrap());
+        session
+            .execute(OperationCode::GetDeviceInfo, &[])
+            .await
+            .unwrap(); // tx=1
+
+        mock.queue_response(response_with_params(
+            1,
+            ResponseCode::TransactionCancelled,
+            &[],
+        ));
+        mock.queue_response(data_container(2, OperationCode::GetObject, &[1, 2, 3]));
+        mock.queue_response(ok_response(2));
+        let stream = session.get_object_stream(ObjectHandle(1)).await.unwrap();
+        assert_eq!(stream.collect().await.unwrap(), vec![1, 2, 3]);
     }
 
     /// A cancel that fails leaves the rest of the object and its response in the pipe, so

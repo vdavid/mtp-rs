@@ -28,6 +28,36 @@ pub(crate) const HEADER_SIZE: usize = 12;
 /// depend on the higher-level `mtp` module.
 const RECOVERY_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
 
+/// How many late replies to earlier transactions one operation skips before it gives up.
+pub(crate) const MAX_STALE_REPLIES: u32 = 4;
+
+/// Whether a reply carries the ID of a transaction before `expected`, so it's a late reply to
+/// an operation that already gave up on it, and the operation waiting now should skip it and
+/// read again (libgphoto2 does the same, "suspecting old reply" in `ptp_transaction_new`).
+///
+/// Seen on a Xiaomi POCO X6 Pro (#43): it refuses CLASS_CANCEL, and the cancelled download's
+/// closing reply arrived after the drain stopped waiting, so the next listing read "got 118"
+/// where it expected 119. Each following command then read its predecessor's leftovers.
+///
+/// Only *earlier* IDs count. A reply from a later transaction is a real desync and still fails.
+/// The counter wraps from 0xFFFFFFFF to 1, hence the wrapping distance.
+pub(crate) fn is_stale_reply(got: u32, expected: u32) -> bool {
+    let behind = expected.wrapping_sub(got);
+    behind != 0 && behind < 0x8000_0000
+}
+
+/// Whether `operation` may skip a stale reply. A Leica answers `CloseSession` with ID 0
+/// (libgphoto2 again), so skipping there would wait for a reply that never comes.
+pub(crate) fn may_skip_stale_reply(operation: OperationCode, skipped: u32) -> bool {
+    operation != OperationCode::CloseSession && skipped < MAX_STALE_REPLIES
+}
+
+pub(crate) fn transaction_mismatch(expected: u32, got: u32) -> Error {
+    Error::invalid_data(format!(
+        "Transaction ID mismatch: expected {expected}, got {got}"
+    ))
+}
+
 /// Shared state that tracks whether the bulk IN pipe may hold an undrained
 /// response from a transaction that was abandoned mid-flight.
 ///
@@ -392,17 +422,7 @@ impl PtpSession {
         };
         self.transport.send_bulk(&cmd.to_bytes()).await?;
 
-        // Receive response
-        let response_bytes = self.transport.receive_bulk(512).await?;
-        let response = ResponseContainer::from_bytes(&response_bytes)?;
-
-        // Verify transaction ID matches
-        if response.transaction_id != tx_id {
-            return Err(Error::invalid_data(format!(
-                "Transaction ID mismatch: expected {}, got {}",
-                tx_id, response.transaction_id
-            )));
-        }
+        let response = self.receive_response(tx_id, operation).await?;
 
         diag_trace!(
             "execute: op={:?} txn={} -> {:?}",
@@ -462,6 +482,7 @@ impl PtpSession {
         // MTP sends data in one or more containers, then response.
         // A single data container may span multiple USB transfers if larger than 64KB.
         let mut data = Vec::new();
+        let mut skipped = 0;
 
         loop {
             let mut bytes = self.transport.receive_bulk(64 * 1024).await?;
@@ -494,10 +515,19 @@ impl PtpSession {
                 ContainerType::Response => {
                     let response = ResponseContainer::from_bytes(&bytes)?;
                     if response.transaction_id != tx_id {
-                        return Err(Error::invalid_data(format!(
-                            "Transaction ID mismatch: expected {}, got {}",
-                            tx_id, response.transaction_id
-                        )));
+                        if data.is_empty()
+                            && is_stale_reply(response.transaction_id, tx_id)
+                            && may_skip_stale_reply(operation, skipped)
+                        {
+                            skipped += 1;
+                            diag_debug!(
+                                "execute_with_receive: skipping late reply for txn={} (waiting for {})",
+                                response.transaction_id,
+                                tx_id
+                            );
+                            continue;
+                        }
+                        return Err(transaction_mismatch(tx_id, response.transaction_id));
                     }
                     diag_trace!(
                         "execute_with_receive: op={:?} txn={} -> {:?} ({} data bytes)",
@@ -570,16 +600,7 @@ impl PtpSession {
             self.transport.send_bulk(&data_container.to_bytes()).await?;
         }
 
-        // Receive response
-        let response_bytes = self.transport.receive_bulk(512).await?;
-        let response = ResponseContainer::from_bytes(&response_bytes)?;
-
-        if response.transaction_id != tx_id {
-            return Err(Error::invalid_data(format!(
-                "Transaction ID mismatch: expected {}, got {}",
-                tx_id, response.transaction_id
-            )));
-        }
+        let response = self.receive_response(tx_id, operation).await?;
 
         diag_trace!(
             "execute_with_send: op={:?} txn={} ({} data bytes) -> {:?}",
@@ -595,6 +616,33 @@ impl PtpSession {
     // =========================================================================
     // Helper methods
     // =========================================================================
+
+    /// Read the response container for `tx_id`, skipping late replies to earlier transactions.
+    async fn receive_response(
+        &self,
+        tx_id: u32,
+        operation: OperationCode,
+    ) -> Result<ResponseContainer, Error> {
+        let mut skipped = 0;
+        loop {
+            let response_bytes = self.transport.receive_bulk(512).await?;
+            let response = ResponseContainer::from_bytes(&response_bytes)?;
+            if response.transaction_id == tx_id {
+                return Ok(response);
+            }
+            if !(is_stale_reply(response.transaction_id, tx_id)
+                && may_skip_stale_reply(operation, skipped))
+            {
+                return Err(transaction_mismatch(tx_id, response.transaction_id));
+            }
+            skipped += 1;
+            diag_debug!(
+                "receive_response: skipping late reply for txn={} (waiting for {})",
+                response.transaction_id,
+                tx_id
+            );
+        }
+    }
 
     /// Helper to check response is OK.
     pub(crate) fn check_response(
@@ -736,6 +784,104 @@ mod tests {
             mock.get_cancel_calls(),
             vec![1],
             "recovery must drain the pipe for the poisoned transaction (tx=1)",
+        );
+    }
+
+    #[test]
+    fn stale_reply_is_one_from_an_earlier_transaction() {
+        assert!(is_stale_reply(118, 119));
+        assert!(is_stale_reply(0, 1));
+        assert!(!is_stale_reply(119, 119));
+        assert!(
+            !is_stale_reply(120, 119),
+            "a reply from the future is a desync, not a late one"
+        );
+        // The counter wraps from 0xFFFFFFFF to 1.
+        assert!(is_stale_reply(0xFFFF_FFFF, 1));
+        assert!(!is_stale_reply(1, 0xFFFF_FFFF));
+    }
+
+    /// #43: a phone sent the closing reply of a cancelled download after the drain had stopped
+    /// waiting, and the next operation read it as its own ("expected 119, got 118").
+    #[tokio::test]
+    async fn late_reply_from_an_earlier_transaction_is_skipped() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+        mock.queue_response(ok_response(1));
+        let session = PtpSession::open(transport, 1).await.unwrap();
+        session
+            .execute(OperationCode::GetDeviceInfo, &[])
+            .await
+            .unwrap(); // tx=1
+
+        mock.queue_response(response_with_params(
+            1,
+            ResponseCode::TransactionCancelled,
+            &[],
+        ));
+        mock.queue_response(ok_response(2));
+        let response = session
+            .execute(OperationCode::GetStorageIds, &[])
+            .await
+            .unwrap();
+        assert_eq!(response.transaction_id, 2);
+    }
+
+    #[tokio::test]
+    async fn late_reply_before_a_data_phase_is_skipped() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+        mock.queue_response(ok_response(1));
+        let session = PtpSession::open(transport, 1).await.unwrap();
+        session
+            .execute(OperationCode::GetDeviceInfo, &[])
+            .await
+            .unwrap(); // tx=1
+
+        mock.queue_response(ok_response(1)); // late duplicate of tx=1's reply
+        mock.queue_response(data_container(2, OperationCode::GetObjectHandles, &[7, 8]));
+        mock.queue_response(ok_response(2));
+        let (response, data) = session
+            .execute_with_receive(OperationCode::GetObjectHandles, &[])
+            .await
+            .unwrap();
+        assert_eq!(response.transaction_id, 2);
+        assert_eq!(data, vec![7, 8]);
+    }
+
+    #[tokio::test]
+    async fn reply_from_a_later_transaction_is_still_a_mismatch() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+        mock.queue_response(ok_response(5));
+        let session = PtpSession::open(transport, 1).await.unwrap();
+        let result = session.execute(OperationCode::GetStorageIds, &[]).await;
+        assert!(
+            matches!(result, Err(Error::InvalidData { .. })),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn skipping_late_replies_is_bounded() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+        let session = PtpSession::open(transport, 1).await.unwrap();
+        for tx in 1..=3 {
+            mock.queue_response(ok_response(tx));
+            session
+                .execute(OperationCode::GetDeviceInfo, &[])
+                .await
+                .unwrap();
+        }
+        for _ in 0..=MAX_STALE_REPLIES {
+            mock.queue_response(ok_response(1));
+        }
+        mock.queue_response(ok_response(4));
+        let result = session.execute(OperationCode::GetStorageIds, &[]).await;
+        assert!(
+            matches!(result, Err(Error::InvalidData { .. })),
+            "{result:?}"
         );
     }
 
