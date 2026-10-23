@@ -21,7 +21,7 @@ use futures::{SinkExt, StreamExt};
 use std::sync::mpsc as std_mpsc;
 use std::thread::JoinHandle;
 
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, IStream, COINIT_MULTITHREADED};
 
 /// Bytes read from the device per `IStream::Read`.
 const CHUNK: usize = 256 * 1024;
@@ -257,7 +257,13 @@ fn worker_main(
     // open, so `next_event` simply blocks rather than reporting a phantom disconnect).
     unsafe { dev.register_events(event_tx) };
 
+    let mut last_read: Option<OpenRead> = None;
     while let Ok(req) = req_rx.recv() {
+        // An open read stream keeps the device busy (any other request fails with "device busy"),
+        // so it is released before anything but the next read.
+        if !matches!(req, Request::ReadRange { .. }) {
+            last_read = None;
+        }
         match req {
             Request::Shutdown => break,
             Request::Storages(reply) => {
@@ -284,7 +290,13 @@ fn worker_main(
                 len,
                 reply,
             } => {
-                let _ = reply.send(handle_read_range(&mut dev, obj, offset, len));
+                let _ = reply.send(handle_read_range(
+                    &mut dev,
+                    obj,
+                    offset,
+                    len,
+                    &mut last_read,
+                ));
             }
             Request::Thumbnail { obj, reply } => {
                 let _ = reply.send(handle_thumbnail(&mut dev, obj));
@@ -474,19 +486,43 @@ fn handle_download(
     // `tx` drops here → channel closes → consumer sees `None` (clean EOF).
 }
 
+/// The stream of the last [`handle_read_range`] that stopped before EOF, and where it stopped.
+///
+/// A windowed download asks for consecutive ranges of one object. Reopening the stream for each
+/// window costs a `GetStream`, and on forward-only streams (`Seek` is `E_NOTIMPL`) re-reads the whole
+/// prefix, so a large file took time quadratic in its size. A read starting exactly where the
+/// previous one stopped continues on the same stream instead.
+struct OpenRead {
+    obj: ObjectHandle,
+    at: u64,
+    stream: IStream,
+}
+
 /// Buffered single-shot read of `[offset, offset+len)` (or to EOF when `len` is `None`).
 fn handle_read_range(
     dev: &mut WpdDevice,
     obj: ObjectHandle,
     offset: u64,
     len: Option<u32>,
+    last: &mut Option<OpenRead>,
 ) -> Result<Vec<u8>, Error> {
-    let stream = unsafe { dev.open_stream(obj) }?;
-    unsafe { com::stream_seek(&stream, offset) }?;
+    // `take` releases a stream that does not continue here before another one is opened.
+    let stream = match last
+        .take()
+        .filter(|open| open.obj == obj && open.at == offset)
+    {
+        Some(open) => open.stream,
+        None => {
+            let stream = unsafe { dev.open_stream(obj) }?;
+            unsafe { com::stream_seek(&stream, offset) }?;
+            stream
+        }
+    };
 
     let cap = len.map(|l| l as usize);
     let mut out = Vec::with_capacity(cap.unwrap_or(0));
     let mut buf = vec![0u8; CHUNK];
+    let mut eof = false;
     loop {
         let want = match cap {
             Some(c) => (c - out.len()).min(buf.len()),
@@ -497,9 +533,17 @@ fn handle_read_range(
         }
         let n = unsafe { com::stream_read(&stream, &mut buf[..want]) }?;
         if n == 0 {
+            eof = true;
             break;
         }
         out.extend_from_slice(&buf[..n]);
+    }
+    if !eof {
+        *last = Some(OpenRead {
+            obj,
+            at: offset + out.len() as u64,
+            stream,
+        });
     }
     Ok(out)
 }

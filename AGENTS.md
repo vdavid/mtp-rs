@@ -680,6 +680,13 @@ semantics that differ from the USB/PTP backend, all hardware-verified on a Pixel
   device re-streams every byte before the offset on each resume. Resuming near the *end* of a large
   file re-reads almost the whole file. Prefer a single in-order pass (`ByteRange::Full` or windowed
   download) over many small offset resumes when the device's `Seek` is `E_NOTIMPL`.
+- **Windowed downloads continue on one stream**: the worker keeps the stream of the last `read_range`
+  that stopped before EOF, with its position, and a `read_range` of the same object starting exactly
+  there reads on from it. Without this every window reopened the stream and, on forward-only devices,
+  re-read the whole prefix: a 194 MB video on a Xiaomi POCO X7 Pro (Windows 11) fell below 1 MB/s by
+  128 MB. **An open stream keeps the device busy** (any other request fails with "device busy"), so
+  the worker releases it before serving any other request; a window that follows other work reopens
+  the stream and pays the prefix once.
 - **`object_info` is strict; listing is lenient**: a single `object_info` lookup must *fail* for a
   deleted/missing object (it errors `NotFound` when no property resolves), whereas the per-child
   listing reader is lenient (an unreadable child degrades to a default record rather than failing the
