@@ -67,10 +67,19 @@ Android 16 (BP2A.250605.031.A3).
   the rest of the object in the pipe. `ReceiveStream::cancel` had also marked itself done without flagging recovery, so
   the next op read file bytes as its response (`got 45616`). Fix on branch `worktree-cancel-refused` (drain after a
   refused cancel, stricter response detection, flag recovery on a failed cancel; see "Transfer cancellation" in
-  `AGENTS.md`). Waiting for Piero's hardware test.
-- **Open: a 2.5–5 minute wait before `test_rename_file` on Windows** (X6 Pro and X7 Pro), absent on Linux. The test
-  before it is `test_create_delete_folder`. Suspects: dropping the previous `WpdBackend` (the worker joins after
-  `Unadvise`), the recursive WPD folder delete, or the reopen. Asked for a timestamped log and a solo run.
+  `AGENTS.md`).
+- **First hardware run of that branch (2026-10-22, `fb7f840`)**: the cancel now returns `Ok`, but the next listing
+  failed with "Transaction ID mismatch: expected 119, got 118", and every reopen after it read the previous command's
+  leftovers ("expected Response container type (3), got 2"). So the closing reply of the cancelled download arrived
+  after the drain stopped waiting. Fix: skip a reply whose ID is behind the current one (`is_stale_reply`, see
+  "In-session desync self-healing" in `AGENTS.md`). Waiting for his next run. He's traveling until about 2026-10-26
+  and will then have more devices, Samsungs included.
+- **Open: a ~3.5-minute wait (X6 Pro; ~5 min on the X7 Pro) on Windows between `test_create_delete_folder` and
+  `test_rename_file`.** Timestamped log on 2026-10-22: the gap sits before `test_rename_file`'s first line, with no CPU
+  use. It happens only on the first destructive run of a session: four runs right after had no wait, with or without
+  the antivirus, and `test_rename_file` alone took 0.13 s. Suspects: dropping the previous `WpdBackend` (the worker
+  joins after `Unadvise`) or the reopen, likely queued behind Windows enumerating the phone after its first write
+  (unverified). `open_test_mtp` now logs "Opening device..." and how long the open took, to tell the two apart.
 - **Test-harness gap it exposed**: after the wedge, later tests timed out, printed `SKIPPING`, and counted as passed.
   Fixed on the same branch: a hardware error fails the test once the device has answered earlier in the run
   (`should_skip` in `tests/integration.rs`); another app holding the device still skips.

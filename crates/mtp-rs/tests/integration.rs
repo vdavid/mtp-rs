@@ -106,11 +106,22 @@ fn test_timeout() -> std::time::Duration {
 }
 
 /// Open the first MTP device with the E2E test timeout (see [`test_timeout`]).
+///
+/// Logs when the open starts and how long it took, so a stall between two tests shows whether
+/// it's the open or the previous test's device closing (#43: a ~3.5-minute wait on Windows).
 async fn open_test_mtp() -> Result<mtp_rs::mtp::MtpDevice, mtp_rs::Error> {
+    println!("{} Opening device...", elapsed_timestamp());
+    let started = Instant::now();
     let result = mtp_rs::mtp::MtpDevice::builder()
         .timeout(test_timeout())
         .open_first()
         .await;
+    println!(
+        "{} Open took {:.2} s ({})",
+        elapsed_timestamp(),
+        started.elapsed().as_secs_f64(),
+        if result.is_ok() { "ok" } else { "failed" }
+    );
     note_device_seen(&result);
     result
 }
