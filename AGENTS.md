@@ -573,6 +573,17 @@ device look disconnected.
   read "expected 119, got 118"; every later command then read its predecessor's
   leftovers, across processes too. A reply with a *later* ID is still a desync
   error, and `CloseSession` never skips (a Leica answers it with ID 0).
+- **A dead host process's leftover transfer is drained at open.** Recovery state lives in
+  the process, so when a process dies mid-download, the next one starts unflagged while the
+  phone still sends the rest of the object. If the `OpenSession` reply doesn't parse as a
+  response, `send_open_session` calls `Transport::drain_bulk_in` (64 KiB reads until 300 ms
+  idle, capped at 30 s; it sends nothing to the device) and asks once more. The drain also
+  takes the dead transaction's reply and the reply to the first `OpenSession`, so the retry
+  usually gets `SessionAlreadyOpen` and the close-and-reopen path finishes the job. Only a
+  parse failure triggers it, so a healthy open costs nothing. Before this, each new process
+  read one 512-byte chunk of the object as its reply and failed, until a replug (POCO X7 Pro
+  on Linux, a process killed 50 ms into a 4 MB window, #43). Don't answer this with the SIC
+  device reset: on a Pixel it kills MTP until a replug.
 - Tested against the mock with a controllable mid-receive suspension
   (`MockTransport::block_receive`) in `ptp/session/mod.rs`
   (`abandoned_receive_*`). The mock's `cancel_transfer` drains its queued

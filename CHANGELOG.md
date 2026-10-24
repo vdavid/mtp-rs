@@ -14,6 +14,10 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Fixed
+
+- **[lib] A process killed mid-download no longer wedges the phone until a replug.** The phone keeps sending the rest of the interrupted transfer, so the next process's open read file bytes as its reply and failed with `expected Response container type (3), got N` (a different N every run), and so did every process after it. Opening a device now recognizes that, drains the leftover data, and asks again. A killed windowed download costs the next open under a second; a killed held-open `download` of a large file can still leave more than the 30-second drain clears. Reported by [@IoSonoPiero](https://github.com/IoSonoPiero) in [#43](https://github.com/vdavid/mtp-rs/issues/43).
+
 ## [0.34.2] - 2026-10-24
 
 Library `0.34.2` only; the CLI stays at `0.10.0`. Cancelling a download works on phones that refuse the USB cancel request.

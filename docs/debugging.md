@@ -60,6 +60,13 @@ Symptoms of a real wedge, on a device that worked moments ago:
   error at all (verified on a Pixel 9 Pro XL, macOS/nusb, 2026-07-20). Detection
   logic that only matches `Error::DeviceReset` misses this case entirely.
 
+A host process that dies mid-download (crash, `kill`, `std::process::exit`) leaves the
+phone sending the rest of the transfer. The next open's `OpenSession` reads that data
+as its reply (`got N` with a different N every run). `PtpSession::open` handles this
+itself: it drains the pipe (up to 30 s) and asks once more, so a killed windowed
+download costs the next open under a second. A killed held-open `download` of a large
+file can leave more than the drain clears, and then the open still fails this way.
+
 The recovery order:
 
 1. Drop the `MtpDevice` and every `Storage` handle (holding one keeps the USB

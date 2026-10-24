@@ -1133,6 +1133,51 @@ impl Transport for NusbTransport {
 
         Ok(())
     }
+
+    async fn drain_bulk_in(
+        &self,
+        idle_timeout: Duration,
+        max_duration: Duration,
+    ) -> Result<usize, crate::PtpError> {
+        let mut ep = self.bulk_in.lock().await;
+        // The leftover can be the rest of a whole window, so read big, like a refused cancel.
+        let read_size = align_to_packet_size(Self::REFUSED_CANCEL_DRAIN_READ, ep.max_packet_size());
+        let deadline = std::time::Instant::now() + max_duration;
+        let mut drained = 0usize;
+        let result = loop {
+            if std::time::Instant::now() >= deadline {
+                break Ok(drained);
+            }
+            if ep.pending() == 0 {
+                ep.submit(Buffer::new(read_size));
+            }
+            let completion = {
+                let complete_fut = ep.next_complete();
+                let timeout_fut = Delay::new(idle_timeout);
+                futures::pin_mut!(complete_fut, timeout_fut);
+                match futures::future::select(complete_fut, timeout_fut).await {
+                    futures::future::Either::Left((completion, _)) => Some(completion),
+                    futures::future::Either::Right((_, _)) => None,
+                }
+            };
+            match completion {
+                None => break Ok(drained),
+                Some(c) => match c.status {
+                    Ok(()) => drained += c.actual_len,
+                    Err(TransferError::Disconnected) => break Err(crate::PtpError::Disconnected),
+                    Err(e) => {
+                        let _ = clear_halt_if_stalled(&mut ep, e);
+                        break Ok(drained);
+                    }
+                },
+            }
+        };
+        ep.cancel_all();
+        while ep.pending() > 0 {
+            let _ = ep.next_complete().await;
+        }
+        result
+    }
 }
 
 /// Round `size` up to the nearest multiple of `packet_size`.

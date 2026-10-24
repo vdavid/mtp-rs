@@ -28,6 +28,14 @@ pub(crate) const HEADER_SIZE: usize = 12;
 /// depend on the higher-level `mtp` module.
 const RECOVERY_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(300);
 
+/// Idle timeout for the drain `open` runs when a dead process left a transfer in the pipe.
+const OPEN_DRAIN_IDLE_TIMEOUT: std::time::Duration = RECOVERY_DRAIN_TIMEOUT;
+
+/// Cap on that drain. A killed windowed download leaves at most one window (8 MiB by default),
+/// which drains in well under a second. A killed held-open download of a multi-GB file can leave
+/// more than this clears, and the open then fails as before.
+const OPEN_DRAIN_MAX_DURATION: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// How many late replies to earlier transactions one operation skips before it gives up.
 pub(crate) const MAX_STALE_REPLIES: u32 = 4;
 
@@ -315,7 +323,34 @@ impl PtpSession {
     }
 
     /// Send OpenSession with transaction_id=0 (SESSION_LESS) per the PTP spec.
+    ///
+    /// A reply that isn't a response container is leftover data from a host process that
+    /// died mid-transfer: the device is still sending the rest of that object, and this command
+    /// waits behind it (#43). Drain the pipe, which also takes the dead transaction's reply and
+    /// the reply to this command, then ask once more. Without this, every later process reads
+    /// one more chunk of the object as its reply and fails, until a replug.
     async fn send_open_session(
+        transport: &Arc<dyn Transport>,
+        session_id: u32,
+    ) -> Result<ResponseContainer, Error> {
+        match Self::send_open_session_once(transport, session_id).await {
+            Err(Error::InvalidData { message }) => {
+                diag_debug!(
+                    "open: OpenSession reply is not a response ({}); draining a dead \
+                     process's leftover transfer, then retrying",
+                    message
+                );
+                let drained = transport
+                    .drain_bulk_in(OPEN_DRAIN_IDLE_TIMEOUT, OPEN_DRAIN_MAX_DURATION)
+                    .await?;
+                diag_debug!("open: drained {} leftover bytes", drained);
+                Self::send_open_session_once(transport, session_id).await
+            }
+            other => other,
+        }
+    }
+
+    async fn send_open_session_once(
         transport: &Arc<dyn Transport>,
         session_id: u32,
     ) -> Result<ResponseContainer, Error> {
@@ -963,6 +998,56 @@ mod tests {
         // Should succeed even if CloseSession fails
         let session = PtpSession::open(transport, 1).await.unwrap();
         assert_eq!(session.session_id(), SessionId(1));
+    }
+
+    /// #43: a host process died mid-download, and the phone kept sending the rest of the
+    /// object. The next process's OpenSession read a chunk of the file as its reply ("expected
+    /// Response container type (3), got 36735"), and every later process ate one more chunk and
+    /// failed the same way until a replug.
+    #[tokio::test]
+    async fn open_drains_a_dead_process_leftover_transfer_and_retries() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(vec![0xFF; 512]); // file bytes where the OpenSession reply should be
+        mock.queue_response(vec![0xFF; 512]);
+        mock.queue_response(ok_response(0)); // our first OpenSession, answered after the data
+        mock.queue_response_after_drain(response_with_params(
+            0,
+            ResponseCode::SessionAlreadyOpen,
+            &[],
+        ));
+        mock.queue_response_after_drain(ok_response(1)); // CloseSession
+        mock.queue_response_after_drain(ok_response(0)); // OpenSession on the fresh session
+
+        let session = PtpSession::open(transport, 1).await.unwrap();
+
+        assert_eq!(session.session_id(), SessionId(1));
+        assert_eq!(mock.drain_calls(), 1);
+        mock.verify().unwrap();
+    }
+
+    #[tokio::test]
+    async fn open_gives_up_when_the_retry_still_reads_leftover_data() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(vec![0xFF; 512]);
+        mock.queue_response_after_drain(vec![0xFF; 512]);
+
+        let result = PtpSession::open(transport, 1).await.map(|_| ());
+
+        assert!(
+            matches!(result, Err(Error::InvalidData { .. })),
+            "{result:?}"
+        );
+        assert_eq!(mock.drain_calls(), 1, "drains once, not in a loop");
+    }
+
+    #[tokio::test]
+    async fn healthy_open_does_not_drain() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+
+        PtpSession::open(transport, 1).await.unwrap();
+
+        assert_eq!(mock.drain_calls(), 0);
     }
 
     #[tokio::test]

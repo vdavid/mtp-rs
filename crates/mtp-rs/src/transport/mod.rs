@@ -70,6 +70,22 @@ pub trait Transport: Send + Sync {
         idle_timeout: Duration,
     ) -> Result<(), crate::PtpError>;
 
+    /// Read and discard whatever the device has queued on the bulk IN pipe, until it stays
+    /// quiet for `idle_timeout` or `max_duration` passes. Returns the bytes discarded.
+    ///
+    /// Unlike [`cancel_transfer`](Self::cancel_transfer), this sends nothing to the device.
+    /// [`PtpSession::open`](crate::ptp::PtpSession::open) uses it when the reply to
+    /// `OpenSession` turns out to be leftover data from a host process that died mid-transfer.
+    ///
+    /// The default implementation is a no-op for transports with no USB pipe.
+    async fn drain_bulk_in(
+        &self,
+        _idle_timeout: Duration,
+        _max_duration: Duration,
+    ) -> Result<usize, crate::PtpError> {
+        Ok(0)
+    }
+
     /// Reset the device to its idle state using the USB Still Image Class
     /// Device Reset request (`bRequest=0x66`), then clear stale transport
     /// state (halted endpoints, leftover bulk IN data).

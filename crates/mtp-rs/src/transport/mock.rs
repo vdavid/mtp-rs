@@ -26,6 +26,10 @@ pub struct MockTransport {
     actual_sends: Mutex<Vec<Vec<u8>>>,
     cancel_calls: Mutex<Vec<u32>>,
     cancel_results: Mutex<VecDeque<Result<(), crate::PtpError>>>,
+    /// Replies the device sends only after a `drain_bulk_in`, in answer to commands the host
+    /// sends once the pipe is clean. A drain discards everything in `queued_responses`.
+    responses_after_drain: Mutex<VecDeque<Vec<u8>>>,
+    drain_calls: Mutex<u32>,
     /// When set, the next `receive_bulk` call never resolves (until the caller's
     /// future is dropped). Models a transaction abandoned mid-receive: the
     /// command went out, but the host never reads the device's response.
@@ -43,8 +47,20 @@ impl MockTransport {
             actual_sends: Mutex::new(Vec::new()),
             cancel_calls: Mutex::new(Vec::new()),
             cancel_results: Mutex::new(VecDeque::new()),
+            responses_after_drain: Mutex::new(VecDeque::new()),
+            drain_calls: Mutex::new(0),
             block_receive: AtomicBool::new(false),
         }
+    }
+
+    /// Queue a reply that only becomes readable after the next `drain_bulk_in`.
+    pub fn queue_response_after_drain(&self, data: Vec<u8>) {
+        self.responses_after_drain.lock().push_back(data);
+    }
+
+    /// How many times `drain_bulk_in` ran.
+    pub fn drain_calls(&self) -> u32 {
+        *self.drain_calls.lock()
     }
 
     /// Make the next (and every subsequent) `receive_bulk` call hang forever,
@@ -143,6 +159,7 @@ impl MockTransport {
         self.actual_sends.lock().clear();
         self.cancel_calls.lock().clear();
         self.cancel_results.lock().clear();
+        self.responses_after_drain.lock().clear();
     }
 }
 
@@ -206,6 +223,19 @@ impl Transport for MockTransport {
         self.queued_responses.lock().clear();
         self.queued_interrupts.lock().clear();
         self.cancel_results.lock().pop_front().unwrap_or(Ok(()))
+    }
+
+    async fn drain_bulk_in(
+        &self,
+        _idle_timeout: Duration,
+        _max_duration: Duration,
+    ) -> Result<usize, crate::PtpError> {
+        *self.drain_calls.lock() += 1;
+        let mut queued = self.queued_responses.lock();
+        let drained = queued.iter().map(Vec::len).sum();
+        queued.clear();
+        queued.extend(self.responses_after_drain.lock().drain(..));
+        Ok(drained)
     }
 }
 
