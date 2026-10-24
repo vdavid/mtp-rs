@@ -4,7 +4,7 @@ Catch-up reading for any agent that picks up issue or PR work, so you don't have
 start. Read this first when triaging a new issue or PR, and update it after work that affects community-facing context
 (see [Updating this doc](#updating-this-doc) at the bottom).
 
-Last updated: 2026-10-23.
+Last updated: 2026-10-24.
 
 ## Intentionally / continuously open threads
 
@@ -72,14 +72,25 @@ Android 16 (BP2A.250605.031.A3).
   failed with "Transaction ID mismatch: expected 119, got 118", and every reopen after it read the previous command's
   leftovers ("expected Response container type (3), got 2"). So the closing reply of the cancelled download arrived
   after the drain stopped waiting. Fix: skip a reply whose ID is behind the current one (`is_stale_reply`, see
-  "In-session desync self-healing" in `AGENTS.md`). Waiting for his next run. He's traveling until about 2026-10-26
-  and will then have more devices, Samsungs included.
-- **Open: a ~3.5-minute wait (X6 Pro; ~5 min on the X7 Pro) on Windows between `test_create_delete_folder` and
-  `test_rename_file`.** Timestamped log on 2026-10-22: the gap sits before `test_rename_file`'s first line, with no CPU
-  use. It happens only on the first destructive run of a session: four runs right after had no wait, with or without
-  the antivirus, and `test_rename_file` alone took 0.13 s. Suspects: dropping the previous `WpdBackend` (the worker
-  joins after `Unadvise`) or the reopen, likely queued behind Windows enumerating the phone after its first write
-  (unverified). `open_test_mtp` now logs "Opening device..." and how long the open took, to tell the two apart.
+  "In-session desync self-healing" in `AGENTS.md`).
+- **Hardware-confirmed (2026-10-23, `d19ae00` = #44's head)**: on Linux the cancel test passes (cancelled at 24%,
+  session healthy, full second download), read-only 13/13, destructive 6/6, and the >4 GiB round trip (4.36 GB, upload
+  at 32 MB/s, download verified, 283 s), every open in 0.00–0.01 s. #44 rebase-merged and shipped in v0.34.2
+  (2026-10-24). The X6 Pro is in the README's tested devices table.
+- **Open: a ~3–5-minute wait on Windows on the first reopen after the first write since plugging in** (X6 Pro 183 s
+  and 208 s, X7 Pro ~5 min), absent on Linux. Timestamped runs: it's the *open* (`test_rename_file`'s open took
+  183.76 s, every other open 0.02–0.03 s), not the previous device closing. During the wait the four `WUDFHost.exe`
+  processes were idle (no CPU, no disk) and no Explorer window showed the phone, so it isn't Windows scanning the
+  phone. Later runs in the same session have no wait, antivirus on or off. Current hypothesis (unverified): Windows'
+  driver waits on the phone, which is busy after its first change (Android's media scanner), and a WPD open asks more
+  of it than a Linux open. Low priority for long-lived apps (Cmdr keeps the device open); it bites
+  one-process-per-command tools and the test suite. Suggested checks: wait ~5 minutes before the second open; try
+  File Explorer during the wait; a USBPcap capture would settle it.
+- **Galaxy A57 (remote, 2026-10-23)**: walking DCIM (279 files) took 12.8 s in his app on Windows, against 0.1 s for
+  189 files on the POCO X7 Pro. That's the WPD listing path (`EnumObjects` plus per-object property reads; Windows'
+  driver decides what it sends the phone), so #45's `GetObjectPropList` path isn't involved, contrary to his first
+  guess. Untried idea if WPD turns out to be the bottleneck: `IPortableDevicePropertiesBulk`. He'll run
+  `list_speed`, `prop_list`, and the suites on the A57 and other Samsungs after he's home (~2026-10-26).
 - **Test-harness gap it exposed**: after the wedge, later tests timed out, printed `SKIPPING`, and counted as passed.
   Fixed on the same branch: a hardware error fails the test once the device has answered earlier in the run
   (`should_skip` in `tests/integration.rs`); another app holding the device still skips.
@@ -552,6 +563,7 @@ Cross-cutting summary of every quirk currently handled or known. Sorted by devic
 | Teenage Engineering TP-7     | Keeps its session across host processes; `CloseSession` makes it leave MTP mode                                                                | Opt-in `MtpDeviceBuilder::reuse_existing_session(0xBAAA_AAAD)`                       | #29 (@worm-emoji, 2026-08-26)        |
 | Xiaomi POCO X7 Pro (HyperOS)  | Declines `GetObjectPropList` for "all properties" with 0xA801 in most folders; serves single properties; valueless `DateCreated` as data type 0 | Per-property listing (we never ask "all", see AGENTS.md); Undefined values skipped | #45 (@IoSonoPiero, 2026-10-22) |
 | Windows WPD (POCO X7 Pro)    | The driver returns MTP response codes wrapped as `FACILITY_ITF` HRESULTs (`0x8004_2009` for `InvalidObjectHandle` on a deleted handle) | `map_hresult` unwraps them and maps them like the USB backend (#42, v0.33.2) | #41 (@IoSonoPiero, 2026-10-21) |
+| Xiaomi POCO X6 Pro (Linux) | STALLs the SIC CLASS_CANCEL control request, keeps sending the object, and sends the cancelled transfer's closing reply late | Drain after a refused cancel; skip a reply with an earlier transaction ID (#44, v0.34.2) | #43 (@IoSonoPiero, 2026-10-22) |
 | Montblanc Digital Paper e-Ink | Android-based hot-folder responder: only an import and an export folder exposed; the device ingests only files newly written directly into the import folder (nested or moved-in files persist and list, but stay invisible on the device) | None possible (invisible to MTP); re-upload with `put --replace`; documented in the CLI reference | #6 (@ChristianSimonSU, 2026-09-22)   |
 
 ## Recurring contributors
