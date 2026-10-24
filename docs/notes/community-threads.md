@@ -77,15 +77,21 @@ Android 16 (BP2A.250605.031.A3).
   session healthy, full second download), read-only 13/13, destructive 6/6, and the >4 GiB round trip (4.36 GB, upload
   at 32 MB/s, download verified, 283 s), every open in 0.00–0.01 s. #44 rebase-merged and shipped in v0.34.2
   (2026-10-24). The X6 Pro is in the README's tested devices table.
-- **Open: a ~3–5-minute wait on Windows on the first reopen after the first write since plugging in** (X6 Pro 183 s
-  and 208 s, X7 Pro ~5 min), absent on Linux. Timestamped runs: it's the *open* (`test_rename_file`'s open took
-  183.76 s, every other open 0.02–0.03 s), not the previous device closing. During the wait the four `WUDFHost.exe`
-  processes were idle (no CPU, no disk) and no Explorer window showed the phone, so it isn't Windows scanning the
-  phone. Later runs in the same session have no wait, antivirus on or off. Current hypothesis (unverified): Windows'
-  driver waits on the phone, which is busy after its first change (Android's media scanner), and a WPD open asks more
-  of it than a Linux open. Low priority for long-lived apps (Cmdr keeps the device open); it bites
-  one-process-per-command tools and the test suite. Suggested checks: wait ~5 minutes before the second open; try
-  File Explorer during the wait; a USBPcap capture would settle it.
+- **Settled, not ours: a ~2–5-minute wait on Windows on the first reopen after the first write since plugging in**
+  (X6 Pro 136–208 s, X7 Pro ~5 min), absent on Linux. Timestamped runs: it's the *open* (`test_rename_file`'s open
+  took 183.76 s, every other open 0.02–0.03 s), not the previous device closing; the four `WUDFHost.exe` processes sit
+  idle. Checks on v0.34.2 (2026-10-24): after waiting 5 minutes, the second open took 0.02 s; back to back it took
+  136 s, and File Explorer hung ("Not responding", even on "This PC") during the wait. So the phone or Windows' driver
+  is busy for a couple of minutes after the first session's changes. Nothing to fix in mtp-rs; long-lived apps don't
+  see it, one-process-per-command tools and the test suite do.
+- **Killed process mid-window wedged the phone until a replug (2026-10-24, POCO X7 Pro, Linux, v0.34.2 and v0.34.1)**:
+  his app called `std::process::exit` 50 ms into a 4 MB `download_windowed` window. Every new process then failed its
+  first command with `expected Response container type (3), got N` (N different each run): the phone kept sending
+  the rest of the window, and each `OpenSession` read one 512-byte chunk as its reply. Fixed in v0.34.3: open drains
+  the pipe and retries when the reply doesn't parse (see "In-session desync self-healing" in `AGENTS.md`). He
+  suggested a PTP Device Reset at open too; declined, since it kills MTP on a Pixel. Not hardware-verified yet;
+  asked him to rerun. Dropping a `WindowedDownload` between windows was fine (next listing 55 ms, re-download
+  verified by SHA-256).
 - **Galaxy A57 (remote, 2026-10-23)**: walking DCIM (279 files) took 12.8 s in his app on Windows, against 0.1 s for
   189 files on the POCO X7 Pro. That's the WPD listing path (`EnumObjects` plus per-object property reads; Windows'
   driver decides what it sends the phone), so #45's `GetObjectPropList` path isn't involved, contrary to his first
