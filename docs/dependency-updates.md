@@ -65,7 +65,9 @@ job checks the consumer's view independently.
 - **Own PR, never automerged, labeled `needs-hardware-test`**: `nusb` and `windows`. CI can't observe how they behave
   against a real device.
 - **Not managed at all**: `windows-core` (moves with `windows`), the Rust toolchain in workflows (moves with the
-  MSRV), and the libmtp benchmark crate (CI never builds it).
+  MSRV), the libmtp benchmark crate (CI never builds it), and `dist`'s generated `mtp-rs-cli-release.yml` (its
+  actions and runners move with `cargo-dist-version` and `dist generate`, and a newer Ubuntu runner would raise the
+  glibc the Linux CLI binaries need). The hand-written `publish-homebrew-formula.yml` stays managed.
 - **0.x "minor" bumps are breaking, but Renovate files them as minor.** Cargo treats `0.62` → `0.100` as incompatible,
   yet Renovate puts it in the automerge group, and CI is then the only gate. Any 0.x crate whose behavior CI can't
   observe needs its own no-automerge rule, like `nusb` and `windows` have.

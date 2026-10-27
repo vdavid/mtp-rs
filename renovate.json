@@ -61,6 +61,11 @@
       "description": "The libmtp comparison benchmark is a manual dev tool outside default-members, built only with libmtp installed locally. CI never compiles it, so a bump here can't be verified.",
       "matchFileNames": ["benchmarks/mtp-rs-vs-libmtp/**"],
       "enabled": false
+    },
+    {
+      "description": "dist generates this workflow and its plan job fails if it drifts from what dist would generate. Its actions and runners move when `cargo-dist-version` is bumped and `dist generate` re-run. A newer Ubuntu runner would also raise the glibc the Linux CLI binaries need.",
+      "matchFileNames": [".github/workflows/mtp-rs-cli-release.yml"],
+      "enabled": false
     }
   ],
   "cargo": {

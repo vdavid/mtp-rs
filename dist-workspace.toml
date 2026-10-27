@@ -1,6 +1,6 @@
 # Config for `dist` (cargo-dist): prebuilt CLI binaries on GitHub Releases, shell and
 # PowerShell installers, and the Homebrew formula in vdavid/homebrew-tap.
-# After editing, run `dist generate` to regenerate .github/workflows/release.yml.
+# After editing, run `dist generate` to regenerate .github/workflows/mtp-rs-cli-release.yml.
 [workspace]
 members = ["cargo:."]
 
