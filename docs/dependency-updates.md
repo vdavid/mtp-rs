@@ -71,6 +71,8 @@ Read it before merging or closing a Renovate PR.
   Lift the hold when the MSRV reaches 1.93.1.
 - **`proptest`** (dev-dependency): held below 1.12, which needs Rust 1.88 (it sat in the non-major group PR #40,
   failing only the `rust 1.85` jobs, from 2026-10-19). Lift the hold when the MSRV reaches 1.88.
+- **`parking_lot`** (dev-dependency, `MockTransport`): held below 0.13, which needs Rust 1.95 (it sat in the non-major
+  group PR #48, failing only the `rust 1.85` jobs, from 2026-10-26). Lift the hold when the MSRV reaches 1.95.
 - **`actions/checkout`**: majors are safe here. The v7 breaking change blocks checking out fork PR code under
   `pull_request_target` and `workflow_run`, and our workflows use neither trigger. Re-check if one gets added.
 - **Rust toolchain in workflows**: Renovate's `github-actions` manager reads `toolchain:` inputs as a `rust`
@@ -88,4 +90,4 @@ A deliberate, consumer-visible change. Touch every one of these in the same comm
 - `CONTRIBUTING.md`: the MSRV section.
 - `CHANGELOG.md`: a **Breaking** entry ("MSRV raised from A to B").
 - `renovate.json` and this doc: lift any hold the new MSRV unblocks (`proptest` 1.12 at 1.88, `serial_test` at
-  1.93.1, `windows` 0.100 at 1.95).
+  1.93.1, `windows` 0.100 and `parking_lot` 0.13 at 1.95).
