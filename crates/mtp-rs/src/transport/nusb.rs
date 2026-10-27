@@ -723,7 +723,7 @@ impl Transport for NusbTransport {
                     return Err(clear_halt_if_stalled(&mut ep, e));
                 }
             }
-        } else if total_sent > 0 && total_sent % max_packet_size == 0 {
+        } else if total_sent > 0 && total_sent.is_multiple_of(max_packet_size) {
             // All data fit in full transfers. Send ZLP to terminate.
             ep.submit(Buffer::new(0));
             let completion = ep
@@ -1191,7 +1191,7 @@ fn align_to_packet_size(size: usize, packet_size: usize) -> usize {
     if size == 0 {
         return packet_size;
     }
-    if size % packet_size == 0 {
+    if size.is_multiple_of(packet_size) {
         size
     } else {
         ((size / packet_size) + 1) * packet_size

@@ -231,7 +231,7 @@ impl ResponseContainer {
 
         // Parse parameters
         let param_bytes = length - HEADER_SIZE;
-        if param_bytes % 4 != 0 {
+        if !param_bytes.is_multiple_of(4) {
             return Err(crate::PtpError::invalid_data(format!(
                 "response parameter bytes not aligned: {} bytes",
                 param_bytes
@@ -326,7 +326,7 @@ impl EventContainer {
 
         // Validate parameter alignment (must be multiple of 4 bytes after header)
         let param_bytes = length - HEADER_SIZE;
-        if param_bytes % 4 != 0 {
+        if !param_bytes.is_multiple_of(4) {
             return Err(crate::PtpError::invalid_data(format!(
                 "event parameter bytes not aligned: {} bytes",
                 param_bytes

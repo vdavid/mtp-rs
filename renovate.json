@@ -47,22 +47,12 @@
       "enabled": false
     },
     {
-      "description": "serial_test 4 needs Rust 1.93.1, and CI runs our tests on the 1.85 MSRV. Lift this hold when the MSRV reaches 1.93.1.",
-      "matchPackageNames": ["serial_test"],
-      "allowedVersions": "<4.0.0"
+      "description": "A library's Cargo.toml floors are a promise to consumers, so in-range updates move only Cargo.lock. Cargo.lock may then need a newer Rust than the MSRV: that's fine, because the MSRV CI job resolves afresh like a consumer on the MSRV (see docs/dependency-updates.md).",
+      "matchManagers": ["cargo"],
+      "rangeStrategy": "update-lockfile"
     },
     {
-      "description": "proptest 1.12 needs Rust 1.88, and CI runs our tests on the 1.85 MSRV. Lift this hold when the MSRV reaches 1.88.",
-      "matchPackageNames": ["proptest"],
-      "allowedVersions": "<1.12.0"
-    },
-    {
-      "description": "parking_lot 0.13 needs Rust 1.95, and CI runs our tests on the 1.85 MSRV. Lift this hold when the MSRV reaches 1.95.",
-      "matchPackageNames": ["parking_lot"],
-      "allowedVersions": "<0.13.0"
-    },
-    {
-      "description": "CI runs Rust at the MSRV (rust-version in Cargo.toml) and at stable. A bumped toolchain literal silently stops CI from checking the MSRV, so the toolchain only moves with a deliberate MSRV raise (see docs/dependency-updates.md).",
+      "description": "The msrv CI job runs Rust at the MSRV (rust-version in Cargo.toml). A bumped toolchain literal silently stops CI from checking the MSRV, so the toolchain only moves with a deliberate MSRV raise (see docs/dependency-updates.md).",
       "matchManagers": ["github-actions"],
       "matchDepNames": ["rust"],
       "enabled": false

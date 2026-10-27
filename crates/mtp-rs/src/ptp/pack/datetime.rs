@@ -94,7 +94,7 @@ const MAX_UNIX_SECONDS: i64 = 253_402_300_799;
 const SECONDS_PER_DAY: i64 = 86_400;
 
 fn is_leap_year(year: u16) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 /// The month's length in days, or 0 for a month outside 1-12.

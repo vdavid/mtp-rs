@@ -1,7 +1,7 @@
 # mtp-rs workspace
 
 [![CI](https://github.com/vdavid/mtp-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/vdavid/mtp-rs/actions/workflows/ci.yml)
-[![MSRV](https://img.shields.io/badge/MSRV-1.85-blue)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+[![MSRV](https://img.shields.io/badge/MSRV-1.91-blue)](https://blog.rust-lang.org/2025/10/30/Rust-1.91.0/)
 
 Pure-Rust MTP/PTP for modern Android phones, e-readers, Garmin watches, and cameras. No `libmtp`, no `libusb`, no FFI.
 Async, runtime-agnostic, consistently faster than libmtp, and big Android folders list in a fraction of a second.
@@ -18,6 +18,11 @@ For library usage, the API, the device quirks we handle, and tested devices, see
 
 For the CLI, see the [`mtp-rs-cli` README](crates/mtp-rs-cli/README.md) and
 the [full command reference](crates/mtp-rs-cli/docs/cli.md).
+
+## MSRV
+
+Both crates support the Rust releases from the last 12 months, currently Rust 1.91 or newer. Raising this minimum is a
+minor version bump, and the changelog always says so.
 
 ## Sister projects
 

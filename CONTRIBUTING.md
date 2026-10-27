@@ -27,14 +27,16 @@ Run `just --list` to see all available commands.
 
 ### MSRV (Minimum Supported Rust Version)
 
-We support Rust 1.85. Before submitting PRs, verify MSRV compatibility:
+We support the Rust releases from the last 12 months, currently Rust 1.91. Raising it is a minor version bump with a changelog line. Before submitting PRs, verify MSRV compatibility:
 
 ```bash
-rustup toolchain install 1.85.0  # One-time setup
+rustup toolchain install 1.91.0  # One-time setup
 just msrv                         # Check MSRV compatibility
 ```
 
-This catches issues that only appear on older Rust versions (different lint behavior, etc.). CI runs this check, so `just msrv` locally saves a round-trip.
+This catches issues that only appear on older Rust versions. CI runs this check, so `just msrv` locally saves a round-trip.
+
+The MSRV covers what consumers compile: the library (every feature) and the CLI binary. Tests and dev-dependencies only need stable Rust, so a dev-dependency may require a newer toolchain. `just msrv` resolves dependencies afresh the way a consumer on the MSRV would, so `Cargo.lock` may hold versions that need a newer Rust, and `Cargo.toml` never caps a dependency for the MSRV. Details in [docs/dependency-updates.md](docs/dependency-updates.md).
 
 ## Project structure
 
@@ -188,7 +190,7 @@ See [`docs/releasing.md`](docs/releasing.md) for how to publish a new version to
 1. Fork and create a branch
 2. Make your changes
 3. Run `just` (checks format, lint, test, and doc)
-4. Run `just msrv` to verify Rust 1.85 compatibility
+4. Run `just msrv` to verify Rust 1.91 compatibility
 5. If you have a device, run integration tests: `cargo test --test integration -- --ignored`
 6. Open a PR with a clear description including how you tested your changes
 

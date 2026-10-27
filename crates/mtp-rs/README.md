@@ -4,7 +4,7 @@
 [![docs.rs](https://img.shields.io/docsrs/mtp-rs)](https://docs.rs/mtp-rs)
 [![CI](https://github.com/vdavid/mtp-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/vdavid/mtp-rs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/crates/l/mtp-rs)](LICENSE-MIT)
-[![MSRV](https://img.shields.io/badge/MSRV-1.85-blue)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+[![MSRV](https://img.shields.io/badge/MSRV-1.91-blue)](https://blog.rust-lang.org/2025/10/30/Rust-1.91.0/)
 
 A pure-Rust, async MTP/PTP library.
 No C dependencies, consistently faster than libmtp (up to 4x for large transfers), and way more predictable.
@@ -116,7 +116,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mtp-rs = "0.17"
+mtp-rs = "0.34"
 ```
 
 You'll also need an async runtime. The library is runtime-agnostic, but [tokio](https://github.com/tokio-rs/tokio) is
@@ -126,6 +126,13 @@ the most common choice:
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
+
+### MSRV
+
+mtp-rs supports the Rust releases from the last 12 months, currently Rust 1.91 or newer. Raising this minimum is a
+minor version bump (like 0.34 to 0.35), and the changelog always says so. When one of mtp-rs's dependencies ships a
+release that needs a newer Rust than yours, Cargo's MSRV-aware resolver (on by default with `resolver = "3"` or edition
+2024) picks a version your Rust can build.
 
 ## Platform notes
 

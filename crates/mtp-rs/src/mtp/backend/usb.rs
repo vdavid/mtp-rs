@@ -1281,8 +1281,10 @@ mod tests {
             })
             .map(|send| {
                 send[12..]
-                    .chunks_exact(4)
-                    .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|&quad| u32::from_le_bytes(quad))
                     .collect()
             })
             .collect()
