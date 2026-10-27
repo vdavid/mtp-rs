@@ -14,6 +14,10 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-10-27
+
+Library `0.35.0` and CLI `0.11.0`. Both move to a rolling 12-month MSRV, now Rust 1.91.
+
 ### Changed
 
 - **Breaking:** **[workspace]** The MSRV is now Rust 1.91 (was 1.85), under a new policy: both crates support the Rust releases from the last 12 months, and raising the MSRV is always a minor version bump with a changelog line. When a dependency's newest release needs a newer Rust than yours, Cargo's MSRV-aware resolver (`resolver = "3"`, the edition 2024 default) picks one you can build.

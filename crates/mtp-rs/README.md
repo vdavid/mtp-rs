@@ -116,7 +116,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mtp-rs = "0.34"
+mtp-rs = "0.35"
 ```
 
 You'll also need an async runtime. The library is runtime-agnostic, but [tokio](https://github.com/tokio-rs/tokio) is
@@ -130,7 +130,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ### MSRV
 
 mtp-rs supports the Rust releases from the last 12 months, currently Rust 1.91 or newer. Raising this minimum is a
-minor version bump (like 0.34 to 0.35), and the changelog always says so. When one of mtp-rs's dependencies ships a
+minor version bump (like 0.35 to 0.36), and the changelog always says so. When one of mtp-rs's dependencies ships a
 release that needs a newer Rust than yours, Cargo's MSRV-aware resolver (on by default with `resolver = "3"` or edition
 2024) picks a version your Rust can build.
 
