@@ -14,10 +14,15 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-10-28
+
+Library `0.36.0` and CLI `0.11.1`. A file or folder name longer than MTP allows is refused up front instead of garbling the transfer.
+
 ### Fixed
 
 - **[lib] A file or folder name longer than MTP allows is refused instead of garbling the transfer.** PTP strings hold at most 254 UTF-16 code units (an emoji is two), but `pack_string` wrote the length into one byte with a silent wrap, so a 255-unit name told the device the name was empty and it misparsed everything after it. `Storage::upload`, `create_folder`, and `rename` now return the new `Error::NameTooLong { units }` before anything is sent, so nothing is created or changed and the session stays usable. `MAX_NAME_UNITS` (crate root and `mtp::`) is the limit to check against. The CLI reports it as a remote path error (exit code 5). Reported in [#49](https://github.com/vdavid/mtp-rs/issues/49).
 - **[lib] The virtual device lists a backing file whose name is too long for MTP**, cutting it at 254 units the way Android does, where it used to send a wrapped length byte.
+- **[cli] `put`, `mkdir`, and `rename` with a name over 254 UTF-16 units exit with code 5 (remote path error)** and a message naming the limit, where the device used to receive a garbled name.
 
 ### Changed
 
