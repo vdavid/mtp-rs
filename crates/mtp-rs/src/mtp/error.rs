@@ -90,6 +90,17 @@ pub enum Error {
     #[error("no device found")]
     NoDevice,
 
+    /// A file or folder name is too long for MTP.
+    ///
+    /// MTP names hold at most [`MAX_NAME_UNITS`](crate::mtp::MAX_NAME_UNITS) (254) UTF-16 code
+    /// units; an emoji takes two. Raised by `upload`, `create_folder`, and `rename` before
+    /// anything is sent, so nothing was created or changed and the session stays usable.
+    #[error("name is {units} UTF-16 code units long; MTP names hold at most 254")]
+    NameTooLong {
+        /// The name's length in UTF-16 code units.
+        units: usize,
+    },
+
     /// Data received from the device couldn't be interpreted.
     #[error("invalid data: {message}")]
     InvalidData {
@@ -203,8 +214,30 @@ impl From<crate::error::PtpError> for Error {
             Low::NoDevice => Error::NoDevice,
             Low::Cancelled => Error::Cancelled,
             Low::DeviceReset => Error::DeviceReset,
+            // The neutral API only ever sends names, so a too-long string is a too-long name.
+            Low::StringTooLong { units } => Error::NameTooLong { units },
         }
     }
+}
+
+/// The longest file or folder name MTP can carry, in UTF-16 code units.
+///
+/// An MTP string's length byte counts the null terminator too, so 254 units is the cap (see
+/// [`crate::ptp::MAX_STRING_UNITS`]). Count with `name.encode_utf16().count()`: an emoji or other
+/// character outside the Basic Multilingual Plane takes two units.
+pub const MAX_NAME_UNITS: usize = crate::ptp::MAX_STRING_UNITS;
+
+/// Refuse a name MTP can't carry, before any backend sees it.
+///
+/// Checked in the [`Storage`](crate::mtp::Storage) façade so every backend refuses the same names
+/// with the same [`Error::NameTooLong`]: the WPD backend's Windows driver speaks the same wire
+/// format underneath, and the USB backend's `pack_string` would refuse it anyway, one layer down.
+pub(crate) fn check_name_length(name: &str) -> Result<(), Error> {
+    let units = name.encode_utf16().count();
+    if units > MAX_NAME_UNITS {
+        return Err(Error::NameTooLong { units });
+    }
+    Ok(())
 }
 
 /// Map a PTP response code to a neutral [`enum@Error`]. The WPD backend uses it too, for the MTP

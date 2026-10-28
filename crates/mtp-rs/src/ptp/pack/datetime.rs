@@ -365,7 +365,7 @@ pub fn pack_datetime(dt: &DateTime) -> Result<Vec<u8>, crate::PtpError> {
             dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
         ))
     })?;
-    Ok(pack_string(&formatted))
+    pack_string(&formatted)
 }
 
 /// Unpack a DateTime from a buffer.
@@ -752,7 +752,7 @@ mod tests {
     fn unpack_datetime_unparseable_string_returns_none() {
         // Receive-side leniency: garbage in a datetime field must not fail the
         // surrounding dataset parse (it's informational metadata).
-        let packed = pack_string("not a date");
+        let packed = pack_string("not a date").unwrap();
         let (dt, consumed) = unpack_datetime(&packed).unwrap();
         assert_eq!(dt, None);
         assert_eq!(consumed, packed.len());
@@ -763,7 +763,7 @@ mod tests {
         // Panasonic Lumix DMC-TZ61 reports "20480000T000000" (month 0, day 0)
         // as its "no date" value. Seen in the wild (issue #12); must parse as
         // None, not error.
-        let packed = pack_string("20480000T000000");
+        let packed = pack_string("20480000T000000").unwrap();
         let (dt, consumed) = unpack_datetime(&packed).unwrap();
         assert_eq!(dt, None);
         assert_eq!(consumed, packed.len());

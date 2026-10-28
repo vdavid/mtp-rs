@@ -150,6 +150,14 @@ pub fn unpack_i64(buf: &[u8]) -> Result<i64, crate::PtpError> {
 
 // --- String encoding/decoding ---
 
+/// The longest string PTP can carry, in UTF-16 code units, not counting the null terminator.
+///
+/// A PTP string's one-byte length prefix counts the terminator too, so it tops out at 255 units
+/// including it (PIMA 15740 § 5.3.4). AOSP's MTP server uses the same cap
+/// (`MTP_STRING_MAX_CHARACTER_NUMBER = 255` in `MtpStringBuffer.cpp`). An emoji or other
+/// character outside the Basic Multilingual Plane takes two units.
+pub const MAX_STRING_UNITS: usize = 254;
+
 /// Pack a string into MTP format (UTF-16LE with length prefix).
 ///
 /// MTP strings are encoded as:
@@ -158,15 +166,24 @@ pub fn unpack_i64(buf: &[u8]) -> Result<i64, crate::PtpError> {
 /// 3. 2 bytes: Null terminator (0x0000)
 ///
 /// Empty string: Single byte 0x00
-pub fn pack_string(s: &str) -> Vec<u8> {
+///
+/// # Errors
+///
+/// [`PtpError::StringTooLong`](crate::PtpError::StringTooLong) when `s` is longer than
+/// [`MAX_STRING_UNITS`] UTF-16 code units. The length byte can't express it, and truncating would
+/// silently write something other than what the caller asked for (a different file name).
+pub fn pack_string(s: &str) -> Result<Vec<u8>, crate::PtpError> {
     if s.is_empty() {
-        return vec![0x00];
+        return Ok(vec![0x00]);
     }
 
     // Encode to UTF-16
     let utf16: Vec<u16> = s.encode_utf16().collect();
+    if utf16.len() > MAX_STRING_UNITS {
+        return Err(crate::PtpError::StringTooLong { units: utf16.len() });
+    }
 
-    // Length includes the null terminator
+    // Length includes the null terminator; the check above keeps it within a u8.
     let len = utf16.len() + 1;
 
     // Allocate result: 1 byte length + (len * 2) bytes for UTF-16 data
@@ -183,7 +200,7 @@ pub fn pack_string(s: &str) -> Vec<u8> {
     // Null terminator
     result.extend_from_slice(&[0x00, 0x00]);
 
-    result
+    Ok(result)
 }
 
 /// Unpack an MTP string from a buffer.
@@ -373,16 +390,47 @@ mod tests {
 
     #[test]
     fn pack_string_formats() {
-        assert_eq!(pack_string(""), vec![0x00]);
+        assert_eq!(pack_string("").unwrap(), vec![0x00]);
         assert_eq!(
-            pack_string("Hi"),
+            pack_string("Hi").unwrap(),
             vec![0x03, 0x48, 0x00, 0x69, 0x00, 0x00, 0x00] // len=3, 'H', 'i', null
         );
     }
 
     #[test]
+    fn pack_string_accepts_the_longest_string_ptp_can_carry() {
+        let s = "a".repeat(MAX_STRING_UNITS);
+        let packed = pack_string(&s).unwrap();
+        assert_eq!(packed[0], 255); // 254 units + the terminator fills the length byte
+        assert_eq!(unpack_string(&packed).unwrap(), (s, packed.len()));
+    }
+
+    #[test]
+    fn pack_string_refuses_a_string_one_unit_too_long() {
+        // Regression anchor (mtp-rs#49): this used to wrap the length byte to 0, so the device
+        // read an empty name and then misparsed the 255 code units that followed.
+        let s = "a".repeat(MAX_STRING_UNITS + 1);
+        assert!(matches!(
+            pack_string(&s),
+            Err(crate::PtpError::StringTooLong { units: 255 })
+        ));
+    }
+
+    #[test]
+    fn pack_string_counts_utf16_units_not_chars() {
+        // 127 emoji are 254 units (fits); 128 are 256 units, though only 128 chars.
+        let fits = "\u{1F600}".repeat(127);
+        assert_eq!(pack_string(&fits).unwrap()[0], 255);
+        let too_long = "\u{1F600}".repeat(128);
+        assert!(matches!(
+            pack_string(&too_long),
+            Err(crate::PtpError::StringTooLong { units: 256 })
+        ));
+    }
+
+    #[test]
     fn pack_string_emoji_surrogate_pair() {
-        let packed = pack_string("\u{1F600}");
+        let packed = pack_string("\u{1F600}").unwrap();
         assert_eq!(packed[0], 3); // surrogate pair (2 units) + null
         assert_eq!(&packed[1..5], &[0x3D, 0xD8, 0x00, 0xDE]); // 0xD83D, 0xDE00
     }
@@ -398,7 +446,7 @@ mod tests {
     #[test]
     fn roundtrip_strings() {
         for s in ["", "Hello", "\u{3053}\u{3093}", "\u{1F600}"] {
-            let (unpacked, _) = unpack_string(&pack_string(s)).unwrap();
+            let (unpacked, _) = unpack_string(&pack_string(s).unwrap()).unwrap();
             assert_eq!(unpacked, s);
         }
     }
@@ -487,7 +535,7 @@ mod tests {
         #[test]
         fn prop_roundtrip_string(s in valid_utf16_string()) {
             let s: String = s.chars().take(254).collect();
-            let packed = pack_string(&s);
+            let packed = pack_string(&s).unwrap();
             let (unpacked, consumed) = unpack_string(&packed).unwrap();
             prop_assert_eq!(&unpacked, &s);
             prop_assert_eq!(consumed, packed.len());

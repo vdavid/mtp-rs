@@ -234,7 +234,7 @@ impl ObjectInfo {
         buf.extend_from_slice(&pack_u32(self.sequence_number));
 
         // 16. Filename (string)
-        buf.extend_from_slice(&pack_string(&self.filename));
+        buf.extend_from_slice(&pack_string(&self.filename)?);
 
         // 17. DateCreated (datetime string)
         if let Some(dt) = &self.created {
@@ -251,7 +251,7 @@ impl ObjectInfo {
         }
 
         // 19. Keywords (string)
-        buf.extend_from_slice(&pack_string(&self.keywords));
+        buf.extend_from_slice(&pack_string(&self.keywords)?);
 
         Ok(buf)
     }
@@ -442,14 +442,14 @@ mod tests {
     fn prop_list_builds_one_object_per_handle() {
         let size = u64::from(u32::MAX) + 10;
         let buf = dataset(&[
-            element(7, 0xDC07, 0xFFFF, &pack_string("IMG_1.jpg")),
+            element(7, 0xDC07, 0xFFFF, &pack_string("IMG_1.jpg").unwrap()),
             element(7, 0xDC02, 0x0004, &pack_u16(0x3801)),
             element(7, 0xDC04, 0x0008, &size.to_le_bytes()),
             element(7, 0xDC0B, 0x0006, &pack_u32(3)),
             element(7, 0xDC01, 0x0006, &pack_u32(0x0001_0001)),
-            element(7, 0xDC09, 0xFFFF, &pack_string("20260809T190833")),
+            element(7, 0xDC09, 0xFFFF, &pack_string("20260809T190833").unwrap()),
             // Elements of another object in between: grouped by handle, first-seen order.
-            element(9, 0xDC07, 0xFFFF, &pack_string("Camera")),
+            element(9, 0xDC07, 0xFFFF, &pack_string("Camera").unwrap()),
             element(9, 0xDC02, 0x0004, &pack_u16(0x3001)),
             element(7, 0xDC03, 0x0004, &pack_u16(0)),
             element(9, 0xDC0B, 0x0006, &pack_u32(3)),
@@ -480,7 +480,7 @@ mod tests {
             // No value at all (data type 0), which is how some devices answer a property they
             // don't keep.
             element(7, 0xDC08, 0x0000, &[]),
-            element(7, 0xDC07, 0xFFFF, &pack_string("a.mp4")),
+            element(7, 0xDC07, 0xFFFF, &pack_string("a.mp4").unwrap()),
         ]);
         let elements = ObjectPropListElement::list_from_bytes(&buf).unwrap();
         assert_eq!(elements.len(), 4);
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn prop_list_rejects_a_truncated_dataset() {
-        let mut buf = dataset(&[element(7, 0xDC07, 0xFFFF, &pack_string("a.jpg"))]);
+        let mut buf = dataset(&[element(7, 0xDC07, 0xFFFF, &pack_string("a.jpg").unwrap())]);
         buf.truncate(buf.len() - 3);
         assert!(ObjectPropListElement::list_from_bytes(&buf).is_err());
         // More elements announced than present.
@@ -568,7 +568,7 @@ mod tests {
         // SequenceNumber: 1
         buf.extend_from_slice(&pack_u32(1));
         // Filename: "photo.jpg"
-        buf.extend_from_slice(&pack_string("photo.jpg"));
+        buf.extend_from_slice(&pack_string("photo.jpg").unwrap());
         // DateCreated: "20240315T143022"
         buf.extend_from_slice(
             &pack_datetime(&DateTime {
@@ -656,10 +656,10 @@ mod tests {
         buf.extend_from_slice(&pack_u16(0)); // AssociationType
         buf.extend_from_slice(&pack_u32(0)); // AssociationDesc
         buf.extend_from_slice(&pack_u32(1)); // SequenceNumber
-        buf.extend_from_slice(&pack_string("P1040001.JPG")); // Filename
-        buf.extend_from_slice(&pack_string("20480000T000000")); // DateCreated (sentinel)
-        buf.extend_from_slice(&pack_string("20480000T000000")); // DateModified (sentinel)
-        buf.extend_from_slice(&pack_string("kw")); // Keywords
+        buf.extend_from_slice(&pack_string("P1040001.JPG").unwrap()); // Filename
+        buf.extend_from_slice(&pack_string("20480000T000000").unwrap()); // DateCreated (sentinel)
+        buf.extend_from_slice(&pack_string("20480000T000000").unwrap()); // DateModified (sentinel)
+        buf.extend_from_slice(&pack_string("kw").unwrap()); // Keywords
 
         let info = ObjectInfo::from_bytes(&buf).unwrap();
         assert_eq!(info.filename, "P1040001.JPG");
@@ -703,7 +703,7 @@ mod tests {
         // SequenceNumber: 0
         buf.extend_from_slice(&pack_u32(0));
         // Filename: "DCIM"
-        buf.extend_from_slice(&pack_string("DCIM"));
+        buf.extend_from_slice(&pack_string("DCIM").unwrap());
         // DateCreated: empty
         buf.push(0x00);
         // DateModified: empty

@@ -93,6 +93,13 @@ impl CliError {
                     CliErrorKind::RemotePath,
                     format!("{context}: remote path not found"),
                 ),
+                Error::NameTooLong { units } => Self::new(
+                    CliErrorKind::RemotePath,
+                    format!(
+                        "{context}: name is too long for MTP ({units} UTF-16 units, max {})",
+                        mtp_rs::MAX_NAME_UNITS
+                    ),
+                ),
                 Error::StorageFull => Self::new(
                     CliErrorKind::Transfer,
                     format!("{context}: storage is full"),

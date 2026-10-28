@@ -79,6 +79,13 @@ async fn create_folder_rename_move_copy() {
 }
 
 #[tokio::test]
+async fn name_too_long_is_refused() {
+    let (device, _dir) = open_device("conf-name-too-long").await;
+    let storage = &device.storages().await.unwrap()[0];
+    common::run_name_too_long_is_refused(storage, None).await;
+}
+
+#[tokio::test]
 async fn recursive_listing_walks_the_tree() {
     let (device, _dir) = open_device("conf-recursive").await;
     let storage = &device.storages().await.unwrap()[0];

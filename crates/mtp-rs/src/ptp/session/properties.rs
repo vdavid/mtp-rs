@@ -135,7 +135,7 @@ impl PtpSession {
         property: DevicePropertyCode,
         value: &PropertyValue,
     ) -> Result<(), Error> {
-        let data = value.to_bytes();
+        let data = value.to_bytes()?;
         self.set_device_prop_value(property, &data).await
     }
 

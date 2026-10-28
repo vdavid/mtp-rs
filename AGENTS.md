@@ -64,6 +64,9 @@ fallbacks, >4 GB size resolution, SIC cancel, recovery, the upload partial-handl
 backend-agnostic variants (`NotFound`, `StaleHandle`, `AccessDenied`, `Unsupported`, `Busy`,
 `StorageFull`, `Cancelled`, `Disconnected`, …). The rich low-level PTP error is `PtpError` (root and
 `ptp::PtpError`); `ptp::` keeps its detailed response-code errors for camera/protocol users.
+**PTP strings cap at 254 UTF-16 units**: `pack_string` is fallible and the `Storage` façade refuses a
+longer name with `Error::NameTooLong` before any backend sees it; never truncate on the host side.
+The virtual device truncates like AOSP instead. Why and how: `docs/protocol.md` § Strings.
 
 **Entry points:** `MtpDevice::open_first()`, `PtpDevice::open_first()`, `NusbTransport::list_mtp_devices()`, `mtp::watch_devices()` (hotplug stream), `MtpDevice::reset_by_serial()` (session-less transport reset),
 `MtpDeviceBuilder::open_virtual()` (feature-gated), `MtpDeviceBuilder::reuse_existing_session(id)`

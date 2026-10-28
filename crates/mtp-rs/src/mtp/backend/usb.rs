@@ -1363,13 +1363,15 @@ mod tests {
                 let is_folder = handle == FOLDER;
                 let (data_type, value) = match property {
                     PARENT => (0x0006, pack_u32(parent).to_vec()),
-                    NAME => (0xFFFF, crate::ptp::pack_string(name)),
+                    NAME => (0xFFFF, crate::ptp::pack_string(name).unwrap()),
                     FORMAT => (
                         0x0004,
                         pack_u16(if is_folder { 0x3001 } else { 0x3801 }).to_vec(),
                     ),
                     SIZE => (0x0008, pack_u64(if is_folder { 0 } else { 3 }).to_vec()),
-                    MODIFIED | CREATED => (0xFFFF, crate::ptp::pack_string("20260809T190833")),
+                    MODIFIED | CREATED => {
+                        (0xFFFF, crate::ptp::pack_string("20260809T190833").unwrap())
+                    }
                     _ => unreachable!("no test property {property:#06x}"),
                 };
                 (handle, property, data_type, value)
@@ -1460,7 +1462,7 @@ mod tests {
     async fn list_subfolder_uses_object_prop_list_when_advertised() {
         let (transport, mock) = mock_transport();
         let mut device = Answers::new(&mock);
-        let s = |v: &str| crate::ptp::pack_string(v);
+        let s = |v: &str| crate::ptp::pack_string(v).unwrap();
         let u32v = |v: u32| pack_u32(v).to_vec();
         // Depth 1 answers the folder itself (handle 5) and its children, one property at a time.
         device.prop_list(&[

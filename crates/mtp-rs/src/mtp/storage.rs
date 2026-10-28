@@ -4,6 +4,7 @@ use crate::cancel::{bail_if_cancelled, CancelToken};
 use crate::mtp::backend::{
     BackendListing, BackendListingError, ByteRange, ListingErrorDisposition, MtpBackend, ProgressFn,
 };
+use crate::mtp::error::check_name_length;
 use crate::mtp::object::NewObjectInfo;
 use crate::mtp::stream::{FileDownload, Progress, WindowedDownload, DEFAULT_DOWNLOAD_WINDOW};
 use crate::mtp::{Error, ObjectHandle, ObjectInfo, StorageId, StorageInfo, UploadError};
@@ -554,6 +555,10 @@ impl Storage {
     where
         S: Stream<Item = Result<Bytes, std::io::Error>> + Unpin + Send + 'a,
     {
+        check_name_length(&info.filename).map_err(|source| UploadError {
+            source,
+            partial: None,
+        })?;
         self.backend
             .upload(self.id, parent, info, Box::pin(data), None)
             .await
@@ -575,6 +580,10 @@ impl Storage {
         S: Stream<Item = Result<Bytes, std::io::Error>> + Unpin + Send + 'a,
         F: FnMut(Progress) -> ControlFlow<()> + Send + 'a,
     {
+        check_name_length(&info.filename).map_err(|source| UploadError {
+            source,
+            partial: None,
+        })?;
         let progress: ProgressFn<'a> = Box::new(on_progress);
         self.backend
             .upload(self.id, parent, info, Box::pin(data), Some(progress))
@@ -590,6 +599,7 @@ impl Storage {
         parent: Option<ObjectHandle>,
         name: &str,
     ) -> Result<ObjectHandle, Error> {
+        check_name_length(name)?;
         self.backend.create_folder(self.id, parent, name).await
     }
 
@@ -633,6 +643,7 @@ impl Storage {
     ///
     /// Not all devices support renaming. Use `MtpDevice::supports_rename()` to check.
     pub async fn rename(&self, handle: ObjectHandle, new_name: &str) -> Result<(), Error> {
+        check_name_length(new_name)?;
         self.backend.rename(handle, new_name).await
     }
 }

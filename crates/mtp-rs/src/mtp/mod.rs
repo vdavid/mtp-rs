@@ -44,7 +44,7 @@ mod types;
 
 pub use backend::{Backend, ByteRange};
 pub use device::{MtpDevice, MtpDeviceBuilder, MtpDeviceInfo};
-pub use error::{Error, UploadError};
+pub use error::{Error, UploadError, MAX_NAME_UNITS};
 pub use event::DeviceEvent;
 pub use hotplug::{
     watch_devices, DeviceWatch, DeviceWatchBuilder, HotplugEvent, DEFAULT_SETTLE_DELAY,

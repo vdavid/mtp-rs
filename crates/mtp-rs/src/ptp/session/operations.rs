@@ -410,7 +410,7 @@ impl PtpSession {
     ///
     /// Not all devices support renaming. Check `supports_rename()` on DeviceInfo first.
     pub async fn rename_object(&self, handle: ObjectHandle, new_name: &str) -> Result<(), Error> {
-        let name_bytes = pack_string(new_name);
+        let name_bytes = pack_string(new_name)?;
         self.set_object_prop_value(handle, ObjectPropertyCode::ObjectFileName, &name_bytes)
             .await
     }
@@ -712,7 +712,7 @@ mod tests {
         mock.queue_response(ok_response(1)); // SetObjectPropValue
 
         let session = PtpSession::open(transport, 1).await.unwrap();
-        let prop_value = pack_string("newfile.txt");
+        let prop_value = pack_string("newfile.txt").unwrap();
         session
             .set_object_prop_value(
                 ObjectHandle(1),
@@ -734,7 +734,7 @@ mod tests {
         ));
 
         let session = PtpSession::open(transport, 1).await.unwrap();
-        let prop_value = pack_string("newfile.txt");
+        let prop_value = pack_string("newfile.txt").unwrap();
         let result = session
             .set_object_prop_value(
                 ObjectHandle(1),
@@ -763,6 +763,28 @@ mod tests {
             .rename_object(ObjectHandle(1), "renamed.txt")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_object_refuses_a_too_long_name_before_sending_anything() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+
+        let session = PtpSession::open(transport, 1).await.unwrap();
+        let sends_after_open = mock.get_sends().len();
+        let result = session
+            .rename_object(ObjectHandle(1), &"a".repeat(255))
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(crate::PtpError::StringTooLong { units: 255 })
+        ));
+        assert_eq!(
+            mock.get_sends().len(),
+            sends_after_open,
+            "no command may go out, or the session would wait on a data phase that never comes"
+        );
     }
 
     #[tokio::test]

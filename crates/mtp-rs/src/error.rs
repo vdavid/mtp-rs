@@ -50,6 +50,17 @@ pub enum PtpError {
     #[error("Operation cancelled")]
     Cancelled,
 
+    /// A string to send is longer than PTP can carry.
+    ///
+    /// PTP strings hold at most [`MAX_STRING_UNITS`](crate::ptp::MAX_STRING_UNITS) UTF-16 code
+    /// units, so a longer file name (or other string) can't be sent at all. Raised before anything
+    /// reaches the device, so the session stays usable.
+    #[error("string is {units} UTF-16 code units long; PTP strings hold at most 254")]
+    StringTooLong {
+        /// The string's length in UTF-16 code units, not counting the null terminator.
+        units: usize,
+    },
+
     /// A transfer cancel wedged the device, and the transport was reset to
     /// recover it. The PTP session is gone; reopen the device to continue.
     ///

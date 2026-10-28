@@ -231,6 +231,58 @@ pub async fn run_create_folder_rename_move_copy(storage: &Storage, parent: Optio
     storage.delete(move_dst).await.unwrap();
 }
 
+/// A name MTP can't carry (255 UTF-16 units) is refused with `NameTooLong` by upload,
+/// create_folder, and rename alike, nothing changes on the device, and 254 units still works.
+pub async fn run_name_too_long_is_refused(storage: &Storage, parent: Option<ObjectHandle>) {
+    let too_long = "a".repeat(mtp_rs::MAX_NAME_UNITS + 1);
+    let longest = "b".repeat(mtp_rs::MAX_NAME_UNITS);
+
+    let err = storage
+        .upload(
+            parent,
+            NewObjectInfo::file(too_long.clone(), 2),
+            upload_stream(b"hi"),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err.source, Error::NameTooLong { units: 255 }),
+        "upload: {err:?}"
+    );
+    assert!(err.partial.is_none(), "refused before any object exists");
+
+    let err = storage.create_folder(parent, &too_long).await.unwrap_err();
+    assert!(
+        matches!(err, Error::NameTooLong { units: 255 }),
+        "create_folder: {err:?}"
+    );
+
+    // An emoji is two units, so 128 of them is 256 units in only 128 chars.
+    let file = upload(storage, parent, "short.txt", b"hi").await;
+    let err = storage
+        .rename(file, &"\u{1F600}".repeat(128))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::NameTooLong { units: 256 }),
+        "rename: {err:?}"
+    );
+    assert_eq!(
+        storage.get_object_info(file).await.unwrap().filename,
+        "short.txt"
+    );
+
+    // Nothing reached the device, so the session is fine and the longest legal name goes through.
+    let listed = storage.list_objects(parent).await.unwrap();
+    assert!(listed.iter().all(|o| o.filename != too_long));
+    storage.rename(file, &longest).await.unwrap();
+    assert_eq!(
+        storage.get_object_info(file).await.unwrap().filename,
+        longest
+    );
+    storage.delete(file).await.unwrap();
+}
+
 /// Recursive listing walks the whole subtree.
 pub async fn run_recursive_listing(storage: &Storage, parent: Option<ObjectHandle>) {
     let top = storage.create_folder(parent, "top").await.unwrap();

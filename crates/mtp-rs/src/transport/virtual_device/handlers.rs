@@ -5,13 +5,13 @@
 
 use super::builders::{
     build_data_container, build_device_info, build_event, build_object_info, build_response,
-    build_storage_info, system_time_from_unix,
+    build_storage_info, pack_device_string, system_time_from_unix,
 };
 use super::prop_list::handle_get_object_prop_list;
 use super::state::{PendingSendInfo, VirtualDeviceState};
 use crate::ptp::{
-    pack_string, pack_u32_array, unpack_string, EventCode, ObjectFormatCode, ObjectHandle,
-    ObjectPropertyCode, OperationCode, StorageId,
+    pack_u32_array, unpack_string, EventCode, ObjectFormatCode, ObjectHandle, ObjectPropertyCode,
+    OperationCode, StorageId,
 };
 use std::path::{Path, PathBuf};
 
@@ -1035,7 +1035,7 @@ fn handle_get_object_prop_value(
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            pack_string(&name)
+            pack_device_string(&name)
         }
         ObjectPropertyCode::StorageId => crate::ptp::pack_u32(obj.storage_id.0).to_vec(),
         ObjectPropertyCode::ParentObject => crate::ptp::pack_u32(obj.parent.0).to_vec(),

@@ -2,11 +2,12 @@
 //! `MtpDatabase.getObjectPropertyList` (`frameworks/base`, `media/java/android/mtp/`).
 
 use super::builders::{
-    build_data_container, build_response, object_facts, pack_file_time, ObjectFacts,
+    build_data_container, build_response, object_facts, pack_device_string, pack_file_time,
+    ObjectFacts,
 };
 use super::handlers::description_refusal;
 use super::state::VirtualDeviceState;
-use crate::ptp::{pack_string, pack_u16, pack_u32, pack_u64, ObjectHandle, ObjectPropertyCode};
+use crate::ptp::{pack_u16, pack_u32, pack_u64, ObjectHandle, ObjectPropertyCode};
 
 const OK: u16 = 0x2001;
 const GENERAL_ERROR: u16 = 0x2002;
@@ -185,14 +186,14 @@ fn push_element(
             let uid = (u128::from(facts.storage_id.0) << 32) | u128::from(handle.0);
             (UINT128, uid.to_le_bytes().to_vec())
         }
-        DISPLAY_NAME => (STRING, pack_string(&facts.filename)),
+        DISPLAY_NAME => (STRING, pack_device_string(&facts.filename)),
         DATE_ADDED => (STRING, pack_file_time(facts.modified, state)),
         code => match P::from(code) {
             P::StorageId => (UINT32, pack_u32(facts.storage_id.0).to_vec()),
             P::ObjectFormat => (UINT16, pack_u16(facts.format).to_vec()),
             P::ProtectionStatus => (UINT16, pack_u16(0).to_vec()),
             P::ObjectSize => (UINT64, pack_u64(facts.size).to_vec()),
-            P::ObjectFileName | P::Name => (STRING, pack_string(&facts.filename)),
+            P::ObjectFileName | P::Name => (STRING, pack_device_string(&facts.filename)),
             P::DateCreated => (STRING, pack_file_time(facts.created, state)),
             P::DateModified => (STRING, pack_file_time(facts.modified, state)),
             P::ParentObject => (UINT32, pack_u32(facts.parent.0).to_vec()),

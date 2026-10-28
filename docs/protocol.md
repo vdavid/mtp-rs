@@ -44,7 +44,10 @@ Strings are encoded as:
 00 00       // Null terminator
 ```
 
-**Maximum length**: 255 characters (including null)
+**Maximum length**: 255 UTF-16 code units including the null, so 254 of content (`ptp::MAX_STRING_UNITS`; an emoji is two units). The length byte can't say more, so the two sides differ on purpose:
+
+- **Host (what we send)**: `pack_string` returns `PtpError::StringTooLong` and nothing goes on the wire; the neutral API refuses a name up front with `Error::NameTooLong` (`Storage::upload` / `create_folder` / `rename`). Never truncate: that would write a different name than the caller asked for (mtp-rs#49).
+- **Device (the virtual device)**: `pack_device_string` cuts at 254 units the way AOSP's `MtpStringBuffer::writeToPacket` does, since a device must still list a backing file with a longer name. It backs off rather than split a surrogate pair, which AOSP doesn't bother to do.
 
 ## Arrays
 

@@ -43,8 +43,13 @@ pub enum PropertyValue {
 
 impl PropertyValue {
     /// Serialize this property value to bytes.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        match self {
+    ///
+    /// # Errors
+    ///
+    /// [`PtpError::StringTooLong`](crate::PtpError::StringTooLong) for a string longer than PTP
+    /// can carry (see [`pack_string`]). Every other variant always serializes.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, crate::PtpError> {
+        Ok(match self {
             PropertyValue::Int8(v) => pack_i8(*v).to_vec(),
             PropertyValue::Uint8(v) => pack_u8(*v).to_vec(),
             PropertyValue::Int16(v) => pack_i16(*v).to_vec(),
@@ -53,8 +58,8 @@ impl PropertyValue {
             PropertyValue::Uint32(v) => pack_u32(*v).to_vec(),
             PropertyValue::Int64(v) => pack_i64(*v).to_vec(),
             PropertyValue::Uint64(v) => pack_u64(*v).to_vec(),
-            PropertyValue::String(v) => pack_string(v),
-        }
+            PropertyValue::String(v) => pack_string(v)?,
+        })
     }
 
     /// Parse a property value from bytes given the expected data type.
@@ -208,12 +213,16 @@ impl PropertyRange {
     }
 
     /// Serialize this property range to bytes.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    ///
+    /// # Errors
+    ///
+    /// As [`PropertyValue::to_bytes`]: only a too-long string bound fails.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, crate::PtpError> {
         let mut buf = Vec::new();
-        buf.extend_from_slice(&self.min.to_bytes());
-        buf.extend_from_slice(&self.max.to_bytes());
-        buf.extend_from_slice(&self.step.to_bytes());
-        buf
+        buf.extend_from_slice(&self.min.to_bytes()?);
+        buf.extend_from_slice(&self.max.to_bytes()?);
+        buf.extend_from_slice(&self.step.to_bytes()?);
+        Ok(buf)
     }
 }
 
@@ -344,7 +353,7 @@ mod tests {
             PropertyValue::String("Test".to_string()),
         ];
         for val in &values {
-            let bytes = val.to_bytes();
+            let bytes = val.to_bytes().unwrap();
             let (parsed, _) = PropertyValue::from_bytes(&bytes, val.data_type()).unwrap();
             assert_eq!(&parsed, val);
         }
@@ -454,7 +463,7 @@ mod tests {
             max: PropertyValue::Uint8(100),
             step: PropertyValue::Uint8(1),
         };
-        assert_eq!(range.to_bytes(), vec![0x00, 0x64, 0x01]);
+        assert_eq!(range.to_bytes().unwrap(), vec![0x00, 0x64, 0x01]);
     }
 
     #[test]
@@ -464,7 +473,7 @@ mod tests {
             max: PropertyValue::Uint16(6400),
             step: PropertyValue::Uint16(100),
         };
-        let bytes = range.to_bytes();
+        let bytes = range.to_bytes().unwrap();
         let (parsed, _) = PropertyRange::from_bytes(&bytes, PropertyDataType::Uint16).unwrap();
         assert_eq!(parsed.min, range.min);
         assert_eq!(parsed.max, range.max);
@@ -538,7 +547,7 @@ mod tests {
         buf.extend_from_slice(&pack_u16(0xFFFF)); // String
         buf.push(0x01); // read-write
         buf.push(0x00); // default: empty
-        buf.extend_from_slice(&pack_string("20240315T120000"));
+        buf.extend_from_slice(&pack_string("20240315T120000").unwrap());
         buf.push(0x00); // None
         buf
     }
@@ -613,49 +622,49 @@ mod tests {
         #[test]
         fn prop_property_value_int8_roundtrip(val: i8) {
             let pv = PropertyValue::Int8(val);
-            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes(), PropertyDataType::Int8).unwrap();
+            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes().unwrap(), PropertyDataType::Int8).unwrap();
             prop_assert_eq!(parsed, pv);
         }
 
         #[test]
         fn prop_property_value_int16_roundtrip(val: i16) {
             let pv = PropertyValue::Int16(val);
-            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes(), PropertyDataType::Int16).unwrap();
+            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes().unwrap(), PropertyDataType::Int16).unwrap();
             prop_assert_eq!(parsed, pv);
         }
 
         #[test]
         fn prop_property_value_int32_roundtrip(val: i32) {
             let pv = PropertyValue::Int32(val);
-            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes(), PropertyDataType::Int32).unwrap();
+            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes().unwrap(), PropertyDataType::Int32).unwrap();
             prop_assert_eq!(parsed, pv);
         }
 
         #[test]
         fn prop_property_value_int64_roundtrip(val: i64) {
             let pv = PropertyValue::Int64(val);
-            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes(), PropertyDataType::Int64).unwrap();
+            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes().unwrap(), PropertyDataType::Int64).unwrap();
             prop_assert_eq!(parsed, pv);
         }
 
         #[test]
         fn prop_property_value_uint16_roundtrip(val: u16) {
             let pv = PropertyValue::Uint16(val);
-            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes(), PropertyDataType::Uint16).unwrap();
+            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes().unwrap(), PropertyDataType::Uint16).unwrap();
             prop_assert_eq!(parsed, pv);
         }
 
         #[test]
         fn prop_property_value_uint32_roundtrip(val: u32) {
             let pv = PropertyValue::Uint32(val);
-            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes(), PropertyDataType::Uint32).unwrap();
+            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes().unwrap(), PropertyDataType::Uint32).unwrap();
             prop_assert_eq!(parsed, pv);
         }
 
         #[test]
         fn prop_property_value_uint64_roundtrip(val: u64) {
             let pv = PropertyValue::Uint64(val);
-            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes(), PropertyDataType::Uint64).unwrap();
+            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes().unwrap(), PropertyDataType::Uint64).unwrap();
             prop_assert_eq!(parsed, pv);
         }
 
@@ -666,7 +675,7 @@ mod tests {
                 max: PropertyValue::Uint8(max),
                 step: PropertyValue::Uint8(step),
             };
-            let (parsed, _) = PropertyRange::from_bytes(&range.to_bytes(), PropertyDataType::Uint8).unwrap();
+            let (parsed, _) = PropertyRange::from_bytes(&range.to_bytes().unwrap(), PropertyDataType::Uint8).unwrap();
             prop_assert_eq!(parsed.min, range.min);
             prop_assert_eq!(parsed.max, range.max);
             prop_assert_eq!(parsed.step, range.step);
@@ -679,7 +688,7 @@ mod tests {
                 max: PropertyValue::Uint16(max),
                 step: PropertyValue::Uint16(step),
             };
-            let (parsed, _) = PropertyRange::from_bytes(&range.to_bytes(), PropertyDataType::Uint16).unwrap();
+            let (parsed, _) = PropertyRange::from_bytes(&range.to_bytes().unwrap(), PropertyDataType::Uint16).unwrap();
             prop_assert_eq!(parsed.min, range.min);
             prop_assert_eq!(parsed.max, range.max);
         }
@@ -691,7 +700,7 @@ mod tests {
                 max: PropertyValue::Int16(max),
                 step: PropertyValue::Int16(step),
             };
-            let (parsed, _) = PropertyRange::from_bytes(&range.to_bytes(), PropertyDataType::Int16).unwrap();
+            let (parsed, _) = PropertyRange::from_bytes(&range.to_bytes().unwrap(), PropertyDataType::Int16).unwrap();
             prop_assert_eq!(parsed.min, range.min);
             prop_assert_eq!(parsed.max, range.max);
         }
@@ -703,7 +712,7 @@ mod tests {
                 max: PropertyValue::Uint32(max),
                 step: PropertyValue::Uint32(step),
             };
-            let (parsed, _) = PropertyRange::from_bytes(&range.to_bytes(), PropertyDataType::Uint32).unwrap();
+            let (parsed, _) = PropertyRange::from_bytes(&range.to_bytes().unwrap(), PropertyDataType::Uint32).unwrap();
             prop_assert_eq!(parsed.min, range.min);
             prop_assert_eq!(parsed.max, range.max);
         }
@@ -727,7 +736,7 @@ mod tests {
         fn prop_property_value_string_roundtrip(s in valid_property_string()) {
             let s = if s.chars().count() > 254 { s.chars().take(254).collect() } else { s };
             let pv = PropertyValue::String(s.clone());
-            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes(), PropertyDataType::String).unwrap();
+            let (parsed, _) = PropertyValue::from_bytes(&pv.to_bytes().unwrap(), PropertyDataType::String).unwrap();
             prop_assert_eq!(parsed, PropertyValue::String(s));
         }
 

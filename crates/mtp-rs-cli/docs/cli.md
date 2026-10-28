@@ -373,7 +373,7 @@ actually replaced.
 | `2` | No device found. |
 | `3` | Ambiguous device or storage selection. |
 | `4` | Access denied, read-only storage, or exclusive access. |
-| `5` | Remote path error. |
+| `5` | Remote path error (not found, or a name longer than MTP's 254 UTF-16 units). |
 | `6` | Transfer failed. |
 | `7` | Verification failed. |
 

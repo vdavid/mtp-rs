@@ -128,6 +128,12 @@ wpd_conformance!(
 );
 
 wpd_conformance!(
+    wpd_name_too_long_is_refused,
+    "mtp-rs-conformance-name-too-long",
+    |s, dir| common::run_name_too_long_is_refused(s, Some(dir))
+);
+
+wpd_conformance!(
     wpd_recursive_listing,
     "mtp-rs-conformance-recursive",
     |s, dir| { common::run_recursive_listing(s, Some(dir)) }

@@ -335,7 +335,7 @@ mod tests {
         // VendorExtensionVersion: 100
         buf.extend_from_slice(&pack_u16(100));
         // VendorExtensionDesc: "microsoft.com: 1.0"
-        buf.extend_from_slice(&pack_string("microsoft.com: 1.0"));
+        buf.extend_from_slice(&pack_string("microsoft.com: 1.0").unwrap());
         // FunctionalMode: 0
         buf.extend_from_slice(&pack_u16(0));
         // OperationsSupported: [GetDeviceInfo, OpenSession, CloseSession]
@@ -349,13 +349,13 @@ mod tests {
         // PlaybackFormats: [JPEG, MP3]
         buf.extend_from_slice(&pack_u16_array(&[0x3801, 0x3009]));
         // Manufacturer: "Test Manufacturer"
-        buf.extend_from_slice(&pack_string("Test Manufacturer"));
+        buf.extend_from_slice(&pack_string("Test Manufacturer").unwrap());
         // Model: "Test Model"
-        buf.extend_from_slice(&pack_string("Test Model"));
+        buf.extend_from_slice(&pack_string("Test Model").unwrap());
         // DeviceVersion: "1.0.0"
-        buf.extend_from_slice(&pack_string("1.0.0"));
+        buf.extend_from_slice(&pack_string("1.0.0").unwrap());
         // SerialNumber: "ABC123"
-        buf.extend_from_slice(&pack_string("ABC123"));
+        buf.extend_from_slice(&pack_string("ABC123").unwrap());
 
         buf
     }
@@ -419,9 +419,9 @@ mod tests {
         // FreeSpaceInObjects: 0xFFFFFFFF (unknown)
         buf.extend_from_slice(&pack_u32(0xFFFFFFFF));
         // StorageDescription: "SD Card"
-        buf.extend_from_slice(&pack_string("SD Card"));
+        buf.extend_from_slice(&pack_string("SD Card").unwrap());
         // VolumeIdentifier: "VOL001"
-        buf.extend_from_slice(&pack_string("VOL001"));
+        buf.extend_from_slice(&pack_string("VOL001").unwrap());
 
         buf
     }

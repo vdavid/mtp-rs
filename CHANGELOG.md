@@ -14,6 +14,15 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Fixed
+
+- **[lib] A file or folder name longer than MTP allows is refused instead of garbling the transfer.** PTP strings hold at most 254 UTF-16 code units (an emoji is two), but `pack_string` wrote the length into one byte with a silent wrap, so a 255-unit name told the device the name was empty and it misparsed everything after it. `Storage::upload`, `create_folder`, and `rename` now return the new `Error::NameTooLong { units }` before anything is sent, so nothing is created or changed and the session stays usable. `MAX_NAME_UNITS` (crate root and `mtp::`) is the limit to check against. The CLI reports it as a remote path error (exit code 5). Reported in [#49](https://github.com/vdavid/mtp-rs/issues/49).
+- **[lib] The virtual device lists a backing file whose name is too long for MTP**, cutting it at 254 units the way Android does, where it used to send a wrapped length byte.
+
+### Changed
+
+- **Breaking:** **[lib]** `ptp::pack_string`, `PropertyValue::to_bytes`, and `PropertyRange::to_bytes` return `Result<Vec<u8>, PtpError>`, failing with the new `PtpError::StringTooLong { units }` past `ptp::MAX_STRING_UNITS` (254). `PtpSession::rename_object` and `set_device_prop_value_typed` surface it before sending the command. Code that matches `PtpError` exhaustively needs an arm for the new variant.
+
 ## [0.35.0] - 2026-10-27
 
 Library `0.35.0` and CLI `0.11.0`. Both move to a rolling 12-month MSRV, now Rust 1.91.
