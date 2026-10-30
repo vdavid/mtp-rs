@@ -496,7 +496,7 @@ Follow-up `5ff0b8a` added a listing progress count, a complete per-OS local-name
 and reserved names), and a collision check that probes the destination filesystem for case sensitivity. Goes out in
 `mtp-rs-cli` 0.9.0.
 
-### #37: Installing the CLI on macOS without a Rust toolchain (opened 2026-10-07)
+### #37: Installing the CLI on macOS without a Rust toolchain (opened 2026-10-07, closed 2026-10-30)
 
 Reporter: [@dtretyakov](https://github.com/dtretyakov) (Dmitry Tretyakov, who wrote the CLI in #11). His
 [Monkey C for IntelliJ](https://plugins.jetbrains.com/plugin/34203-monkey-c) plugin (Garmin Connect IQ development)
@@ -506,7 +506,8 @@ built from source, prebuilt binaries plus a formula, dist, homebrew-core at 75 s
 `mtp-rs-cli-v*` tags now build binaries for macOS, Linux, and Windows, publish a GitHub Release with installers, and push
 `Formula/mtp-rs.rb` to `vdavid/homebrew-tap`, so `brew install vdavid/tap/mtp-rs` works. First release:
 `mtp-rs-cli-v0.9.1` on 2026-10-08. Setup details in `docs/releasing.md`. homebrew-core is worth revisiting once the repo
-reaches 75 stars.
+reaches 75 stars (50 on 2026-10-30): the owner needs 225, someone else 75, and Dmitry agreed to file the request, with
+David's instructions. David promised to ping him on #37.
 
 ### #41: Object dates on Windows (merged 2026-10-21, shipped in v0.33.1)
 
@@ -603,7 +604,7 @@ Cross-cutting summary of every quirk currently handled or known. Sorted by devic
 | Xiaomi POCO X7 Pro (HyperOS)  | Declines `GetObjectPropList` for "all properties" with 0xA801 in most folders; serves single properties; valueless `DateCreated` as data type 0 | Per-property listing (we never ask "all", see AGENTS.md); Undefined values skipped | #45 (@IoSonoPiero, 2026-10-22) |
 | Windows WPD (POCO X7 Pro)    | The driver returns MTP response codes wrapped as `FACILITY_ITF` HRESULTs (`0x8004_2009` for `InvalidObjectHandle` on a deleted handle) | `map_hresult` unwraps them and maps them like the USB backend (#42, v0.33.2) | #41 (@IoSonoPiero, 2026-10-21) |
 | Xiaomi POCO X6 Pro (Linux) | STALLs the SIC CLASS_CANCEL control request, keeps sending the object, and sends the cancelled transfer's closing reply late | Drain after a refused cancel; skip a reply with an earlier transaction ID (#44, v0.34.2) | #43 (@IoSonoPiero, 2026-10-22) |
-| Samsung Galaxy A57 (Linux) | A cancel soon after a reset: CLASS_CANCEL times out and the phone stays silent until a replug | A timed-out CLASS_CANCEL continues to the wedge check and ends in `DeviceReset` (v0.36.2); whether it saves the replug is untested | #43 (@IoSonoPiero, 2026-10-25) |
+| Samsung Galaxy A57 (Linux) | A cancel soon after a reset: CLASS_CANCEL times out and the phone stays silent until a replug | A timed-out CLASS_CANCEL continues to the wedge check and ends in `DeviceReset` (v0.36.2). The error is right now, but a second cancel soon after a reset still needs a replug (rerun, 2026-10-30) | #43 (@IoSonoPiero, 2026-10-25) |
 | Montblanc Digital Paper e-Ink | Android-based hot-folder responder: only an import and an export folder exposed; the device ingests only files newly written directly into the import folder (nested or moved-in files persist and list, but stay invisible on the device) | None possible (invisible to MTP); re-upload with `put --replace`; documented in the CLI reference | #6 (@ChristianSimonSU, 2026-09-22)   |
 
 ## Recurring contributors

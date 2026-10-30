@@ -14,6 +14,14 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.36.3] - 2026-10-30
+
+Library `0.36.3` and CLI `0.11.4`. One broken file name can't fail a whole folder listing anymore.
+
+### Fixed
+
+- **[lib] A file name with a broken emoji no longer fails the whole listing.** A device that cuts a long name in the middle of a UTF-16 surrogate pair sent us text we refused to decode, which failed the object's info and with it the folder. The broken character now reads as U+FFFD (`�`) and the rest of the name and folder come through. Found in code in [#50](https://github.com/vdavid/mtp-rs/issues/50), not seen on hardware.
+
 ## [0.36.2] - 2026-10-30
 
 Library `0.36.2` and CLI `0.11.3`. A cancel on a device that has stopped answering now tells you to reopen.
