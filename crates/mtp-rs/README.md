@@ -193,6 +193,11 @@ The low-level `ptp::` USB API is WinUSB-only on Windows: it reaches a device onl
 interface is bound to WinUSB (a camera, or a device you've bound with Zadig). Phones are bound to the
 WPD driver, so reach them through `mtp::` (WPD), not `ptp::`.
 
+Windows' driver can stall any call for minutes after files change on the phone (seen at 5–6 minutes), and File
+Explorer stalls the same way. Calls then carry on normally. To tell your users instead of going silent, wrap calls in
+a timeout. Dropping the future is safe, but later calls queue behind the stuck one, and a delete can still finish
+after you gave up.
+
 ## Examples
 
 These might come in handy:

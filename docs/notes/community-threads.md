@@ -104,7 +104,12 @@ Android 16 (BP2A.250605.031.A3).
   dropped and the 12.8 s walk above stays unexplained. The open wait hit them too: A57 ~4 min, A56 87 s, Tab S11 37 s.
 - **Samsung cancel on Linux**: A56 and Tab S11 wedge and recover through the reset. The A57 stuck: a cancel soon after a
   reset returned `Timeout` in 0.3 s, and the phone needed a replug. Fix in v0.36.2: a timed-out CLASS_CANCEL continues like a
-  refused one and ends in `DeviceReset`. Whether it also saves the replug is untested; asked @IoSonoPiero to rerun.
+  refused one and ends in `DeviceReset`.
+- **A57 rerun on v0.36.2 (2026-10-30)**: the error is right now, but after the second back-to-back cancel the phone
+  never came back (7 reopens, then a replug). It looked like the Pixel kill switch, so we ran the control on a Pixel
+  and an S23 Ultra: the reset doesn't cause the Pixel's wedge and rescues the S23's, so **the auto-reset stays**. See
+  [android-wedges-and-the-reset-kill-switch.md](android-wedges-and-the-reset-kill-switch.md). Whether the A57 hits the
+  Pixel's `MtpServer` exit is unknown; its logcat after a replug would tell.
 - **Test-harness gap it exposed**: after the wedge, later tests timed out, printed `SKIPPING`, and counted as passed.
   Fixed on the same branch: a hardware error fails the test once the device has answered earlier in the run
   (`should_skip` in `tests/integration.rs`); another app holding the device still skips.
@@ -124,8 +129,10 @@ Reliable recipe (2026-10-29): list a folder, `adb shell rm` a file in it, call `
 - **Ruled out**: the kept read stream (released before any other request and after 1 s idle; the recipe's gap was
   18.8 s), and batching deletes (the recipe has no delete).
 - **Not seen on David's S23 Ultra or Pixel**, though those haven't been through this recipe.
-- **Next**: asked for a USBPcap capture during the stall and the recipe in Explorer without mtp-rs. No WPD code change
-  until then. If it's the driver we can't fix the wait, only help apps report it.
+- **Explorer stalls too (2026-10-30)**: on the POCO, with no mtp-rs and no app running, a right-click on the deleted file
+  hung for 3–4 min. A second run a few minutes later answered at once from cache and gave "Catastrophic failure" on a
+  drag. So it isn't our calls. No WPD code change; documented in `AGENTS.md` and the README.
+- **Next**: asked whether it still stalls with USB debugging off. If that changes nothing, close it.
 
 ## Closed and merged
 

@@ -74,8 +74,9 @@ The recovery order:
 2. Wait a few seconds **quiet**, with no USB traffic at all.
 3. Reopen with idle-spaced retries, several of them. Don't hammer close/open in a
    tight loop; that keeps the device busy and re-wedges it into a hard `Timeout`.
-   A Pixel's wedge cleared on a fresh open with no reset at all (verified on a
-   Pixel 9 Pro XL, macOS/nusb, 2026-07-20).
+   A Pixel's dropped-future wedge cleared on a fresh open with no reset at all
+   (verified on a Pixel 9 Pro XL, macOS/nusb, 2026-07-20). A Pixel's **cancel** wedge
+   doesn't clear at all: `MtpServer` has exited, so it needs a replug.
 4. Only when all of that has failed: `mtp-rs reset` (CLI) /
    `MtpDevice::reset_by_serial()` / `PtpDevice::reset_device()` (SIC
    `DEVICE_RESET`, 0x66), then repeat steps 2 and 3.
@@ -96,8 +97,15 @@ looked like the cure: after a cancel wedged the session,
 `cargo run -p mtp-rs-cli -- reset` printed `Reset OK, device responding: SM-S918B`
 and listing worked immediately, and a later run went reset, then reopens returning
 `Timeout`, then `SessionAlreadyOpen`, then success (verified on SM-S918B,
-macOS/nusb, 2026-07-20). But the control was never run, so it's unknown whether
-spaced reopens alone would have done it. Don't read that as proof the reset helps.
+macOS/nusb, 2026-07-20). The control run backs that up for cancel wedges: reset 4 of
+4 recovered, spaced reopens alone 0 of 2, and a manual reset freed one of those
+(SM-S918B, macOS/nusb, 2026-10-30). So on a Samsung, don't spend long on step 3.
+Numbers and the phones' logs:
+[notes/android-wedges-and-the-reset-kill-switch.md](notes/android-wedges-and-the-reset-kill-switch.md).
+
+To see which kind you have, pull `adb logcat -d` right after the replug (the default
+buffer can roll over within minutes; `adb logcat -G 64M` first, Samsung caps it at 5 MiB).
+Stop the adb server again before talking MTP.
 
 A fully USB-stuck device (some PTP cameras, #12) needs a physical replug either
 way.

@@ -538,8 +538,13 @@ demonstrates it with no hardware. Real-device coverage:
   phone's MTP function until the user physically replugs: Android's `MtpServer`
   loses its endpoint and never re-arms, while USB keeps enumerating (verified on a
   healthy Pixel 9 Pro XL, macOS/nusb + `adb logcat`, 2026-07-21). Quiet spaced
-  reopens come first, and they're enough on a Pixel. Don't reword the reset docs
-  back into "the recovery recipe". Evidence:
+  reopens come first, and they're enough for a Pixel's dropped-future wedge. Don't
+  reword the reset docs back into "the recovery recipe".
+- **But keep the automatic reset in `cancel_transfer`**: it only fires after a
+  detected wedge. Control run (macOS/nusb, 2026-10-30): a Pixel 9 Pro XL's cancel
+  wedge is `MtpServer` exiting on a lost `io_cancel` race (~1 cancel in 5 on a 697 KB
+  file), dead with or without the reset, so the reset costs nothing there. A Galaxy S23
+  Ultra recovered 4 of 4 with it and 0 of 2 without. Evidence:
   [docs/notes/android-wedges-and-the-reset-kill-switch.md](docs/notes/android-wedges-and-the-reset-kill-switch.md).
 - **The neutral reset is a free-standing selector, not a method on an open
   `MtpDevice`, and that's deliberate.** It claims the USB interface and stops;
@@ -738,6 +743,14 @@ semantics that differ from the USB/PTP backend, all hardware-verified on a Pixel
   with no request, so a paused copy doesn't hold the phone. A window that follows other work or a
   pause reopens the stream and pays the prefix once. The worker drops the kept stream before
   `CoUninitialize`, also when the request channel closes without a `Shutdown`.
+- **Any call can stall for minutes after changes on the phone** (#52): 301–377 s on a POCO X7 Pro under
+  Windows 11, in a long-lived app, then normal service. `list`, a stale-handle `object_info`, and `delete` all
+  did it, and File Explorer stalled the same way with no mtp-rs running (3–4 min), so nothing in this backend
+  causes it. Linux never stalled on the same phone. Likely the same wait as the slow open after a first write
+  (#43, ~37 s–5 min, five phones). No fix here, but apps can wrap calls in a timeout and report it: dropping the
+  future is safe (the worker ignores the unread reply), though later calls queue behind the stuck one and a
+  `delete` can still finish after the app gave up. **Phone logcat can't tell you the driver sent nothing**:
+  AOSP logs commands with `ALOGV` and responses only when they aren't OK.
 - **`object_info` is strict; listing is lenient**: a single `object_info` lookup must *fail* for a
   deleted/missing object (it errors `NotFound` when no property resolves), whereas the per-child
   listing reader is lenient (an unreadable child degrades to a default record rather than failing the

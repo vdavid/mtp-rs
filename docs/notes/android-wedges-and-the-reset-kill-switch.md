@@ -15,8 +15,11 @@ Hardware: Pixel 9 Pro XL (Android), Galaxy S23 Ultra SM-S918B, both on macOS/nus
    `Error::DeviceReset` will never notice the Pixel case.
 3. On a healthy Pixel, the transport reset **permanently breaks the MTP function** until the user
    physically replugs. It's a kill switch, not a recovery step.
-4. A Pixel's wedge **self-heals on a fresh open** (a new process), so spaced reopens are the whole
-   recovery there.
+4. A Pixel's dropped-future wedge **self-heals on a fresh open** (a new process), so spaced reopens
+   are the whole recovery for that kind.
+5. A **cancel** wedge is different, and the two families split (see the control run below). On a
+   Pixel `MtpServer` exits, so only a replug helps. On a Galaxy S23 Ultra the server is alive but stuck,
+   and the reset is what frees it. So `cancel_transfer` keeps its automatic reset.
 
 ## Two wedge signatures
 
@@ -78,12 +81,48 @@ attempts over about 100 s all timed out.
   Pro XL, macOS/nusb, 2026-07-20). So: drop everything, stay quiet, reopen with idle-spaced retries,
   and be willing to reopen from a clean state.
 - **Pixel, after a reset**: nothing in software. Physical replug only.
+- **Pixel, cancel wedge**: nothing in software, reset or not. Physical replug only.
+- **Samsung, cancel wedge**: the reset. Spaced reopens alone didn't recover it.
 - **Samsung, dropped-future wedge**: the reset-then-spaced-reopen sequence worked (transport reset,
-  reopens returning `Timeout`, then `SessionAlreadyOpen`, then success). **But the control was never
-  run**: we don't know whether spaced reopens alone would have sufficed on the S23, so we can't say
-  the reset is what helped. Treat the Samsung reset outcome as ambiguous.
+  reopens returning `Timeout`, then `SessionAlreadyOpen`, then success). The control was never run
+  for this trigger, only for a cancel wedge.
 - **Samsung, dropped held-open streaming `GetObject`**: needed a physical replug (plain reopen and
   transport reset both failed).
+
+## Control run: cancel wedges with and without the reset
+
+The cancel test (`test_cancel_download_then_reuse_session`, a 697 KB file on the Pixel) run back to back on a
+throwaway build whose only change skipped the reset in `cancel_transfer` step 5, with 10 spaced reopens after
+each wedge (macOS/nusb, 2026-10-30, Pixel 9 Pro XL and Galaxy S23 Ultra SM-S918B). Asked because Galaxy A57
+reports (#43) looked like the kill switch below.
+
+- **Pixel 9 Pro XL**: 15 cancels, 3 wedges (about one in five). No reset: 2 wedges, 0 recovered (one was still
+  dead after ~9 min, five of them silent). With reset: 1 wedge, 0 recovered. Replug every time.
+- **Galaxy S23 Ultra**: with reset 33 cancels, 4 wedges, 4 recovered, each on the second reopen (17–18 s, no
+  replug). No reset: 26 cancels, 2 wedges, 0 recovered (one still dead after ~7 min, four of them silent; a USB
+  replug didn't clear it either, it took switching the USB mode off and on). The other was freed by a manual
+  `mtp-rs reset` ~2 min later, and the next cancels worked.
+
+What the phones logged (`adb logcat`, pulled after the replug):
+
+```
+Pixel, both with and without the reset, 9 ms into the cancelled GET_OBJECT:
+  E/d.process.media: Mtp couldn't cancel request 42: Invalid argument
+  E/MtpServer: Mtp send file got error I/O error
+  W/MtpServer: [MTP] got response 0x2002 in command MTP_OPERATION_GET_OBJECT (1009)
+  E/d.process.media: Mtp got error event at 0 and 1 total: Connection reset by peer
+  E/MtpServer: request write returned -1, errno: 104
+
+S23, the reset freeing a server that had been silent for ~2 min:
+  E/d.process.media: Mtp error ctrlreq write data: Connection reset by peer
+  E/MtpServer: request read returned -1, errno: 125
+```
+
+Mechanism on the Pixel: `MtpFfsHandle::cancelEvents` calls `io_cancel` on the in-flight requests, and one that
+already finished answers `EINVAL`, which it reports as `EIO`. `MtpServer::run` only stays in its loop on `ECANCELED`,
+so any other error ends it (`media/mtp/MtpServer.cpp`, `MtpFfsHandle.cpp`, AOSP `main`). A healthy cancel logs
+`Operation Canceled` and a `0x201F` response instead. So on a Pixel the phone loses a race with our CLASS_CANCEL,
+and no host recovery exists. The Pixel's USB debugging also vanished during that wedge; adb came back with the replug.
 
 ## Guidance that follows
 
@@ -99,6 +138,8 @@ For a consumer recovering a wedged Android device:
 The reset is still the right tool for a device that's **already** unreachable, where you can't make
 things much worse, and for the cross-process poison it was written for (a host that died mid-transfer
 leaving stale bulk data). It's the wrong first move on a device that might still recover on its own.
+That's why `cancel_transfer` sends it only after detecting a wedge: by then a Pixel is already gone, so it
+costs nothing, and a Samsung needs it. Don't remove it.
 
 ## Confidence: which claims rest on one observation
 
@@ -108,7 +149,8 @@ Flagged so nobody treats them as settled:
   one replug recovery). The mechanism reading is well supported by the logs, but "always permanent"
   is not established, and other Android builds may re-arm `MtpServer` where this one didn't.
 - **Single observation**: the Pixel wedge self-healing on a fresh open.
-- **Not established at all**: whether the reset helped the Samsung. No control run.
+- **Small sample**: the S23 control (4 of 4 recovered with the reset, 0 of 2 without, plus one manual reset). The
+  direction is clear, the rates aren't. Other Samsungs differ: an A57 stayed stuck after the reset (#43).
 - **Solid**: the two signatures differing, and the dropped future being the trigger (clean A/B).
 
 ## Trap: a lingering adb server looks exactly like a wedge
