@@ -85,6 +85,34 @@ jobs:
       - name: Run virtual-device conformance suite
         run: cargo test -p mtp-rs --features virtual-device --test conformance
 
+  # Catches accidental API breaks against the latest `mtp-rs` on crates.io. Only the default-feature surface: the
+  # `unstable-raw`, `virtual-device`, and `tracing` features are exempt from SemVer. A deliberate break passes once the
+  # version in Cargo.toml says so. See `just semver`.
+  semver:
+    name: Check SemVer against crates.io
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@v2
+        with:
+          # Same version as `just install-tools`. Keep at least three days old when bumping.
+          tool: cargo-semver-checks@0.51.0
+
+      - name: Check for accidental API breaks
+        run: cargo semver-checks --package mtp-rs --default-features
+
   # The MSRV promise covers what a consumer compiles: the library (every feature) and the CLI binary. Tests and
   # dev-dependencies are ours alone, so they're held to stable, not to the MSRV. Each OS, for the `cfg`-gated code.
   # It resolves dependencies afresh the way a consumer on the MSRV does, so the committed Cargo.lock (kept current by

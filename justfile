@@ -21,10 +21,12 @@
 #     audit        - Security audit (requires cargo-audit)
 #     deny         - License/dependency check (requires cargo-deny)
 #     udeps        - Find unused dependencies (requires nightly + cargo-udeps)
+#     semver       - Catch accidental API breaks against the latest crates.io release
+#                    (requires cargo-semver-checks)
 #
 #   Composite commands:
 #     check        - Run fast checks: fmt-check, clippy, test, doc (default)
-#     check-all    - Run all checks including audit and deny
+#     check-all    - Run all checks including MSRV, audit, deny, and semver
 #     fix          - Auto-fix formatting and clippy warnings
 #
 #   Release:
@@ -151,6 +153,23 @@ udeps:
     cargo +nightly udeps --all-features --all-targets
     @echo "[+] No unused dependencies found"
 
+# Catch accidental API breaks against the latest `mtp-rs` on crates.io (requires
+# cargo-semver-checks).
+#
+# Checks the default-feature surface only: SemVer covers the stable core, and the
+# `unstable-raw`, `virtual-device`, and `tracing` features are exempt (see the
+# README's "Stability" section). The tool reads the version in Cargo.toml, so a
+# deliberate break passes once the version says so (0.36.x to 0.37.0 is allowed to
+# break), and the same break on an unbumped version fails.
+semver:
+    @echo "[*] Checking for accidental API breaks..."
+    @if ! command -v cargo-semver-checks &> /dev/null; then \
+        echo "[!] cargo-semver-checks not found. Install with: just install-tools"; \
+        exit 1; \
+    fi
+    @cargo semver-checks --package mtp-rs --default-features
+    @echo "[+] Semver check passed"
+
 # ==============================================================================
 # Composite Commands
 # ==============================================================================
@@ -160,8 +179,8 @@ check: fmt-check clippy test doc
     @echo ""
     @echo "[+] All fast checks passed!"
 
-# Run all checks including slow ones: check + msrv + audit + deny
-check-all: check msrv audit deny
+# Run all checks including slow ones: check + msrv + audit + deny + semver
+check-all: check msrv audit deny semver
     @echo ""
     @echo "[+] All checks passed!"
 
@@ -221,6 +240,9 @@ install-tools:
     @echo ""
     @echo "Installing cargo-deny..."
     cargo install cargo-deny
+    @echo ""
+    @echo "Installing cargo-semver-checks..."
+    cargo install cargo-semver-checks --version 0.51.0 --locked
     @echo ""
     @echo "Installing cargo-udeps (requires nightly)..."
     rustup install nightly
