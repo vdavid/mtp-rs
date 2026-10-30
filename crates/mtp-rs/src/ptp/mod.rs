@@ -52,6 +52,7 @@ mod session;
 mod test_utils;
 mod types;
 
+pub use crate::error::{PtpError, PtpUploadError, UsbError};
 pub use codes::{
     DevicePropertyCode, EventCode, ObjectFormatCode, ObjectPropertyCode, OperationCode,
     PropertyDataType, ResponseCode,

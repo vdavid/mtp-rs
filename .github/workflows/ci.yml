@@ -43,6 +43,14 @@ jobs:
         # scopes to the lib + CLI only.
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # The step above turns `unstable-raw` on. Without it, this catches stable code that leans on the
+      # feature, and items only the feature's API keeps alive. Same as `just clippy-stable`.
+      - name: Run clippy lints without unstable-raw
+        run: |
+          cargo clippy -p mtp-rs --all-targets -- -D warnings
+          cargo clippy -p mtp-rs --all-targets --features virtual-device,tracing -- -D warnings
+          cargo clippy -p mtp-rs-cli --all-targets -- -D warnings
+
       - name: Run tests
         run: cargo test
 

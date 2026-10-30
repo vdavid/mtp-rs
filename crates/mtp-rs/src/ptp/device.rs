@@ -85,7 +85,7 @@ impl PtpDevice {
         device_info: crate::transport::UsbDeviceInfo,
         timeout: Duration,
     ) -> Result<Self, Error> {
-        let device = device_info.open().map_err(Error::Usb)?;
+        let device = device_info.open().map_err(Error::from_nusb)?;
         let transport = NusbTransport::open_with_timeout(device, timeout).await?;
         Ok(Self {
             transport: Arc::new(transport) as Arc<dyn Transport>,

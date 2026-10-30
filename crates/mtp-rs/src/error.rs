@@ -3,12 +3,28 @@
 use crate::ptp::ObjectHandle;
 use thiserror::Error;
 
+/// A failure the OS reported for a USB operation.
+///
+/// Opaque, so that the USB library underneath can change without changing this API. Read it through
+/// `Display`, or convert the [`PtpError`] into [`mtp::Error`](crate::Error), which sorts USB
+/// failures into `ExclusiveAccess`, `PermissionDenied`, `Disconnected`, and so on.
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct UsbError(nusb::Error);
+
+impl UsbError {
+    /// The USB library's own classification, for sorting into neutral errors.
+    pub(crate) fn kind(&self) -> nusb::ErrorKind {
+        self.0.kind()
+    }
+}
+
 /// The main error type for mtp-rs operations.
 #[derive(Debug, Error)]
 pub enum PtpError {
     /// USB communication error
     #[error("USB error: {0}")]
-    Usb(#[from] nusb::Error),
+    Usb(UsbError),
 
     /// Protocol-level error from device
     #[error("Protocol error: {code:?} during {operation:?}")]
@@ -123,6 +139,12 @@ impl From<PtpUploadError> for PtpError {
 }
 
 impl PtpError {
+    /// Wrap a failure from the USB library. Deliberately not a `From` impl: that would be a public
+    /// trait impl naming an `nusb` type.
+    pub(crate) fn from_nusb(e: nusb::Error) -> Self {
+        PtpError::Usb(UsbError(e))
+    }
+
     /// Create an invalid data error with a message.
     #[must_use]
     pub fn invalid_data(message: impl Into<String>) -> Self {

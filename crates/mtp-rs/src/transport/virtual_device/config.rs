@@ -16,7 +16,7 @@ use std::time::Duration;
 ///
 /// ```rust
 /// use std::path::PathBuf;
-/// use mtp_rs::transport::virtual_device::config::{VirtualDeviceConfig, VirtualStorageConfig};
+/// use mtp_rs::{VirtualDeviceConfig, VirtualStorageConfig};
 ///
 /// let config = VirtualDeviceConfig {
 ///     manufacturer: "Google".into(),

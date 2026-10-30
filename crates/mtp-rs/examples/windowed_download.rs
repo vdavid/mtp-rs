@@ -24,7 +24,7 @@ fn main() {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use mtp_rs::mtp::MtpDevice;
-    use mtp_rs::transport::virtual_device::config::{VirtualDeviceConfig, VirtualStorageConfig};
+    use mtp_rs::{VirtualDeviceConfig, VirtualStorageConfig};
     use std::time::Duration;
 
     // Back the virtual device with a temp dir holding one ~256 KiB file with a

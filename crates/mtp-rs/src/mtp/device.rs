@@ -662,8 +662,8 @@ impl MtpDeviceBuilder {
             .into_iter()
             .next()
             .ok_or(crate::PtpError::NoDevice)?;
-        let device = device_info.open().map_err(crate::PtpError::Usb)?;
-        self.open_nusb_device(device).await
+        let device = device_info.open().map_err(crate::PtpError::from_nusb)?;
+        self.open_usb_device(device).await
     }
 
     /// Open a device at a specific USB location (port).
@@ -702,8 +702,8 @@ impl MtpDeviceBuilder {
             return Ok(device);
         }
 
-        let device = device_info.open().map_err(crate::PtpError::Usb)?;
-        self.open_nusb_device(device).await
+        let device = device_info.open().map_err(crate::PtpError::from_nusb)?;
+        self.open_usb_device(device).await
     }
 
     /// Open a device by its serial number.
@@ -728,11 +728,13 @@ impl MtpDeviceBuilder {
             .into_iter()
             .find(|d| d.serial_number.as_deref() == Some(serial))
             .ok_or(crate::PtpError::NoDevice)?;
-        let device = device_info.open().map_err(crate::PtpError::Usb)?;
-        self.open_nusb_device(device).await
+        let device = device_info.open().map_err(crate::PtpError::from_nusb)?;
+        self.open_usb_device(device).await
     }
 
     /// Open an already-acquired [`nusb::Device`] as an MTP device.
+    ///
+    /// Needs the `unstable-raw` feature and is exempt from SemVer, since a `nusb` bump changes it.
     ///
     /// This is an escape hatch for consumers who already hold an `nusb::Device`
     /// (e.g. from a custom enumeration or hotplug watcher). For most callers,
@@ -764,7 +766,12 @@ impl MtpDeviceBuilder {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg(feature = "unstable-raw")]
     pub async fn open_nusb_device(self, device: nusb::Device) -> Result<MtpDevice, Error> {
+        self.open_usb_device(device).await
+    }
+
+    async fn open_usb_device(self, device: nusb::Device) -> Result<MtpDevice, Error> {
         let transport = NusbTransport::open_with_timeout(device, self.timeout).await?;
         let transport: Arc<dyn Transport> = Arc::new(transport);
 
@@ -847,7 +854,7 @@ impl MtpDeviceBuilder {
         self,
         device_info: crate::transport::UsbDeviceInfo,
     ) -> Result<(), Error> {
-        let device = device_info.open().map_err(crate::PtpError::Usb)?;
+        let device = device_info.open().map_err(crate::PtpError::from_nusb)?;
         let transport = NusbTransport::open_with_timeout(device, self.timeout).await?;
         transport.reset_device().await?;
         Ok(())
@@ -864,7 +871,7 @@ impl MtpDeviceBuilder {
     /// ```rust,no_run
     /// use std::path::PathBuf;
     /// use mtp_rs::MtpDevice;
-    /// use mtp_rs::transport::virtual_device::config::{VirtualDeviceConfig, VirtualStorageConfig};
+    /// use mtp_rs::{VirtualDeviceConfig, VirtualStorageConfig};
     ///
     /// # async fn example() -> Result<(), mtp_rs::Error> {
     /// let device = MtpDevice::builder()

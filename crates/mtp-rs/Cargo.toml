@@ -80,3 +80,7 @@ virtual-device = ["notify"]
 # cancel/reset paths so a bug reporter can capture what their device does with
 # `RUST_LOG=mtp_rs=debug` (issue #18). Off by default: no dependency, no cost.
 tracing = ["dep:tracing"]
+# Raw access: `transport::` (the `Transport` trait, `NusbTransport`, `UsbDeviceInfo`),
+# `MtpDeviceBuilder::open_nusb_device`, and `PtpSession::open` on your own transport.
+# Exempt from SemVer, since it exposes `nusb` types. See the README's "Stability" section.
+unstable-raw = []

@@ -152,7 +152,7 @@ impl DeviceWatchBuilder {
     ///
     /// Returns an error if the OS refuses to set up USB hotplug notifications.
     pub fn watch(self) -> Result<DeviceWatch, Error> {
-        let usb = nusb::watch_devices().map_err(crate::PtpError::Usb)?;
+        let usb = nusb::watch_devices().map_err(crate::PtpError::from_nusb)?;
         Ok(DeviceWatch {
             usb,
             known: HashMap::new(),

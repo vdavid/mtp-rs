@@ -248,7 +248,19 @@ impl PtpSession {
     /// # Errors
     ///
     /// Returns an error if the device rejects the session or communication fails.
+    ///
+    /// Needs the `unstable-raw` feature and is exempt from SemVer, since it takes a raw transport.
+    /// To open a session on a USB device, use [`PtpDevice`](crate::ptp::PtpDevice).
+    #[cfg(feature = "unstable-raw")]
     pub async fn open(transport: Arc<dyn Transport>, session_id: u32) -> Result<Self, Error> {
+        Self::open_with_reuse(transport, session_id, false).await
+    }
+
+    #[cfg(not(feature = "unstable-raw"))]
+    pub(crate) async fn open(
+        transport: Arc<dyn Transport>,
+        session_id: u32,
+    ) -> Result<Self, Error> {
         Self::open_with_reuse(transport, session_id, false).await
     }
 
@@ -258,7 +270,20 @@ impl PtpSession {
     /// transaction counter restarting from one. Unlike [`open`](Self::open), a
     /// [`ResponseCode::SessionAlreadyOpen`] response is treated as success and no `CloseSession`
     /// command is sent.
+    ///
+    /// Needs the `unstable-raw` feature and is exempt from SemVer, since it takes a raw transport.
+    /// [`MtpDeviceBuilder::reuse_existing_session`](crate::MtpDeviceBuilder::reuse_existing_session)
+    /// is the stable way to the same behavior.
+    #[cfg(feature = "unstable-raw")]
     pub async fn open_reusing_existing(
+        transport: Arc<dyn Transport>,
+        session_id: u32,
+    ) -> Result<Self, Error> {
+        Self::open_with_reuse(transport, session_id, true).await
+    }
+
+    #[cfg(not(feature = "unstable-raw"))]
+    pub(crate) async fn open_reusing_existing(
         transport: Arc<dyn Transport>,
         session_id: u32,
     ) -> Result<Self, Error> {

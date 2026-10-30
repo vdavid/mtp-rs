@@ -12,7 +12,7 @@
 //! ```rust,no_run
 //! use std::path::PathBuf;
 //! use mtp_rs::MtpDevice;
-//! use mtp_rs::transport::virtual_device::config::{VirtualDeviceConfig, VirtualStorageConfig};
+//! use mtp_rs::{VirtualDeviceConfig, VirtualStorageConfig};
 //!
 //! # async fn example() -> Result<(), mtp_rs::Error> {
 //! let device = MtpDevice::builder()

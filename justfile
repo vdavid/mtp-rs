@@ -14,6 +14,7 @@
 #     fmt          - Format code with cargo fmt
 #     fmt-check    - Check formatting (CI mode)
 #     clippy       - Run clippy with -D warnings
+#     clippy-stable - Run clippy with the `unstable-raw` feature off, so nothing stable needs it
 #     test         - Run tests (default features)
 #     test-all     - Run tests with all features
 #     doc          - Build documentation
@@ -25,7 +26,7 @@
 #                    (requires cargo-semver-checks)
 #
 #   Composite commands:
-#     check        - Run fast checks: fmt-check, clippy, test, doc (default)
+#     check        - Run fast checks: fmt-check, clippy, clippy-stable, test, test-all, doc (default)
 #     check-all    - Run all checks including MSRV, audit, deny, and semver
 #     fix          - Auto-fix formatting and clippy warnings
 #
@@ -67,6 +68,16 @@ clippy:
     @echo "[*] Running clippy..."
     @cargo clippy --all-targets --all-features --quiet -- -D warnings
     @echo "[+] Clippy passed"
+
+# Run clippy with `unstable-raw` off. `clippy` above turns on every feature, so on its own it can't
+# notice stable code that leans on the feature, or items that only the feature's API keeps alive.
+# Lints the lib with no features and with the other two, then the CLI, which must not need it.
+clippy-stable:
+    @echo "[*] Running clippy without unstable-raw..."
+    @cargo clippy -p mtp-rs --all-targets --quiet -- -D warnings
+    @cargo clippy -p mtp-rs --all-targets --features virtual-device,tracing --quiet -- -D warnings
+    @cargo clippy -p mtp-rs-cli --all-targets --quiet -- -D warnings
+    @echo "[+] Clippy without unstable-raw passed"
 
 # Run tests
 #
@@ -174,8 +185,8 @@ semver:
 # Composite Commands
 # ==============================================================================
 
-# Run fast checks: fmt-check, clippy, test, doc
-check: fmt-check clippy test doc
+# Run fast checks: fmt-check, clippy (with and without unstable-raw), test (default and all features), doc
+check: fmt-check clippy clippy-stable test test-all doc
     @echo ""
     @echo "[+] All fast checks passed!"
 

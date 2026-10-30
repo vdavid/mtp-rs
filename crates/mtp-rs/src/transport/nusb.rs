@@ -291,7 +291,7 @@ impl NusbTransport {
         known: &[(u16, u16)],
     ) -> Result<Vec<UsbDeviceInfo>, crate::PtpError> {
         let devices = blocking(nusb::list_devices())
-            .map_err(crate::PtpError::Usb)?
+            .map_err(crate::PtpError::from_nusb)?
             .filter_map(|dev| {
                 let match_reason = Self::mtp_match_reason(&dev, known)?;
                 let location_id = location_id_from_topology(&dev);
@@ -437,6 +437,7 @@ impl NusbTransport {
     }
 
     /// Open a specific device and claim the MTP interface.
+    #[cfg(any(test, feature = "unstable-raw"))]
     pub async fn open(device: nusb::Device) -> Result<Self, crate::PtpError> {
         Self::open_with_timeout(device, Self::DEFAULT_TIMEOUT).await
     }
@@ -523,22 +524,23 @@ impl NusbTransport {
             Ok(iface) => iface,
             #[cfg(target_os = "macos")]
             Err(e) if Self::is_interface_unpublished(&e) => {
-                blocking(device.set_configuration(1)).map_err(crate::PtpError::Usb)?;
-                blocking(device.claim_interface(interface_number)).map_err(crate::PtpError::Usb)?
+                blocking(device.set_configuration(1)).map_err(crate::PtpError::from_nusb)?;
+                blocking(device.claim_interface(interface_number))
+                    .map_err(crate::PtpError::from_nusb)?
             }
-            Err(e) => return Err(crate::PtpError::Usb(e)),
+            Err(e) => return Err(crate::PtpError::from_nusb(e)),
         };
 
         // Open endpoints
         let bulk_in = interface
             .endpoint::<Bulk, In>(bulk_in_addr)
-            .map_err(crate::PtpError::Usb)?;
+            .map_err(crate::PtpError::from_nusb)?;
         let bulk_out = interface
             .endpoint::<Bulk, Out>(bulk_out_addr)
-            .map_err(crate::PtpError::Usb)?;
+            .map_err(crate::PtpError::from_nusb)?;
         let interrupt_in = interface
             .endpoint::<Interrupt, In>(interrupt_in_addr)
-            .map_err(crate::PtpError::Usb)?;
+            .map_err(crate::PtpError::from_nusb)?;
 
         Ok(Self {
             interface,
@@ -551,12 +553,14 @@ impl NusbTransport {
     }
 
     /// Get the bulk transfer timeout.
+    #[cfg(any(test, feature = "unstable-raw"))]
     #[must_use]
     pub fn timeout(&self) -> Duration {
         self.timeout
     }
 
     /// Set the bulk transfer timeout.
+    #[cfg(any(test, feature = "unstable-raw"))]
     pub fn set_timeout(&mut self, timeout: Duration) {
         self.timeout = timeout;
     }

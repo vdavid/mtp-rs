@@ -45,7 +45,10 @@ pub mod cancel;
 pub mod error;
 pub mod mtp;
 pub mod ptp;
+#[cfg(feature = "unstable-raw")]
 pub mod transport;
+#[cfg(not(feature = "unstable-raw"))]
+mod transport;
 
 pub use cancel::CancelToken;
 

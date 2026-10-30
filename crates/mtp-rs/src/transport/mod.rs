@@ -1,4 +1,11 @@
-//! USB transport abstraction layer.
+//! USB transport abstraction layer. **Exempt from SemVer.**
+//!
+//! This module is public only with the `unstable-raw` feature, and anything in it can change in
+//! any release: it exposes `nusb` types, so a `nusb` bump alone can change it. Most callers don't
+//! need it. To pick a device, enumerate with [`MtpDevice::list_devices`](crate::MtpDevice::list_devices)
+//! or [`PtpDevice::list_devices`](crate::ptp::PtpDevice::list_devices), then open by serial or
+//! location. Reach for this when you enumerate with `nusb` yourself or run PTP over your own
+//! transport.
 
 #[cfg(test)]
 pub mod mock;
