@@ -14,6 +14,48 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-10-31
+
+Library `0.37.0` and CLI `0.11.5`. The API gets small enough to promise: `nusb` is out of it, the wire format is private, and new enum variants and struct fields can land without breaking you. No device behavior changes on any backend. This starts the quiet period toward 1.0.
+
+### Breaking
+
+**[lib]** Most code that uses `MtpDevice` and `Storage` needs only the wildcard arms and the renamed paths below. The stable API is what the crate root re-exports, plus `mtp::` and `ptp::`.
+
+Paths that moved:
+
+| Old | New |
+|-----|-----|
+| `mtp_rs::register_virtual_device`, `unregister_virtual_device`, `rescan_virtual_device`, `rekey_virtual_object`, `pause_watcher`, `force_operation_wedge`, `force_cancel_wedge`, `force_object_info_error`, `force_partial_read_caps`, `clear_dropped_paths`, `clear_object_info_errors`, `dropped_paths_since_pause`, `was_path_dropped`, `WatcherGuard`, `RescanSummary`, `DROPPED_PATHS_CAP`, `VirtualDeviceConfig`, `VirtualStorageConfig` | The same names under `mtp_rs::virtual_device::` |
+| `mtp_rs::transport::virtual_device::config::*` | `mtp_rs::virtual_device::*` |
+| `mtp_rs::transport::*` (`Transport`, `NusbTransport`, `UsbDeviceInfo`, `MtpMatchReason`, `BulkStream`) | Same path, with the `unstable-raw` feature. `UsbSpeed` and `MtpMatchReason` are at the root without it |
+| `MtpDeviceBuilder::open_nusb_device`, `UsbDeviceInfo::open`, `PtpSession::open`, `PtpSession::open_reusing_existing` | Same names, with the `unstable-raw` feature |
+| `NusbTransport::list_mtp_devices()` for enumeration | `MtpDevice::list_devices()`, or the new `PtpDevice::list_devices()` (USB only), then `open_by_serial` / `open_by_location`. Use `MtpDeviceBuilder::known_devices` in place of hand-picking a `nusb::Device` |
+| `mtp_rs::PtpError`, `mtp_rs::error::PtpError` | `mtp_rs::ptp::PtpError` |
+| `mtp_rs::{EventCode, OperationCode, ResponseCode, ReceiveStream, receive_stream_to_stream}` | The same names under `mtp_rs::ptp::` |
+| `mtp_rs::cancel::CancelToken` | `mtp_rs::CancelToken` |
+
+Things that changed shape:
+
+- **`#[non_exhaustive]` on most public types.** Add a `_` arm where you match `DeviceEvent`, `ListingItem`, `UsbSpeed`, `Backend`, `ByteRange`, `StorageType`, `FilesystemType`, `PtpError`, or any `ptp::` enum. Struct literals of `DateTime`, `ptp::ObjectInfo`, and `NewObjectInfo` don't compile anymore: use `DateTime::new` or `from_unix_seconds`, `ptp::ObjectInfo::default()` plus field assignment, and `NewObjectInfo::file`, `folder`, or `with_format`. The types you only read (`ObjectInfo`, `DeviceInfo`, `StorageInfo`, `Capabilities`, `Progress`, `UploadError`, `SkippedObject`, `ObjectCollection`, and the `ptp::` structs) can't be built or destructured without `..` from outside anymore. `VirtualDeviceConfig { .., ..Default::default() }` keeps working.
+- **`PtpError::Usb` holds an opaque `ptp::UsbError`**, and `From<nusb::Error> for PtpError` is gone. Read it through `Display`, or convert to `mtp_rs::Error`, which sorts USB failures into `ExclusiveAccess`, `PermissionDenied`, `Disconnected`, and so on.
+- **The `ptp::` wire format is private**: `pack_*`, `unpack_*`, `CommandContainer`, `DataContainer`, `ContainerType`, `container_type`, `TransactionId`, and `from_bytes` / `to_bytes` on `DeviceInfo`, `StorageInfo`, `ObjectInfo`, `DevicePropDesc`, `PropertyRange`, `ResponseContainer`, and `EventContainer`, plus `PropertyFormType::{from_code, to_code}`. `PropertyValue::{to_bytes, from_bytes}` and `ObjectPropListElement::list_from_bytes` stay, since the raw-bytes calls need them. Tell us if you relied on one of the others.
+- **`DeviceEvent::from_container` is gone from the public API**, and `PtpUploadError` is removed (nothing produced it).
+- **`mtp_rs::cancel` and `mtp_rs::error` aren't public modules anymore.**
+
+### Added
+
+- **[lib] `unstable-raw` feature**, for when you enumerate with `nusb` yourself or bring your own transport. Exempt from SemVer, so a `nusb` bump can't force an mtp-rs major anymore.
+- **[lib] `PtpDevice::list_devices()`**: enumerate at the PTP level with no raw types. Returns `MtpDeviceInfo`, skips virtual devices.
+- **[lib] Root re-exports** of `MtpDeviceInfo`, `MtpMatchReason`, `StorageType`, `FilesystemType`, `watch_devices`, `DeviceWatch`, `DeviceWatchBuilder`, `HotplugEvent`, and `DEFAULT_SETTLE_DELAY`, so every stable type has a permanent root path.
+- **[workspace] `SECURITY.md`**, and a "Stability" section in the README: SemVer scope, patch releases for pure fixes, MSRV, and security fixes. MSRV is unchanged (Rust 1.91), and a raise counts as a minor bump with a changelog line, not a SemVer break.
+- **[workspace] `cargo-semver-checks`** in `just check-all` and CI, to catch accidental breaks.
+
+### Changed
+
+- **[lib] `receive_stream_to_stream` promises `Send`** in its signature, where it used to leak through `impl Trait`.
+- **[cli]** `mtp-rs reset` lists devices through `PtpDevice::list_devices()`. Same behavior, and the CLI needs no `unstable-raw`.
+
 ## [0.36.3] - 2026-10-30
 
 Library `0.36.3` and CLI `0.11.4`. One broken file name can't fail a whole folder listing anymore.
