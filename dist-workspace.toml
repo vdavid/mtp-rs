@@ -28,3 +28,8 @@ install-path = "~/.local/bin"
 precise-builds = true
 # Whether to install an updater program
 install-updater = false
+
+# dist 0.33.0 still defaults this target to `macos-14`, which GitHub retires on 2026-11-02.
+# Rust sets the minimum macOS version, so the runner doesn't change who can run the binary.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
