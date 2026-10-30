@@ -34,6 +34,8 @@ minor version bump, and the changelog always says so.
 
 - [Android Bridge](https://android-bridge.com/): a macOS app for moving files to and from an Android phone, with
   drag-and-drop, SHA-256 copy verification, and resumable moves.
+- [EyeCanSee](https://github.com/IoSonoPiero/eyecansee): an image and video viewer and manager for Linux and
+  Windows that browses, copies, and converts photos and videos on Android phones, disks, and servers.
 
 Built something on `mtp-rs`? Open an issue and I'll add it.
 

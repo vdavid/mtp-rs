@@ -4,7 +4,7 @@ Catch-up reading for any agent that picks up issue or PR work, so you don't have
 start. Read this first when triaging a new issue or PR, and update it after work that affects community-facing context
 (see [Updating this doc](#updating-this-doc) at the bottom).
 
-Last updated: 2026-10-24.
+Last updated: 2026-10-30.
 
 ## Intentionally / continuously open threads
 
@@ -77,13 +77,13 @@ Android 16 (BP2A.250605.031.A3).
   session healthy, full second download), read-only 13/13, destructive 6/6, and the >4 GiB round trip (4.36 GB, upload
   at 32 MB/s, download verified, 283 s), every open in 0.00–0.01 s. #44 rebase-merged and shipped in v0.34.2
   (2026-10-24). The X6 Pro is in the README's tested devices table.
-- **Settled, not ours: a ~2–5-minute wait on Windows on the first reopen after the first write since plugging in**
+- **Thought settled, reopened in #52: a ~2–5-minute wait on Windows on the first reopen after the first write since plugging in**
   (X6 Pro 136–208 s, X7 Pro ~5 min), absent on Linux. Timestamped runs: it's the *open* (`test_rename_file`'s open
   took 183.76 s, every other open 0.02–0.03 s), not the previous device closing; the four `WUDFHost.exe` processes sit
   idle. Checks on v0.34.2 (2026-10-24): after waiting 5 minutes, the second open took 0.02 s; back to back it took
   136 s, and File Explorer hung ("Not responding", even on "This PC") during the wait. So the phone or Windows' driver
-  is busy for a couple of minutes after the first session's changes. Nothing to fix in mtp-rs; long-lived apps don't
-  see it, one-process-per-command tools and the test suite do.
+  is busy for a couple of minutes after the first session's changes. We called it not ours and said long-lived apps
+  don't see it; #52 shows the second part is wrong, so that thread carries it now.
 - **Killed process mid-window wedged the phone until a replug (2026-10-24, POCO X7 Pro, Linux, v0.34.2 and v0.34.1)**:
   his app called `std::process::exit` 50 ms into a 4 MB `download_windowed` window. Every new process then failed its
   first command with `expected Response container type (3), got N` (N different each run): the phone kept sending
@@ -97,9 +97,35 @@ Android 16 (BP2A.250605.031.A3).
   driver decides what it sends the phone), so #45's `GetObjectPropList` path isn't involved, contrary to his first
   guess. Untried idea if WPD turns out to be the bottleneck: `IPortableDevicePropertiesBulk`. He'll run
   `list_speed`, `prop_list`, and the suites on the A57 and other Samsungs after he's home (~2026-10-26).
+- **Samsung results (2026-10-25, v0.34.3)**: Galaxy A56, A57, and Tab S11 5G
+  ([comment](https://github.com/vdavid/mtp-rs/issues/43#issuecomment-6399998409)). Destructive 6/6 everywhere, read-only
+  13/13 on Linux and 12/13 on Windows (`test_ptp_device`). All three accept `GetObjectPropList` on Linux. mtp-rs over WPD
+  beat Explorer (A57 36 ms against 1.14 s, A56 267 ms against 4.02 s), so the `IPortableDevicePropertiesBulk` idea is
+  dropped and the 12.8 s walk above stays unexplained. The open wait hit them too: A57 ~4 min, A56 87 s, Tab S11 37 s.
+- **Samsung cancel on Linux**: A56 and Tab S11 wedge and recover through the reset. The A57 stuck: a cancel soon after a
+  reset returned `Timeout` in 0.3 s, and the phone needed a replug. Fix in v0.36.2: a timed-out CLASS_CANCEL continues like a
+  refused one and ends in `DeviceReset`. Whether it also saves the replug is untested; asked @IoSonoPiero to rerun.
 - **Test-harness gap it exposed**: after the wedge, later tests timed out, printed `SKIPPING`, and counted as passed.
   Fixed on the same branch: a hardware error fails the test once the device has answered earlier in the run
   (`should_skip` in `tests/integration.rs`); another app holding the device still skips.
+
+### #52: WPD calls stall for 5–6 minutes after changes on the phone (opened 2026-10-28)
+
+Reporter: [@IoSonoPiero](https://github.com/IoSonoPiero). POCO X7 Pro, Windows 11, long-lived app, one call at a time.
+A `list` after a recursive delete took 301 s, the sixth of ten single deletes 377 s, then everything queued ran normally.
+Reliable recipe (2026-10-29): list a folder, `adb shell rm` a file in it, call `size()` on that file: 345 s, then
+`StaleHandle`. Linux gives the error at once.
+
+- **Likely the #43 open wait**: same phone, same ~5 minutes, follows changes on the phone, and Explorer hung there too.
+  Not proven; don't call it settled again.
+- **The logcat doesn't show "WPD sent nothing"**: AOSP's `MtpServer.cpp` logs commands with `ALOGV` and responses only when
+  they aren't OK, so successful traffic is invisible. The driver may have been talking to the phone all along.
+- **Stale handles aren't the whole story**: the sixth delete was on a file that still existed.
+- **Ruled out**: the kept read stream (released before any other request and after 1 s idle; the recipe's gap was
+  18.8 s), and batching deletes (the recipe has no delete).
+- **Not seen on David's S23 Ultra or Pixel**, though those haven't been through this recipe.
+- **Next**: asked for a USBPcap capture during the stall and the recipe in Explorer without mtp-rs. No WPD code change
+  until then. If it's the driver we can't fix the wait, only help apps report it.
 
 ## Closed and merged
 
@@ -570,6 +596,7 @@ Cross-cutting summary of every quirk currently handled or known. Sorted by devic
 | Xiaomi POCO X7 Pro (HyperOS)  | Declines `GetObjectPropList` for "all properties" with 0xA801 in most folders; serves single properties; valueless `DateCreated` as data type 0 | Per-property listing (we never ask "all", see AGENTS.md); Undefined values skipped | #45 (@IoSonoPiero, 2026-10-22) |
 | Windows WPD (POCO X7 Pro)    | The driver returns MTP response codes wrapped as `FACILITY_ITF` HRESULTs (`0x8004_2009` for `InvalidObjectHandle` on a deleted handle) | `map_hresult` unwraps them and maps them like the USB backend (#42, v0.33.2) | #41 (@IoSonoPiero, 2026-10-21) |
 | Xiaomi POCO X6 Pro (Linux) | STALLs the SIC CLASS_CANCEL control request, keeps sending the object, and sends the cancelled transfer's closing reply late | Drain after a refused cancel; skip a reply with an earlier transaction ID (#44, v0.34.2) | #43 (@IoSonoPiero, 2026-10-22) |
+| Samsung Galaxy A57 (Linux) | A cancel soon after a reset: CLASS_CANCEL times out and the phone stays silent until a replug | A timed-out CLASS_CANCEL continues to the wedge check and ends in `DeviceReset` (v0.36.2); whether it saves the replug is untested | #43 (@IoSonoPiero, 2026-10-25) |
 | Montblanc Digital Paper e-Ink | Android-based hot-folder responder: only an import and an export folder exposed; the device ingests only files newly written directly into the import folder (nested or moved-in files persist and list, but stay invisible on the device) | None possible (invisible to MTP); re-upload with `put --replace`; documented in the CLI reference | #6 (@ChristianSimonSU, 2026-09-22)   |
 
 ## Recurring contributors
@@ -604,8 +631,9 @@ Cross-cutting summary of every quirk currently handled or known. Sorted by devic
 - [@ChristianSimonSU](https://github.com/ChristianSimonSU): Montblanc Digital Paper e-Ink report in #6 (2026-09-22).
   Tests on macOS via the CLI, and reports device-side behavior (what the device UI does with uploaded files), not just
   protocol results.
-- [@IoSonoPiero](https://github.com/IoSonoPiero): Pierluigi Montinaro. WPD object dates (#41, 2026-10-21), `GetObjectPropList` listings (#45, 2026-10-22). Has a
-  Xiaomi POCO X7 Pro and runs both Fedora and Windows 11, and ran the full integration suite on both within hours of
+- [@IoSonoPiero](https://github.com/IoSonoPiero): Pierluigi Montinaro. WPD object dates (#41, 2026-10-21), `GetObjectPropList` listings (#45, 2026-10-22), author of
+  [EyeCanSee](https://github.com/IoSonoPiero/eyecansee) (#51). Has a Xiaomi POCO X7 Pro and Samsungs, and runs both
+  Fedora and Windows 11, and ran the full integration suite on both within hours of
   being asked, with a root-cause guess for the one failure. A strong tester for the WPD backend.
 
 ## Updating this doc

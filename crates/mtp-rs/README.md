@@ -479,6 +479,9 @@ storage.upload(Some(download.handle), file_info, data).await?;
 | [Xiaomi POCO X6 Pro 5G](https://github.com/vdavid/mtp-rs/issues/43#issuecomment-6366541180) (HyperOS 3.0)         | 16      | Full support on Linux and on Windows; refuses the USB cancel request, handled since 0.34.2                    |
 | Samsung Galaxy S23 Ultra (SM-S918B)                                                                                | 14      | No root listing                                                                                               |
 | [Samsung Galaxy S23 and S23+](https://github.com/vdavid/mtp-rs/issues/6#issuecomment-5653736162)                   | 16      | Used by [Android Bridge](https://android-bridge.com/); integration suite not run                              |
+| [Samsung Galaxy A56 (SM-A566B)](https://github.com/vdavid/mtp-rs/issues/43#issuecomment-6399998409) | ? | Full support on Linux and on Windows; a USB cancel on Linux wedges it, the automatic reset recovers it |
+| [Samsung Galaxy A57 (SM-A576B)](https://github.com/vdavid/mtp-rs/issues/43#issuecomment-6399998409) | ? | Full support on Linux and on Windows; a USB cancel on Linux wedges it, and repeated cancels can need a replug |
+| [Samsung Galaxy Tab S11 5G (SM-X736B)](https://github.com/vdavid/mtp-rs/issues/43#issuecomment-6399998409) (One UI 8.5) | 16 | Full support on Linux and on Windows; a USB cancel on Linux can wedge it, the automatic reset recovers it |
 | [Amazon Kindle Paperwhite 12th Generation (2024)](https://github.com/vdavid/mtp-rs/pull/2#issuecomment-4264713119) | -       | Full support                                                                                                  |
 | [Fairphone 5](https://github.com/vdavid/mtp-rs/issues/6#issuecomment-4234861708) (e/OS 3.0.4, LineageOS-derived)   | 13      | Full support                                                                                                  |
 | [Garmin Forerunner 955](https://github.com/vdavid/mtp-rs/pull/10)                                                  | -       | Read-only integration suite passes; uploads need split headers (applied automatically)                        |
@@ -570,6 +573,8 @@ WPD COM stack winmtp uses on Windows.
 - [Android Bridge](https://android-bridge.com/): a macOS app for moving files to and from an Android phone, with
   drag-and-drop, SHA-256 copy verification, and resumable moves.
 - [Cmdr](https://github.com/vdavid/cmdr): an AI-native file manager that browses MTP devices alongside local folders.
+- [EyeCanSee](https://github.com/IoSonoPiero/eyecansee): an image and video viewer and manager for Linux and
+  Windows that browses, copies, and converts photos and videos on Android phones, disks, and servers.
 - [mtp-mount](https://github.com/vdavid/mtp-mount): mounts a phone or camera as a normal folder over FUSE, writes
   included, so `cp` and `rsync` onto the device work.
 
