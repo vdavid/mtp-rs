@@ -45,6 +45,9 @@ pub mod cancel;
 pub mod error;
 pub mod mtp;
 pub mod ptp;
+#[cfg(feature = "virtual-device")]
+pub mod virtual_device;
+
 #[cfg(feature = "unstable-raw")]
 pub mod transport;
 #[cfg(not(feature = "unstable-raw"))]
@@ -75,18 +78,3 @@ pub use ptp::{receive_stream_to_stream, EventCode, OperationCode, ReceiveStream,
 // The two USB-flavored facts `MtpDeviceInfo` carries: link speed (for example to warn about a slow
 // cable in a UI) and why the device counted as MTP. Neither exposes `nusb`.
 pub use transport::{MtpMatchReason, UsbSpeed};
-
-// Re-export virtual device types when the feature is enabled
-#[cfg(feature = "virtual-device")]
-pub use transport::virtual_device::config::{VirtualDeviceConfig, VirtualStorageConfig};
-#[cfg(feature = "virtual-device")]
-pub use transport::virtual_device::registry::{
-    clear_dropped_paths, clear_object_info_errors, dropped_paths_since_pause, force_cancel_wedge,
-    force_object_info_error, force_operation_wedge, force_partial_read_caps, pause_watcher,
-    register_virtual_device, rekey_virtual_object, rescan_virtual_device,
-    unregister_virtual_device, was_path_dropped, WatcherGuard,
-};
-#[cfg(feature = "virtual-device")]
-pub use transport::virtual_device::RescanSummary;
-#[cfg(feature = "virtual-device")]
-pub use transport::virtual_device::DROPPED_PATHS_CAP;

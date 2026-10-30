@@ -35,7 +35,7 @@ use std::time::Duration;
 /// available with the `virtual-device` feature; the WPD suite opens the real device itself.
 #[cfg(feature = "virtual-device")]
 pub async fn open_device(serial: &str) -> (mtp_rs::MtpDevice, tempfile::TempDir) {
-    use mtp_rs::{VirtualDeviceConfig, VirtualStorageConfig};
+    use mtp_rs::virtual_device::{VirtualDeviceConfig, VirtualStorageConfig};
 
     let dir = tempfile::tempdir().unwrap();
     let config = VirtualDeviceConfig {

@@ -12,7 +12,7 @@
 //! ```rust,no_run
 //! use std::path::PathBuf;
 //! use mtp_rs::MtpDevice;
-//! use mtp_rs::{VirtualDeviceConfig, VirtualStorageConfig};
+//! use mtp_rs::virtual_device::{VirtualDeviceConfig, VirtualStorageConfig};
 //!
 //! # async fn example() -> Result<(), mtp_rs::Error> {
 //! let device = MtpDevice::builder()
@@ -660,7 +660,9 @@ mod tests {
         let all = storages[0].list_objects(None).await.unwrap();
         assert_eq!(all.len(), 3);
         let victim = all.iter().find(|o| o.filename == "b.txt").unwrap().handle;
-        assert!(crate::force_object_info_error(serial, victim, None));
+        assert!(crate::virtual_device::force_object_info_error(
+            serial, victim, None
+        ));
 
         // The plain listing keeps the siblings instead of failing outright.
         let objects = storages[0].list_objects(None).await.unwrap();
@@ -691,7 +693,7 @@ mod tests {
         assert_eq!((streamed, skipped), (2, 1));
 
         // Clearing the hook restores the object, proving nothing was destroyed.
-        assert!(crate::clear_object_info_errors(serial));
+        assert!(crate::virtual_device::clear_object_info_errors(serial));
         assert_eq!(storages[0].list_objects(None).await.unwrap().len(), 3);
     }
 
@@ -708,7 +710,9 @@ mod tests {
         let storages = device.storages().await.unwrap();
 
         for obj in storages[0].list_objects(None).await.unwrap() {
-            assert!(crate::force_object_info_error(serial, obj.handle, None));
+            assert!(crate::virtual_device::force_object_info_error(
+                serial, obj.handle, None
+            ));
         }
 
         // A device that describes nothing is broken, not the owner of an empty
@@ -739,7 +743,7 @@ mod tests {
         let obj = storages[0].list_objects(None).await.unwrap()[0].clone();
 
         // Arm the one-shot cancel wedge (#18).
-        assert!(crate::force_cancel_wedge(serial));
+        assert!(crate::virtual_device::force_cancel_wedge(serial));
 
         let mut dl = storages[0]
             .download(obj.handle, ByteRange::Full)
@@ -783,7 +787,7 @@ mod tests {
         // A consumer that never calls `cancel()` still reaches `DeviceReset`
         // through the recovery drain, so it needs a hook that doesn't ride on a
         // cancel to test its reopen path.
-        assert!(crate::force_operation_wedge(serial));
+        assert!(crate::virtual_device::force_operation_wedge(serial));
 
         let err = storages[0]
             .get_object_info(obj.handle)
@@ -812,7 +816,7 @@ mod tests {
         let device = MtpDevice::builder().open_virtual(config).await.unwrap();
         let storages = device.storages().await.unwrap();
 
-        assert!(crate::force_operation_wedge(serial));
+        assert!(crate::virtual_device::force_operation_wedge(serial));
 
         // The root-listing fast path asks for parent=0xFFFFFFFF first and falls
         // back to parent=0 when the device DECLINES it. A wedged session is not
@@ -839,7 +843,9 @@ mod tests {
 
     #[test]
     fn operation_wedge_reports_an_unknown_serial() {
-        assert!(!crate::force_operation_wedge("no-such-device"));
+        assert!(!crate::virtual_device::force_operation_wedge(
+            "no-such-device"
+        ));
     }
 
     // ---- Windowed downloads (session-freeing window-by-window reads) ----
@@ -1187,7 +1193,7 @@ mod tests {
         // Arm a stall on any partial read so we can prove NO read is issued for an
         // empty file: if next_window wrongly issued a read it would consume this
         // cap, but it should short-circuit on offset >= size first.
-        assert!(crate::force_partial_read_caps(
+        assert!(crate::virtual_device::force_partial_read_caps(
             "windowed-empty-001",
             vec![0]
         ));
@@ -1228,7 +1234,7 @@ mod tests {
         assert_eq!(first.len(), 512);
 
         // Force the NEXT read to return 0 bytes mid-file (a device stall).
-        assert!(crate::force_partial_read_caps(
+        assert!(crate::virtual_device::force_partial_read_caps(
             "windowed-stall-001",
             vec![0]
         ));
@@ -1254,7 +1260,7 @@ mod tests {
         // Force the first two reads to come back short (100, then 50 real bytes)
         // even though the window asks for 512, a legal partial read. The download
         // must advance by what actually arrived, so the result stays byte-exact.
-        assert!(crate::force_partial_read_caps(
+        assert!(crate::virtual_device::force_partial_read_caps(
             "windowed-short-001",
             vec![100, 50]
         ));
@@ -1693,9 +1699,11 @@ mod tests {
             .handle;
 
         // Device re-keys Download out from under the host.
-        let (reported_old, new_handle) =
-            crate::rekey_virtual_object("rekey-test-001", std::path::Path::new("Download"))
-                .expect("a listed object must be re-keyable");
+        let (reported_old, new_handle) = crate::virtual_device::rekey_virtual_object(
+            "rekey-test-001",
+            std::path::Path::new("Download"),
+        )
+        .expect("a listed object must be re-keyable");
         // `rekey_virtual_object` reports low-level `ptp::ObjectHandle`s (u32),
         // while the high-level listing yields neutral `mtp::ObjectHandle`s (u64);
         // they carry the same numeric id, so compare on the raw value.
@@ -1776,14 +1784,17 @@ mod tests {
         storages[0].list_objects(None).await.unwrap();
 
         // Unknown serial -> None.
-        assert!(
-            crate::rekey_virtual_object("no-such-serial", std::path::Path::new("Download"))
-                .is_none()
-        );
+        assert!(crate::virtual_device::rekey_virtual_object(
+            "no-such-serial",
+            std::path::Path::new("Download")
+        )
+        .is_none());
         // Known device, untracked path -> None.
-        assert!(
-            crate::rekey_virtual_object("rekey-test-none", std::path::Path::new("Nope")).is_none()
-        );
+        assert!(crate::virtual_device::rekey_virtual_object(
+            "rekey-test-none",
+            std::path::Path::new("Nope")
+        )
+        .is_none());
     }
 
     #[tokio::test]
@@ -2479,7 +2490,7 @@ mod tests {
         std::fs::remove_file(dir.path().join("Photos/pic.jpg")).unwrap();
 
         // Rescan via the public API.
-        let summary = crate::rescan_virtual_device("rescan-test-001").unwrap();
+        let summary = crate::virtual_device::rescan_virtual_device("rescan-test-001").unwrap();
         assert_eq!(
             summary.removed, 2,
             "should remove existing.txt and Photos/pic.jpg"
@@ -2556,7 +2567,7 @@ mod tests {
         // Populate the object tree.
         let _ = storages[0].list_objects(None).await.unwrap();
 
-        let summary = crate::rescan_virtual_device("rescan-test-002").unwrap();
+        let summary = crate::virtual_device::rescan_virtual_device("rescan-test-002").unwrap();
         assert_eq!(summary.added, 0);
         assert_eq!(summary.removed, 0);
 

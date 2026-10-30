@@ -871,7 +871,7 @@ impl MtpDeviceBuilder {
     /// ```rust,no_run
     /// use std::path::PathBuf;
     /// use mtp_rs::MtpDevice;
-    /// use mtp_rs::{VirtualDeviceConfig, VirtualStorageConfig};
+    /// use mtp_rs::virtual_device::{VirtualDeviceConfig, VirtualStorageConfig};
     ///
     /// # async fn example() -> Result<(), mtp_rs::Error> {
     /// let device = MtpDevice::builder()
@@ -945,9 +945,9 @@ mod tests {
     async fn resetting_a_virtual_device_says_it_has_no_transport_to_reset() {
         let dir = tempfile::tempdir().unwrap();
         let serial = "reset-virtual-serial";
-        let config = crate::VirtualDeviceConfig {
+        let config = crate::virtual_device::VirtualDeviceConfig {
             serial: serial.into(),
-            storages: vec![crate::VirtualStorageConfig {
+            storages: vec![crate::virtual_device::VirtualStorageConfig {
                 description: "Internal Storage".into(),
                 capacity: 1024,
                 backing_dir: dir.path().to_path_buf(),
@@ -955,7 +955,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let info = crate::register_virtual_device(&config);
+        let info = crate::virtual_device::register_virtual_device(&config);
 
         // A virtual device is a filesystem, not a USB link: there's no transport
         // state to reset. Saying so beats a puzzling "no device found" in a
@@ -965,7 +965,7 @@ mod tests {
             .expect_err("a virtual device has no USB transport");
         assert!(matches!(err, Error::Unsupported), "got {err:?}");
 
-        crate::unregister_virtual_device(info.location_id);
+        crate::virtual_device::unregister_virtual_device(info.location_id);
     }
 
     #[test]
@@ -983,10 +983,10 @@ mod tests {
     #[tokio::test]
     async fn builder_reuses_existing_session_end_to_end() {
         let dir = tempfile::tempdir().unwrap();
-        let config = crate::VirtualDeviceConfig {
+        let config = crate::virtual_device::VirtualDeviceConfig {
             model: "Session Reuse Test".into(),
             serial: "session-reuse-test".into(),
-            storages: vec![crate::VirtualStorageConfig {
+            storages: vec![crate::virtual_device::VirtualStorageConfig {
                 description: "Internal Storage".into(),
                 capacity: 1024,
                 backing_dir: dir.path().to_path_buf(),

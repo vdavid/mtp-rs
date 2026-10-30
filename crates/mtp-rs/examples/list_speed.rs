@@ -129,7 +129,7 @@ async fn open(target: &Target, use_prop_list: bool) -> Result<MtpDevice, mtp_rs:
         Target::Serial(serial) => builder.open_by_serial(serial).await,
         #[cfg(feature = "virtual-device")]
         Target::Virtual(dir) => {
-            use mtp_rs::{VirtualDeviceConfig, VirtualStorageConfig};
+            use mtp_rs::virtual_device::{VirtualDeviceConfig, VirtualStorageConfig};
             builder
                 .open_virtual(VirtualDeviceConfig {
                     serial: "list-speed".into(),

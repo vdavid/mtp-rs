@@ -23,11 +23,11 @@ fn register_test_virtual_device() {
     };
     let serial = std::env::var("__MTP_RS_TEST_VIRTUAL_SERIAL")
         .unwrap_or_else(|_| "mtp-rs-cli-test".to_string());
-    let config = mtp_rs::VirtualDeviceConfig {
+    let config = mtp_rs::virtual_device::VirtualDeviceConfig {
         manufacturer: "TestCorp".into(),
         model: "CLI Test Device".into(),
         serial,
-        storages: vec![mtp_rs::VirtualStorageConfig {
+        storages: vec![mtp_rs::virtual_device::VirtualStorageConfig {
             description: "Internal Storage".into(),
             capacity: 64 * 1024 * 1024,
             backing_dir: std::path::PathBuf::from(root),
@@ -48,7 +48,7 @@ fn register_test_virtual_device() {
             .unwrap_or_default(),
         ..Default::default()
     };
-    let _ = mtp_rs::register_virtual_device(&config);
+    let _ = mtp_rs::virtual_device::register_virtual_device(&config);
 }
 
 #[cfg(not(all(feature = "virtual-device", debug_assertions)))]

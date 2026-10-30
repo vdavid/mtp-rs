@@ -165,7 +165,7 @@ impl Drop for WatcherGuard {
 /// # Example
 ///
 /// ```rust,no_run
-/// use mtp_rs::{pause_watcher, rescan_virtual_device};
+/// use mtp_rs::virtual_device::{pause_watcher, rescan_virtual_device};
 ///
 /// {
 ///     let _guard = pause_watcher("my-device-serial").unwrap();
@@ -278,7 +278,7 @@ pub fn clear_dropped_paths(serial: &str) {
 /// # Example
 ///
 /// ```rust,no_run
-/// use mtp_rs::rescan_virtual_device;
+/// use mtp_rs::virtual_device::rescan_virtual_device;
 ///
 /// // After manipulating files in the backing directory...
 /// if let Some(summary) = rescan_virtual_device("my-device-serial") {
@@ -320,7 +320,7 @@ pub fn rescan_virtual_device(serial: &str) -> Option<RescanSummary> {
 /// # Example
 ///
 /// ```rust,no_run
-/// use mtp_rs::rekey_virtual_object;
+/// use mtp_rs::virtual_device::rekey_virtual_object;
 /// use std::path::Path;
 ///
 /// // The host listed "Documents" earlier and cached its handle. Simulate the

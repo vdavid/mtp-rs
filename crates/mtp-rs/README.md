@@ -347,7 +347,8 @@ mtp-rs = { version = "0.17", features = ["virtual-device"] }
 
 ```rust
 use std::path::PathBuf;
-use mtp_rs::{MtpDevice, VirtualDeviceConfig, VirtualStorageConfig};
+use mtp_rs::MtpDevice;
+use mtp_rs::virtual_device::{VirtualDeviceConfig, VirtualStorageConfig};
 
 let device = MtpDevice::builder()
     .open_virtual(VirtualDeviceConfig {
@@ -381,7 +382,7 @@ You can also register virtual devices so they appear in `MtpDevice::list_devices
 `open_by_location()` or `open_by_serial()`:
 
 ```rust
-use mtp_rs::{register_virtual_device, unregister_virtual_device};
+use mtp_rs::virtual_device::{register_virtual_device, unregister_virtual_device};
 
 let info = register_virtual_device(&config);
 

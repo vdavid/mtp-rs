@@ -99,7 +99,7 @@ mod tests {
     #[cfg(feature = "virtual-device")]
     impl Drop for VirtualCliFixture {
         fn drop(&mut self) {
-            mtp_rs::unregister_virtual_device(self.location_id);
+            mtp_rs::virtual_device::unregister_virtual_device(self.location_id);
         }
     }
 
@@ -115,11 +115,11 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
-        let config = mtp_rs::VirtualDeviceConfig {
+        let config = mtp_rs::virtual_device::VirtualDeviceConfig {
             manufacturer: "TestCorp".into(),
             model: "CLI Device".into(),
             serial: serial.clone(),
-            storages: vec![mtp_rs::VirtualStorageConfig {
+            storages: vec![mtp_rs::virtual_device::VirtualStorageConfig {
                 description: "Internal Storage".into(),
                 capacity: 64 * 1024 * 1024,
                 backing_dir,
@@ -129,7 +129,7 @@ mod tests {
             watch_backing_dirs: false,
             ..Default::default()
         };
-        let info = mtp_rs::register_virtual_device(&config);
+        let info = mtp_rs::virtual_device::register_virtual_device(&config);
 
         VirtualCliFixture {
             _tempdir: tempdir,
