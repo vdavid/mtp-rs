@@ -342,6 +342,11 @@ the bulk IN and interrupt pipes. This approach was validated against libmtp's
   closing Response arrives: the cancel costs the rest of the transfer, but the
   session stays in sync. Returning the STALL as an error instead left the rest
   of the object in the pipe and wedged the phone until a replug.
+- **A CLASS_CANCEL that times out takes the same path as a refused one** (`cancel_was_not_acted_on`). The
+  status poll after the drains then decides: a device that's silent there too is the wedge below and gets
+  `Error::DeviceReset`. Returning `Timeout` right away skipped that check, so the caller never learned to
+  reopen (Galaxy A57 on Linux, a second cancel soon after a reset, #43; from the code and the 0.3 s timing,
+  not confirmed on hardware yet).
 - **The drain recognizes the Response only as a short read whose length field
   matches** (`is_response_container`). File data has `03 00` at bytes 4..6 in
   about one read in 65,536, so a drain through a whole object that checked only

@@ -141,6 +141,24 @@ where
     NusbTransport::convert_transfer_error(err)
 }
 
+/// Reads the outcome of the CLASS_CANCEL request: `true` means the device didn't act on it.
+///
+/// A device that STALLs it (POCO X6 Pro on Linux, #43) keeps sending the object. Giving up here
+/// left the rest of it in the pipe and wedged the phone until a replug, so the caller drains
+/// anyway: the device finishes the transfer and closes it with a response, which leaves the
+/// session in sync. That costs the rest of the transfer.
+///
+/// A timeout (`Cancelled`, a Galaxy A57 that had already gone silent, #43) takes the same path, so
+/// the status poll after the drains gets to tell a busy device from a wedged one. Returning
+/// `Timeout` here skipped that check, and the caller never learned to reopen.
+fn cancel_was_not_acted_on(result: Result<(), TransferError>) -> Result<bool, crate::PtpError> {
+    match result {
+        Ok(()) => Ok(false),
+        Err(TransferError::Stall | TransferError::Cancelled) => Ok(true),
+        Err(e) => Err(NusbTransport::convert_transfer_error(e)),
+    }
+}
+
 /// Negotiated USB link speed for a device.
 ///
 /// This is the speed the device, host port, and cable agreed on at enumeration,
@@ -908,15 +926,7 @@ impl Transport for NusbTransport {
                 Duration::from_millis(300),
             )
             .await;
-        // A device that STALLs CLASS_CANCEL (POCO X6 Pro on Linux, #43) keeps sending the
-        // object. Returning here left the rest of it in the pipe and wedged the phone until
-        // a replug, so drain anyway: the device finishes the transfer and closes it with a
-        // response, which leaves the session in sync. That costs the rest of the transfer.
-        let refused = match cancel_result {
-            Ok(_) => false,
-            Err(TransferError::Stall) => true,
-            Err(e) => return Err(Self::convert_transfer_error(e)),
-        };
+        let refused = cancel_was_not_acted_on(cancel_result.map(|_| ()))?;
         diag_debug!(
             "cancel_transfer: step 1 CLASS_CANCEL sent (refused={})",
             refused
@@ -1322,6 +1332,27 @@ mod tests {
                 crate::PtpError::Disconnected
             ));
         }
+    }
+
+    /// A Galaxy A57 that has gone silent lets CLASS_CANCEL time out. Returning that as
+    /// `Timeout` skipped the wedge check, so the caller never learned to reopen (#43).
+    #[test]
+    fn unanswered_cancel_request_continues_like_a_refused_one() {
+        assert!(!cancel_was_not_acted_on(Ok(())).unwrap());
+        assert!(cancel_was_not_acted_on(Err(TransferError::Stall)).unwrap());
+        assert!(cancel_was_not_acted_on(Err(TransferError::Cancelled)).unwrap());
+    }
+
+    #[test]
+    fn cancel_request_failures_still_surface() {
+        assert!(matches!(
+            cancel_was_not_acted_on(Err(TransferError::Disconnected)),
+            Err(crate::PtpError::Disconnected)
+        ));
+        assert!(matches!(
+            cancel_was_not_acted_on(Err(TransferError::Fault)),
+            Err(crate::PtpError::Io(_))
+        ));
     }
 
     #[test]
