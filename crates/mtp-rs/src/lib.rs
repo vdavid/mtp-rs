@@ -54,20 +54,24 @@ pub use cancel::CancelToken;
 pub use error::PtpError;
 pub use mtp::{Error, UploadError};
 
-// Backend-neutral high-level types (the default vocabulary for `mtp::`).
+// Backend-neutral high-level types (the default vocabulary for `mtp::`). These root paths are the
+// SemVer promise; the nested `mtp::` paths work too but aren't what the promise is about.
 pub use mtp::{
-    Backend, ByteRange, Capabilities, DateTime, DeviceEvent, DeviceInfo, FileDownload, ListingItem,
-    MtpDevice, MtpDeviceBuilder, NewObjectInfo, ObjectCollection, ObjectFormat, ObjectHandle,
-    ObjectInfo, ObjectListing, Progress, SkippedObject, Storage, StorageId, StorageInfo, UtcOffset,
-    WindowedDownload, DEFAULT_CANCEL_TIMEOUT, DEFAULT_DOWNLOAD_WINDOW, MAX_NAME_UNITS,
+    watch_devices, Backend, ByteRange, Capabilities, DateTime, DeviceEvent, DeviceInfo,
+    DeviceWatch, DeviceWatchBuilder, FileDownload, FilesystemType, HotplugEvent, ListingItem,
+    MtpDevice, MtpDeviceBuilder, MtpDeviceInfo, NewObjectInfo, ObjectCollection, ObjectFormat,
+    ObjectHandle, ObjectInfo, ObjectListing, Progress, SkippedObject, Storage, StorageId,
+    StorageInfo, StorageType, UtcOffset, WindowedDownload, DEFAULT_CANCEL_TIMEOUT,
+    DEFAULT_DOWNLOAD_WINDOW, DEFAULT_SETTLE_DELAY, MAX_NAME_UNITS,
 };
 
 // Low-level PTP escape hatch for cameras / protocol work. These keep their PTP-specific
 // shapes; reach for them via `ptp::` when the neutral surface isn't enough.
 pub use ptp::{receive_stream_to_stream, EventCode, OperationCode, ReceiveStream, ResponseCode};
 
-// Re-export USB speed enum for callers that want to surface link speed (e.g. for UI).
-pub use transport::UsbSpeed;
+// The two USB-flavored facts `MtpDeviceInfo` carries: link speed (for example to warn about a slow
+// cable in a UI) and why the device counted as MTP. Neither exposes `nusb`.
+pub use transport::{MtpMatchReason, UsbSpeed};
 
 // Re-export virtual device types when the feature is enabled
 #[cfg(feature = "virtual-device")]
