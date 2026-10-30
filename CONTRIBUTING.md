@@ -20,14 +20,14 @@ We use [`just`](https://github.com/casey/just) as a command runner. Install it, 
 ```bash
 just            # Run all checks: format, lint, test, doc
 just fix        # Auto-fix formatting and clippy warnings
-just check-all  # Include MSRV check, security audit, and license check
+just check-all  # Include MSRV check, security audit, license check, and API-break check
 ```
 
 Run `just --list` to see all available commands.
 
 ### MSRV (Minimum Supported Rust Version)
 
-We support the Rust releases from the last 12 months, currently Rust 1.91. Raising it is a minor version bump with a changelog line. Before submitting PRs, verify MSRV compatibility:
+We support the Rust releases from the last 12 months, currently Rust 1.91. Raising it is a minor version bump with a changelog line, not a SemVer break. Before submitting PRs, verify MSRV compatibility:
 
 ```bash
 rustup toolchain install 1.91.0  # One-time setup
@@ -58,13 +58,15 @@ crates/
 │   │   │   ├── stream.rs         # Streaming downloads
 │   │   │   ├── object.rs         # NewObjectInfo for uploads
 │   │   │   └── event.rs          # Device events
-│   │   ├── transport/            # USB abstraction
+│   │   ├── transport/            # USB abstraction, private without `unstable-raw`
 │   │   │   ├── mock.rs           # Mock for testing
 │   │   │   ├── nusb.rs           # Real USB implementation
 │   │   │   └── virtual_device/   # Filesystem-backed virtual device
+│   │   ├── virtual_device.rs     # Public virtual-device config and test hooks
 │   │   ├── error.rs              # Error types
 │   │   └── lib.rs                # Crate root
 │   ├── tests/integration.rs      # Tests that need a real device
+│   ├── tests/stable_api.rs       # What consumers can build and read from outside the crate
 │   └── examples/                 # Standalone examples (download, diagnose, etc.)
 └── mtp-rs-cli/                   # The CLI binary (published as `mtp-rs-cli`)
     ├── src/
@@ -141,8 +143,16 @@ A few things that might not be obvious:
   If you find a device that doesn't work, let's understand why before adding workarounds.
 - **Mock transport for testing**: `transport::mock::MockTransport` lets you test protocol logic without USB. Queue
   expected responses and verify sent commands.
+- **A small stable API**: new public items get a crate-root re-export, public enums and read-only structs get
+  `#[non_exhaustive]`, and nothing typed by `nusb` goes in a stable signature. `transport::` and raw `nusb` access stay
+  behind the `unstable-raw` feature, and `just clippy-stable` checks that nothing stable needs it. `AGENTS.md`
+  ("Public surface and stability") has the reasoning.
+- **Pure fixes ship as patches**, so users get them with `cargo update`. Minors are for features and, before 1.0,
+  breaking changes. `just semver` catches accidental breaks against the latest crates.io release.
 - **`VirtualDeviceConfig` stays literal-constructible**: every field is public and consumers build it with a struct
-  literal, so give any new field a value in the `Default` impl and don't reach for `#[non_exhaustive]`. That keeps
+  literal, so give any new field a value in the `Default` impl and don't reach for `#[non_exhaustive]`, even though the
+  rest of the public API uses it. The whole `virtual-device` feature is exempt from SemVer, so this is about being kind
+  to test suites, not about a promise. That keeps
   `VirtualDeviceConfig { storages: vec![...], ..Default::default() }` compiling across releases, which is the whole
   point: a field addition to a test-support struct shouldn't break downstream test suites. Add the field to the
   `default_config_is_complete_except_storages` test too. `VirtualStorageConfig` has no `Default` on purpose, because
@@ -189,7 +199,7 @@ See [`docs/releasing.md`](docs/releasing.md) for how to publish a new version to
 
 1. Fork and create a branch
 2. Make your changes
-3. Run `just` (checks format, lint, test, and doc)
+3. Run `just` (checks format, lint with and without `unstable-raw`, test, and doc)
 4. Run `just msrv` to verify Rust 1.91 compatibility
 5. If you have a device, run integration tests: `cargo test --test integration -- --ignored`
 6. Open a PR with a clear description including how you tested your changes

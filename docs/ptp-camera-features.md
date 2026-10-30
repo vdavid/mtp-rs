@@ -12,6 +12,37 @@ The Picture Transfer Protocol (PTP) provides operations for:
 These features are primarily useful for digital cameras, though some MTP devices (like Android phones) may support a
 subset of these operations.
 
+Every example here uses only the stable `ptp::` API, with no features on.
+
+## Opening a camera
+
+List USB devices with `PtpDevice::list_devices()`, open the one you want, and start a session:
+
+```rust
+use mtp_rs::ptp::{PtpDevice, PtpError as Error, PtpSession};
+
+async fn open_camera() -> Result<PtpSession, Error> {
+    let devices = PtpDevice::list_devices()?;
+    let camera = devices.first().ok_or(Error::NoDevice)?;
+    println!("Opening {}", camera.display());
+
+    let device = PtpDevice::open_by_location(camera.location_id).await?;
+    device.open_session().await
+}
+```
+
+`PtpDevice::open_first()` and `open_by_serial()` skip the listing. Each open also has a `_with_timeout` form.
+
+The examples below assume these imports:
+
+```rust
+use mtp_rs::ptp::{
+    DevicePropertyCode, EventCode, ObjectFormatCode, ObjectHandle, OperationCode, PropertyDataType,
+    PropertyValue, PtpDevice, PtpError as Error, PtpSession, ResponseCode, StorageId,
+};
+use std::time::Duration;
+```
+
 ## Device properties
 
 Device properties represent configurable settings on the device, such as:
@@ -52,8 +83,6 @@ Properties can have constraints on their values:
 Use `get_device_prop_desc()` to get full information about a property:
 
 ```rust
-use mtp_rs::ptp::{PtpDevice, DevicePropertyCode};
-
 async fn read_battery(session: &PtpSession) -> Result<(), Error> {
     let desc = session.get_device_prop_desc(DevicePropertyCode::BatteryLevel).await?;
 
@@ -76,8 +105,6 @@ async fn read_battery(session: &PtpSession) -> Result<(), Error> {
 For simple value reads, use `get_device_prop_value_typed()`:
 
 ```rust
-use mtp_rs::ptp::{DevicePropertyCode, PropertyDataType, PropertyValue};
-
 async fn get_battery_level(session: &PtpSession) -> Result<u8, Error> {
     let value = session
         .get_device_prop_value_typed(
@@ -98,10 +125,8 @@ async fn get_battery_level(session: &PtpSession) -> Result<u8, Error> {
 Use `set_device_prop_value_typed()` to change a property:
 
 ```rust
-use mtp_rs::ptp::{DevicePropertyCode, PropertyValue};
-
-async fn set_iso(session: &PtpSession, iso: u32) -> Result<(), Error> {
-    let value = PropertyValue::Uint32(iso);
+async fn set_iso(session: &PtpSession, iso: u16) -> Result<(), Error> {
+    let value = PropertyValue::Uint16(iso);
     session
         .set_device_prop_value_typed(DevicePropertyCode::ExposureIndex, &value)
         .await
@@ -165,8 +190,6 @@ The following standard device properties are defined in the PTP specification:
 Use `initiate_capture()` to trigger the camera shutter:
 
 ```rust
-use mtp_rs::ptp::{ObjectFormatCode, StorageId};
-
 async fn take_photo(session: &PtpSession) -> Result<(), Error> {
     // Use StorageId(0) for camera default, ObjectFormatCode::Undefined for default format
     session
@@ -221,11 +244,11 @@ Example error handling:
 
 ```rust
 match session.get_device_prop_desc(DevicePropertyCode::ExposureTime).await {
-Ok(desc) => println!("Exposure time: {:?}", desc.current_value),
-Err(Error::Protocol { code: ResponseCode::DevicePropNotSupported, ..}) => {
-println ! ("Device does not support exposure time property");
-}
-Err(e) => return Err(e),
+    Ok(desc) => println!("Exposure time: {:?}", desc.current_value),
+    Err(Error::Protocol { code: ResponseCode::DevicePropNotSupported, .. }) => {
+        println!("Device does not support exposure time property");
+    }
+    Err(e) => return Err(e),
 }
 ```
 
@@ -234,8 +257,6 @@ Err(e) => return Err(e),
 Before using property or capture operations, check if the device supports them:
 
 ```rust
-use mtp_rs::ptp::OperationCode;
-
 async fn check_capabilities(device: &PtpDevice) -> Result<(), Error> {
     let info = device.get_device_info().await?;
 
@@ -276,3 +297,12 @@ The specific properties available depend on the camera model and manufacturer.
 
 Many cameras implement vendor-specific property codes in the 0xD000-0xDFFF range. These are represented as
 `DevicePropertyCode::Unknown(code)` and can still be accessed if you know the property code and data type.
+
+Vendor operations work the same way: `PtpSession::execute`, `execute_with_receive`, and `execute_with_send` take any
+`OperationCode`, including `OperationCode::Unknown(code)`. The code enums are `#[non_exhaustive]`, so match them with a
+wildcard arm: a code that's `Unknown` today can get its own variant in a later release.
+
+### Raw transports
+
+If you enumerate with `nusb` yourself or run PTP over your own transport, the `unstable-raw` feature adds
+`PtpSession::open` and `mtp_rs::transport`. It's exempt from SemVer, and nothing above needs it.

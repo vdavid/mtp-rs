@@ -19,6 +19,11 @@ For library usage, the API, the device quirks we handle, and tested devices, see
 For the CLI, see the [`mtp-rs-cli` README](crates/mtp-rs-cli/README.md) and
 the [full command reference](crates/mtp-rs-cli/docs/cli.md).
 
+## Stability
+
+The library's SemVer, MSRV, and patch-release promises are in the
+[`mtp-rs` README](crates/mtp-rs/README.md#stability). Report security issues the way [SECURITY.md](SECURITY.md) says.
+
 ## MSRV
 
 Both crates support the Rust releases from the last 12 months, currently Rust 1.91 or newer. Raising this minimum is a
@@ -43,7 +48,7 @@ Built something on `mtp-rs`? Open an issue and I'll add it.
 
 ```sh
 just            # fast checks: fmt, clippy, test, doc
-just check-all  # plus MSRV, security audit, license check
+just check-all  # plus MSRV, security audit, license check, API-break check
 just fix        # auto-fix formatting and clippy warnings
 ```
 

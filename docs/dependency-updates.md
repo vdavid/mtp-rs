@@ -8,8 +8,9 @@ Read it before merging or closing a Renovate PR, or before touching `rust-versio
 
 - **Promise**: we support the Rust releases from the last 12 months. `rust-version` in the root `Cargo.toml` is the
   oldest stable released within that window (or older, if nothing needs newer).
-- **Raising it** is a minor version bump (0.x: the `x`), with a **Breaking** changelog line. Raise it when a dependency
-  or a language feature needs it; don't chase the window for its own sake.
+- **Raising it** is a minor version bump (0.x: the `x`) with a changelog line under **Changed**. It isn't a SemVer
+  break: the 0.35.0 changelog called it "Breaking", and that wording stopped there. Raise it when a dependency or a
+  language feature needs it; don't chase the window for its own sake.
 - **Scope**: what consumers compile, so `mtp-rs` (every feature) and `mtp-rs-cli`, on each OS. Tests, examples,
   dev-dependencies, and the `mtp-bench` benchmark run on stable only.
 - ❌ **Never cap a dependency in `Cargo.toml` (or hold it in `renovate.json`) for the MSRV.** A cap forces every
@@ -103,7 +104,12 @@ job checks the consumer's view independently.
 ## Per-dependency notes
 
 - **`nusb`**: the whole USB layer. Green CI proves only the mock and virtual transports. Before merging, run the
-  integration suite against a real device (AGENTS.md "Testing", and `docs/debugging.md` for device setup).
+  integration suite against a real device (AGENTS.md "Testing", and `docs/debugging.md` for device setup). A `nusb` bump
+  is no longer a potential mtp-rs major, even across a 0.x: no stable signature names a `nusb` type (`PtpError::Usb`
+  holds an opaque `UsbError`), and what does is behind `unstable-raw`, which is exempt from SemVer. It still ships as a
+  normal release with a changelog line for `unstable-raw` users.
+- **`cargo-semver-checks`**: not a Cargo dependency. Pinned by hand in `.github/workflows/ci.yml` (`semver` job) and
+  `justfile` (`install-tools`), so keep the two in sync, and check the new version is at least three days old.
 - **`windows` and `windows-core`**: the WPD backend. CI on `windows-latest` compiles and runs the conformance harness
   but has no device, so verify against a phone on Windows before merging.
   - **The 0.100 line**: windows-rs published `windows-core` 0.100.0 on 2026-09-03 but held back `windows` 0.100 while
@@ -130,5 +136,5 @@ A deliberate, consumer-visible change. Touch every one of these in the same comm
 - `justfile`: the `msrv` recipe (its comments, the `rustup run` probe, and `cargo +1.xx.0`) and the header lines.
 - `README.md` and `crates/mtp-rs/README.md`: the MSRV badge and the MSRV paragraph.
 - `CONTRIBUTING.md`: the MSRV section and the "Submitting changes" step.
-- `CHANGELOG.md`: a **Breaking** entry ("The MSRV is now Rust B (was A)"), and a minor version bump at release.
+- `CHANGELOG.md`: a **Changed** entry ("The MSRV is now Rust B (was A)"), and a minor version bump at release.
 - This doc: the `windows` 0.100 note, if the new MSRV reaches 1.95.

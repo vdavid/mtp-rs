@@ -58,7 +58,11 @@ jobs:
         run: cargo test --all-features
 
       - name: Build documentation
-        run: cargo doc --no-deps
+        run: |
+          cargo doc --no-deps
+          cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: "-D warnings"
 
   windows-wpd:
     name: Windows WPD backend + conformance

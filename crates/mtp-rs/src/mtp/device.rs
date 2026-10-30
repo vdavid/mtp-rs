@@ -15,9 +15,8 @@ use std::time::Duration;
 /// or `MtpDevice::builder()` for more control.
 ///
 /// The device is a thin façade over a backend-neutral implementation (the internal `MtpBackend`
-/// trait). Today the only backend is PTP-over-USB (which also drives the virtual and mock
-/// transports); a Windows WPD backend is planned. Consumers work against the neutral
-/// [`crate::mtp`] types throughout.
+/// trait): PTP-over-USB (which also drives the virtual and mock transports), or WPD on Windows.
+/// Consumers work against the neutral [`crate::mtp`] types throughout.
 ///
 /// # Example
 ///

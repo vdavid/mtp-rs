@@ -2,6 +2,8 @@
 
 Feature-gated (`virtual-device`) Transport implementation backed by local filesystem directories instead of USB. Exercises the full MTP/PTP binary protocol path.
 
+Consumers reach it through `mtp_rs::virtual_device` (`src/virtual_device.rs`, re-exports only), since `transport::` is private without `unstable-raw`. The feature is test support and exempt from SemVer. New public hooks need a line there.
+
 ## Architecture
 
 ```

@@ -37,6 +37,17 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! ## Stability
+//!
+//! SemVer covers what the crate root re-exports, plus [`mtp`] and [`ptp`]. These optional features
+//! are exempt from it, so they can change in any release:
+//!
+//! - `unstable-raw`: `transport::` and the other `nusb`-typed items, for when you enumerate with
+//!   `nusb` yourself or bring your own transport. Listing devices and opening by serial or location
+//!   need no raw types.
+//! - `virtual-device`: `virtual_device::`, a filesystem-backed device for testing without hardware.
+//! - `tracing`: structured diagnostics. The event names and fields can change, as can log output.
 
 #[macro_use]
 mod trace;

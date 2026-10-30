@@ -103,10 +103,12 @@ test-all:
     @cargo test --all-features --quiet fs_watcher -- --test-threads=1
     @echo "[+] All feature tests passed"
 
-# Build documentation
+# Build documentation, with and without the optional features. Warnings fail it: with `transport::`
+# private by default, a public doc comment can easily link to something readers can't see.
 doc:
     @echo "[*] Building docs..."
-    @cargo doc --no-deps --quiet
+    @RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --quiet
+    @RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --quiet
     @echo "[+] Docs built"
 
 # Check MSRV compatibility for published crates (lib + CLI). Skips the

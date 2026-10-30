@@ -84,7 +84,9 @@ This document describes the internal architecture and design decisions for `mtp-
 src/
 ├── lib.rs                 # Crate root, re-exports
 │
-├── error.rs               # Error types
+├── error.rs               # PtpError, UsbError (private module, reached through ptp::)
+├── cancel.rs              # CancelToken (private module, re-exported at the root)
+├── virtual_device.rs      # Public home of the virtual-device config and hooks (feature = "virtual-device")
 │
 ├── ptp/                   # PTP protocol implementation
 │   ├── mod.rs             # Module exports
@@ -110,12 +112,24 @@ src/
 │       ├── usb.rs         # UsbBackend (PTP over Transport)
 │       └── wpd/           # WpdBackend (Windows WPD-over-COM, cfg(windows))
 │
-└── transport/             # USB transport abstraction
+└── transport/             # USB transport abstraction, private without feature = "unstable-raw"
     ├── mod.rs             # Transport trait, exports
     ├── nusb.rs            # nusb implementation
     ├── virtual_device/    # Filesystem-backed virtual device (feature = "virtual-device")
     └── mock.rs            # Mock for testing
 ```
+
+## Public surface
+
+- **Stable core**: the crate root's re-exports (the `mtp::` API, `CancelToken`, `UsbSpeed`, `MtpMatchReason`), plus
+  `ptp::`. The root path is the SemVer promise.
+- **`unstable-raw`**, exempt from SemVer: `transport::`, `MtpDeviceBuilder::open_nusb_device`, `PtpSession::open`,
+  `PtpSession::open_reusing_existing`. They're the only places `nusb` and `Transport` appear in a public signature.
+- **`virtual-device`**, exempt from SemVer: `mtp_rs::virtual_device` and `MtpDeviceBuilder::open_virtual`.
+- **Picking a device** needs no raw types: `MtpDevice::list_devices()` or `PtpDevice::list_devices()` return
+  `MtpDeviceInfo`, then `open_by_serial` / `open_by_location` open it.
+
+The policy behind this, and the rule for promoting `ptp::` at 1.0, is in `AGENTS.md` § Public surface and stability.
 
 ## Dependency rules
 
@@ -177,6 +191,8 @@ pub trait Transport: Send + Sync {
 - `send_bulk_streaming` allows memory-efficient uploads (has a default impl that buffers and calls `send_bulk`)
 - `cancel_transfer` enables safe mid-stream download cancellation
 - Clean separation of concerns
+- It's an internal seam, public only with `unstable-raw`: its required-method additions used to break anyone who
+  implemented it, and camera users open a device rather than write a transport
 
 ### 3. Storage as first-class object
 
@@ -216,7 +232,7 @@ let files = device.list_objects(storage_id, None).await?;
 
 ### 6. Newtype wrappers for IDs
 
-**Decision**: `ObjectHandle(u32)`, `StorageId(u32)` instead of raw `u32`.
+**Decision**: `ptp::ObjectHandle(u32)`, `ptp::StorageId(u32)` on the wire, opaque `mtp::ObjectHandle(u64)`, `mtp::StorageId(u64)` above it, instead of raw integers.
 
 **Rationale**:
 - Prevents mixing up object handles and storage IDs
@@ -269,13 +285,16 @@ Errors bubble up through layers with context:
 Transport error (nusb::Error)
          │
          ▼
-    Error::Usb(...)
+    PtpError::Usb(UsbError)   (opaque, so nusb stays out of the API)
          │
          ▼
 Protocol error (bad response code)
          │
          ▼
-    Error::Protocol { code, operation }
+    PtpError::Protocol { code, operation }
+         │
+         ▼
+    mtp::Error (neutral: NotFound, StaleHandle, ExclusiveAccess, ...)
 ```
 
 ### Retryable errors
@@ -298,7 +317,9 @@ impl Error {
 | File                | Responsibility                                |
 |---------------------|-----------------------------------------------|
 | `lib.rs`            | Crate root, public re-exports                 |
-| `error.rs`          | All error types                               |
+| `error.rs`          | `PtpError`, `UsbError`                        |
+| `cancel.rs`         | `CancelToken`                                 |
+| `virtual_device.rs` | Public virtual-device re-exports              |
 | `ptp/codes.rs`      | Operation, response, event, format code enums |
 | `ptp/pack.rs`       | Binary serialization primitives               |
 | `ptp/container.rs`  | USB container format                          |

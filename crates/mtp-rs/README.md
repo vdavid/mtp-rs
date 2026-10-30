@@ -80,7 +80,7 @@ async fn main() -> Result<(), mtp_rs::Error> {
 
 ## Cancellation
 
-Long operations on large folders (Android `/DCIM/Camera` with 1k+ photos, recursive deletes) are made up of many small per-object USB roundtrips. Pass a [`CancelToken`](https://docs.rs/mtp-rs/latest/mtp_rs/cancel/struct.CancelToken.html) to bail mid-loop within one roundtrip's latency:
+Long operations on large folders (Android `/DCIM/Camera` with 1k+ photos, recursive deletes) are made up of many small per-object USB roundtrips. Pass a [`CancelToken`](https://docs.rs/mtp-rs/latest/mtp_rs/struct.CancelToken.html) to bail mid-loop within one roundtrip's latency:
 
 ```rust
 use mtp_rs::{CancelToken, mtp::MtpDevice};
@@ -116,7 +116,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mtp-rs = "0.35"
+mtp-rs = "0.37"
 ```
 
 You'll also need an async runtime. The library is runtime-agnostic, but [tokio](https://github.com/tokio-rs/tokio) is
@@ -130,9 +130,29 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ### MSRV
 
 mtp-rs supports the Rust releases from the last 12 months, currently Rust 1.91 or newer. Raising this minimum is a
-minor version bump (like 0.35 to 0.36), and the changelog always says so. When one of mtp-rs's dependencies ships a
+minor version bump (like 0.36 to 0.37), and the changelog always says so. When one of mtp-rs's dependencies ships a
 release that needs a newer Rust than yours, Cargo's MSRV-aware resolver (on by default with `resolver = "3"` or edition
 2024) picks a version your Rust can build.
+
+## Stability
+
+We're heading to 1.0, and this is already how we work:
+
+- **SemVer covers the stable core**: everything at the crate root, plus `mtp::` and `ptp::`. Before 1.0 a minor can
+  break (0.37 to 0.38), and the changelog tells you how to migrate. `cargo-semver-checks` in CI catches accidental breaks.
+- **Not covered**: the `unstable-raw` and `virtual-device` features, the `tracing` feature's event names and fields, and
+  log output. These can change in any release.
+- **Default values aren't API.** We can change a timeout or a window size in any release. The changelog says so.
+- **Pure fixes ship as patches**, so `cargo update` gets them. Minors are for features and (before 1.0) breaking changes.
+- **Security fixes** may change behavior in a minor. Only the latest release gets fixes (no backports). See
+  [SECURITY.md](https://github.com/vdavid/mtp-rs/blob/main/SECURITY.md).
+- **MSRV**: Rust releases from the last 12 months, so 1.91 today. Raising it is a minor bump with a changelog line, not
+  a SemVer break.
+
+The `unstable-raw` feature is the escape hatch for when you enumerate USB devices with `nusb` yourself or bring your own
+transport. It turns on `mtp_rs::transport`, `MtpDeviceBuilder::open_nusb_device`, and `PtpSession::open`. They expose
+`nusb` types, so any `nusb` bump can change them. Most folks don't need it: list devices with `MtpDevice::list_devices()`
+(or `PtpDevice::list_devices()`), then open by serial or location.
 
 ## Platform notes
 
@@ -340,7 +360,7 @@ device. Enable it in your `Cargo.toml`:
 
 ```toml
 [dev-dependencies]
-mtp-rs = { version = "0.17", features = ["virtual-device"] }
+mtp-rs = { version = "0.37", features = ["virtual-device"] }
 ```
 
 ### Direct usage
@@ -371,6 +391,10 @@ let device = MtpDevice::builder()
 the one you always have to fill in: only you know which directory backs the storage, and opening a device with none
 fails with "VirtualDeviceConfig requires at least one storage". Building configs this way also means a new field in a
 future release won't break your test setup.
+
+Everything for the virtual device lives in `mtp_rs::virtual_device` (the config types, the discovery registry, and the
+fault-injection hooks). It's test support, so it's exempt from SemVer: expect to adjust your fixtures now and then when
+you bump `mtp-rs`.
 
 When `watch_backing_dirs` is `true`, the virtual device watches its backing directories for external changes (files
 created or removed outside of MTP) and emits `ObjectAdded`/`ObjectRemoved` events, just like a real device would.
@@ -403,7 +427,7 @@ This is what most people want. Friendly types, automatic session management, str
 
 - `MtpDevice` - Connect to devices, get info, list storages
 - `Storage` - File operations (list, download, upload, delete, move, copy)
-- `DownloadStream` - Streaming downloads with progress
+- `FileDownload`, `WindowedDownload` - Streaming downloads with progress
 - `DeviceEvent` - Events from the device
 
 ### Low-level API (`ptp::`)
@@ -412,8 +436,7 @@ For when you need raw protocol access (for cameras or maybe debugging).
 
 - `PtpDevice` - Raw device connection
 - `PtpSession` - Manual session control, raw operations
-- `OperationCode`, `ResponseCode` - Protocol constants
-- Container types for building/parsing protocol messages
+- `OperationCode`, `ResponseCode` - Protocol constants, usable with `PtpSession::execute` for vendor operations
 
 With this, you can copy stuff to/from cameras, but there are no other features like reading the battery level,
 trigger capture, read supported formats/sizes, etc. This is intentional, didn't want to bloat the library with

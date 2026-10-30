@@ -8,7 +8,8 @@ This repo is a Cargo workspace. The library lives in `crates/mtp-rs/` and is pub
 
 - `just`: Run all checks: format, lint, test, doc
 - `just fix`: Auto-fix formatting and clippy warnings
-- `just check-all`: Include MSRV check, security audit, license check
+- `just check-all`: Include MSRV check, security audit, license check, and `just semver` (accidental API breaks)
+- `just clippy-stable`: Lint with `unstable-raw` off (part of `just`)
 - `just release-dry`: `cargo publish --dry-run` for both crates
 - `cargo test --workspace --all-features`: Run with proptest fuzzing across the workspace
 
@@ -21,8 +22,11 @@ crates/
       mtp/                   # High-level API (MtpDevice, Storage)
       ptp/                   # Low-level protocol (PtpDevice, PtpSession)
         codes.rs             # OperationCode, ResponseCode, EventCode
-      transport/             # USB abstraction (Transport trait, nusb, mock, virtual_device)
+      transport/             # USB abstraction (Transport trait, nusb, mock, virtual_device). Private
+                             # without the `unstable-raw` feature
+      virtual_device.rs      # Public home of the virtual-device config and test hooks
     tests/integration.rs     # Real-device tests
+    tests/stable_api.rs      # What a consumer can build and read from outside the crate
     examples/                # list_and_download, ptp_diagnose, fuji_capture, etc.
   mtp-rs-cli/                # CLI binary (crates.io: mtp-rs-cli, binary: mtp-rs)
     src/
@@ -62,13 +66,15 @@ fallbacks, >4 GB size resolution, SIC cancel, recovery, the upload partial-handl
 
 **Errors:** `mtp::Error` (re-exported as the crate-root `Error`) is the neutral high-level error with
 backend-agnostic variants (`NotFound`, `StaleHandle`, `AccessDenied`, `Unsupported`, `Busy`,
-`StorageFull`, `Cancelled`, `Disconnected`, …). The rich low-level PTP error is `PtpError` (root and
-`ptp::PtpError`); `ptp::` keeps its detailed response-code errors for camera/protocol users.
+`StorageFull`, `Cancelled`, `Disconnected`, …). The rich low-level PTP error is `ptp::PtpError`, which
+keeps detailed response codes for camera/protocol users. Its `Usb` variant holds an opaque `ptp::UsbError`,
+so no `nusb` type reaches a stable signature; build one with the crate-private `PtpError::from_nusb`, and
+don't add a `From<nusb::Error>`, since a public trait impl would put `nusb` back in the API.
 **PTP strings cap at 254 UTF-16 units**: `pack_string` is fallible and the `Storage` façade refuses a
 longer name with `Error::NameTooLong` before any backend sees it; never truncate on the host side.
 The virtual device truncates like AOSP instead. Why and how: `docs/protocol.md` § Strings.
 
-**Entry points:** `MtpDevice::open_first()`, `PtpDevice::open_first()`, `NusbTransport::list_mtp_devices()`, `mtp::watch_devices()` (hotplug stream), `MtpDevice::reset_by_serial()` (session-less transport reset),
+**Entry points:** `MtpDevice::open_first()`, `PtpDevice::open_first()`, `MtpDevice::list_devices()` and `PtpDevice::list_devices()` (enumerate, then open by serial or location; the PTP one is USB-only), `watch_devices()` (hotplug stream), `MtpDevice::reset_by_serial()` (session-less transport reset),
 `MtpDeviceBuilder::open_virtual()` (feature-gated), `MtpDeviceBuilder::reuse_existing_session(id)`
 (USB-only opt-in for a stable session that survives across host processes)
 
@@ -83,6 +89,48 @@ values), `ObjectFormat` (raw MTP format code + category helpers), `Capabilities`
 (holds the session, returns `FileDownload`), session-releasing `Storage::download_windowed(handle,
 range, window_size)` (returns `WindowedDownload`), and buffered `Storage::download_to_vec(handle)` /
 `Storage::read_range(handle, offset, len)` / `Storage::thumbnail(handle)`.
+
+## Public surface and stability
+
+The release that shaped this is 0.37.0 (#34). The goal: a 1.0 that's only a matter of waiting.
+
+- **Stable core**: what the crate root re-exports (the backend-neutral `mtp::` API, `CancelToken`, `UsbSpeed`,
+  `MtpMatchReason`, `MtpDeviceInfo`), plus `ptp::` in its first-class shape. **The root path is the promise**; nested
+  `mtp::` paths work too. Every new stable item gets a root re-export.
+- **Exempt from SemVer**: the `unstable-raw` feature (`transport::`, `MtpDeviceBuilder::open_nusb_device`,
+  `PtpSession::open`, `PtpSession::open_reusing_existing`), the `virtual-device` feature (`mtp_rs::virtual_device`,
+  `open_virtual`), the `tracing` feature's event names and fields, and log output.
+- **Nothing `nusb`-typed in a stable signature**, including errors and trait impls. `nusb` is 0.x, and its next release
+  must not be able to force an mtp-rs major. Nothing in this repo needs `unstable-raw`: if a test, example, or the CLI
+  starts to, or a consumer does, that's a gap in the stable core, so widen the core.
+- **`ptp::` keeps wire formats private.** `pack`, `CommandContainer`, `DataContainer`, and dataset `from_bytes`/`to_bytes`
+  are `pub(crate)`. Public only where a signature needs them: `ResponseContainer` and `EventContainer` as readable
+  values, `PropertyValue::{to_bytes,from_bytes}` (the raw-bytes property calls), and
+  `ObjectPropListElement::list_from_bytes` (`get_object_prop_list` returns a raw dataset). `mtp::` names no `ptp::` type
+  in a signature except the `From` conversions, and `UtcOffset`, which is shared.
+- **`#[non_exhaustive]` on anything the library produces or a spec can extend.** Caller-built types need a way in:
+  constructors or `Default` plus field assignment. `tests/stable_api.rs` pins that from outside the crate, the only place
+  the attribute bites. Deliberate exceptions: `VirtualDeviceConfig` (see CONTRIBUTING.md), `HotplugEvent` (no third state),
+  and the ID newtypes.
+- **Promoting `ptp::` at 1.0 is decided by data, not now.** During the quiet period, track whether `cargo-semver-checks`
+  or the changelog shows a `ptp::` break. If `ptp::` stayed quiet, it's stable in 1.0. If not, 1.0 ships with `ptp::`
+  behind a feature, and a later 1.x promotes it. Feature-gated to stable is additive; the other direction is breaking.
+- **When to call it 1.0**: track weeks since the last breaking change, per layer (`mtp::` and `ptp::`). At about 8–12
+  weeks, release 1.0, possibly through a `1.0.0-rc.1`.
+
+Policies (the README's "Stability" section says the same to users):
+
+- **Patch for pure fixes**: a fix that changes no API ships as a patch, so `^0.37` users get it through `cargo update`.
+  This matters for data safety: fixes that only land in a minor strand people on the old bug. Minors are for features
+  and, before 1.0, breaking changes.
+- **Changing a default** (timeouts, window sizes) isn't breaking. Put it in the changelog.
+- **MSRV**: Rust releases from the last 12 months. A raise is a minor bump with a changelog line, not a SemVer break. See
+  [docs/dependency-updates.md](docs/dependency-updates.md).
+- **Security fixes** may change behavior in a minor. Latest release only, no backports. See [SECURITY.md](SECURITY.md).
+  Data-safety bugs don't go to RustSec.
+
+`just semver` compares the default-feature surface against the latest crates.io release, so the exempt features stay out
+of it. It reads the version in `Cargo.toml`: a deliberate break passes once the version says so, and fails otherwise.
 
 ## Known device quirks
 
@@ -152,10 +200,12 @@ range, window_size)` (returns `WindowedDownload`), and buffered `Storage::downlo
 
 - **Unit**: `cargo test --workspace` (uses mock transport)
 - **Filesystem-watcher tests run in their own pass** (`just test` does this for you: everything else, then `fs_watcher` with `--test-threads=1`). They wait on real OS filesystem-event delivery, so inside the ~400-test parallel pool a loaded machine starves them past their poll budget and they fail as a group while passing every time alone. Don't fold them back in, and don't "fix" a flake there by inflating the timeout. Each one also calls `wait_for_watcher_ready` first, which writes a probe file and waits for the watcher to report it: `notify` arms its stream on a background thread, so a write issued straight after `open_virtual` can land before anything is listening. The probe file is deliberately left in place, since deleting it queues a late `ObjectRemoved` that lands after the drain and steals the next test's first event.
-- **Virtual device**: `cargo test -p mtp-rs --features virtual-device` (full protocol tests against local filesystem). `VirtualDeviceConfig` implements `Default`, so build it as `VirtualDeviceConfig { storages: vec![...], ..Default::default() }` and state only the fields a test actually exercises; new fields must land with a default so consumers don't break (see CONTRIBUTING.md). `VirtualStorageConfig` has no `Default` (an unset `backing_dir` fails silently). Fault injection: `force_partial_read_caps` (short/stall reads), `force_cancel_wedge` / `force_operation_wedge` (#18), `force_object_info_error` and `VirtualDeviceConfig::undescribable_objects` (partially-readable folders, #22). Capability shaping: `supports_partial_object` / `supports_partial_object_64` pick which partial-read ops the device advertises AND serves (both `false` models libhaze/Sphaira, where `download(ByteRange::Full)` is the only read). `GetObjectPropList` is advertised and served by default (modern Android does), so every non-root virtual-device listing takes the fast path; `supports_object_prop_list: false` turns it off, and `prop_list_declined_properties` declines single properties. It models AOSP (depth 1 includes the folder itself, unknown properties come back Undefined) except that it serves `DateCreated` alone, so both listing paths match field for field. A prop-list answer that would include an `undescribable_objects` / `force_object_info_error` object fails whole with `GeneralError`, so #22 skips still happen on the per-handle fallback. Dates: objects report their backing file's mtime (and birth time) on the clock set by `utc_offset` (default UTC, zoneless unless `dates_include_offset`), and an upload's `DateModified` becomes the file's mtime, so a fixture seeds a date with `File::set_modified`.
+- **Virtual device**: `cargo test -p mtp-rs --features virtual-device` (full protocol tests against local filesystem). Everything public is in `mtp_rs::virtual_device`. `VirtualDeviceConfig` implements `Default`, so build it as `VirtualDeviceConfig { storages: vec![...], ..Default::default() }` and state only the fields a test actually exercises; new fields must land with a default so consumers don't break (see CONTRIBUTING.md). `VirtualStorageConfig` has no `Default` (an unset `backing_dir` fails silently). Fault injection: `force_partial_read_caps` (short/stall reads), `force_cancel_wedge` / `force_operation_wedge` (#18), `force_object_info_error` and `VirtualDeviceConfig::undescribable_objects` (partially-readable folders, #22). Capability shaping: `supports_partial_object` / `supports_partial_object_64` pick which partial-read ops the device advertises AND serves (both `false` models libhaze/Sphaira, where `download(ByteRange::Full)` is the only read). `GetObjectPropList` is advertised and served by default (modern Android does), so every non-root virtual-device listing takes the fast path; `supports_object_prop_list: false` turns it off, and `prop_list_declined_properties` declines single properties. It models AOSP (depth 1 includes the folder itself, unknown properties come back Undefined) except that it serves `DateCreated` alone, so both listing paths match field for field. A prop-list answer that would include an `undescribable_objects` / `force_object_info_error` object fails whole with `GeneralError`, so #22 skips still happen on the per-handle fallback. Dates: objects report their backing file's mtime (and birth time) on the clock set by `utc_offset` (default UTC, zoneless unless `dates_include_offset`), and an upload's `DateModified` becomes the file's mtime, so a fixture seeds a date with `File::set_modified`.
 - **Integration**: `cargo test -p mtp-rs --test integration -- --ignored --nocapture` (needs device). Destructive tests pick a writable root folder from a priority list (Android `Download`, Garmin `Music`, Kindle `documents`, etc.); set `MTP_TEST_FOLDER=Name` to override. A timeout or missing device skips a test only until the device has answered once in the run; after that it fails, so a wedge mid-run can't pass as a row of skips (#43). See `crates/mtp-rs/tests/integration.rs` header for full details. To compare the two listing paths on a real device (read-only, prints timings): `MTP_TEST_LIST_FOLDER=/DCIM/Camera cargo test -p mtp-rs --test integration prop_list -- --ignored --nocapture`, or `cargo run --release -p mtp-rs --example list_speed -- DCIM/Camera`.
 - **CLI**: `cargo test -p mtp-rs-cli --features virtual-device` (runs the built binary against a virtual device)
 - **Property**: `cargo test --workspace --all-features` (proptest fuzzing)
+- **Stable API**: `tests/stable_api.rs` builds and reads the stable types from outside the crate, with no features
+- **Windows from a Mac**: `cargo clippy --target x86_64-pc-windows-msvc -p mtp-rs --all-targets --all-features -- -D warnings` type-checks the WPD backend locally, which CI otherwise only does on push
 
 ## Design principles
 
@@ -792,6 +842,8 @@ Run `just check` before committing. `cargo fmt`, `cargo clippy -D warnings`, tes
 - [docs/architecture.md](docs/architecture.md), [docs/protocol.md](docs/protocol.md)
 - [docs/debugging.md](docs/debugging.md): debugging hub. Real-device setup and recovery (ptpcamerad blocker, software reset, fast-fail timeouts, device gotchas) plus USB capture. Read before touching physical hardware.
 - [docs/releasing.md](docs/releasing.md): how to publish a new version to crates.io, and how `mtp-rs-cli-v*` tags build prebuilt CLI binaries and the Homebrew formula via dist
+- [SECURITY.md](SECURITY.md): how to report a vulnerability, and that only the latest release gets fixes.
+- [docs/ptp-camera-features.md](docs/ptp-camera-features.md): camera control through `ptp::` (properties, capture, events), using only stable API.
 - [docs/dependency-updates.md](docs/dependency-updates.md): playbook for Renovate PRs. How the config groups and automerges, how to read a red PR, crates that must move together, per-dependency holds (`nusb`, `windows`), the MSRV policy (why nothing is ever capped for the MSRV, and how CI checks it), and everything an MSRV raise touches. Read before merging or closing a dependency PR.
 - [docs/notes/android-wedges-and-the-reset-kill-switch.md](docs/notes/android-wedges-and-the-reset-kill-switch.md): what a day of hardware work established about wedged Android MTP sessions. The two wedge signatures (Samsung errors, Pixel hangs), the dropped-future trigger, why the transport reset kills a Pixel's MTP function, what recovers what, and which claims rest on a single observation. Read before changing reset or recovery guidance.
 - [docs/notes/community-threads.md](docs/notes/community-threads.md): required reading before working on issues or PRs. Recap of every GitHub thread so far, known device quirks, and recurring contributors. Update after work that affects community-facing context.

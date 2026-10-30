@@ -10,6 +10,7 @@ Publishing is manual. There's no CI automation for it.
 ## Versioning
 
 - The library version drives breaking changes for downstream lib consumers and the CLI's `mtp-rs = "X.Y.Z"` dep. Bump it with normal SemVer rules.
+- A fix that changes no API ships as a patch (0.37.1), so `^0.37` users get it through `cargo update`. Minors are for features and, before 1.0, breaking changes.
 - The CLI version can move independently. When the CLI ships a new feature or fix without a lib bump, only bump the CLI.
 - When you bump the lib, also bump the CLI's `mtp-rs = "X.Y.Z"` dep to the new lib version (in `crates/mtp-rs-cli/Cargo.toml`). Usually you'll release both together.
 
@@ -19,7 +20,7 @@ Publishing is manual. There's no CI automation for it.
    - Library: `crates/mtp-rs/Cargo.toml` → `version = "X.Y.Z"`
    - CLI: `crates/mtp-rs-cli/Cargo.toml` → `version = "A.B.C"` and `mtp-rs = { version = "X.Y.Z", ... }` if the lib also moved
 2. **Update `CHANGELOG.md`** at the repo root with one entry covering both crates. Tag each bullet with `[lib]`, `[cli]`, or `[workspace]` so readers can skim.
-3. **Run `just check-all`** (format, clippy, test, doc, MSRV, audit, deny). The release commit must produce zero warnings, zero formatting diffs, zero doc-link issues. Re-run until clean.
+3. **Run `just check-all`** (format, clippy, test, doc, MSRV, audit, deny, semver). `just semver` reads the bumped version, so a deliberate break passes only once step 1 says so, and it needs network access to fetch the baseline from crates.io. The release commit must produce zero warnings, zero formatting diffs, zero doc-link issues. Re-run until clean.
 
    This also refreshes `Cargo.lock` to the new versions, since the workspace members resolve by path: editing their `Cargo.toml` and building is all it takes. Check that `Cargo.lock` shows the new versions and goes into the release commit. (No `cargo update --precise` needed; against path deps it reports only "unchanged dependencies" and does nothing.)
 4. **Commit and tag**. Tag the workspace release with the lib version (since that's the API contract downstream consumers track):
