@@ -15,8 +15,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// The host side refuses an over-long string ([`pack_string`] errors), but a device has no one to
 /// refuse to: a backing file can have a 255-unit name (Linux allows 255 bytes) and still has to be
 /// listed. AOSP's `MtpStringBuffer::writeToPacket` cuts at [`MAX_STRING_UNITS`] units; this does
-/// too, but backs off rather than split a surrogate pair, which a host's strict UTF-16 decode
-/// would reject.
+/// too, but backs off rather than split a surrogate pair, which would reach the host as a lone
+/// surrogate.
 pub(super) fn pack_device_string(s: &str) -> Vec<u8> {
     let mut units = 0;
     let end = s

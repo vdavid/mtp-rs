@@ -205,7 +205,7 @@ pub fn pack_string(s: &str) -> Result<Vec<u8>, crate::PtpError> {
 
 /// Unpack an MTP string from a buffer.
 ///
-/// Returns the decoded string and the number of bytes consumed.
+/// Returns the decoded string and the number of bytes consumed. A lone surrogate becomes U+FFFD.
 pub fn unpack_string(buf: &[u8]) -> Result<(String, usize), crate::PtpError> {
     if buf.is_empty() {
         return Err(crate::PtpError::invalid_data(
@@ -245,11 +245,10 @@ pub fn unpack_string(buf: &[u8]) -> Result<(String, usize), crate::PtpError> {
         code_units.push(code_unit);
     }
 
-    // Decode UTF-16 to String
-    let s = String::from_utf16(&code_units)
-        .map_err(|_| crate::PtpError::invalid_data("invalid UTF-16 encoding"))?;
-
-    Ok((s, required))
+    // Lossy on purpose: a device that cuts an over-long name at the cap can split a surrogate pair
+    // (#50), and failing here would fail the whole object-info read, so one bad name would hide
+    // its whole folder. Handles address objects, so a replaced character doesn't lose the object.
+    Ok((String::from_utf16_lossy(&code_units), required))
 }
 
 // --- Array encoding/decoding ---
@@ -439,8 +438,24 @@ mod tests {
     fn unpack_string_errors() {
         assert!(unpack_string(&[]).is_err());
         assert!(unpack_string(&[0x03, 0x41, 0x00]).is_err()); // truncated
-                                                              // Invalid surrogate pair
-        assert!(unpack_string(&[0x02, 0x00, 0xD8, 0x00, 0x00]).is_err());
+    }
+
+    #[test]
+    fn unpack_string_replaces_a_name_cut_mid_surrogate_pair() {
+        // A device that cuts an over-long name at the 254-unit cap can land between the two
+        // halves of an emoji (#50). Buffer: len=3, 'A', lone high surrogate, NUL.
+        let buf: &[u8] = &[0x03, b'A', 0x00, 0x3D, 0xD8, 0x00, 0x00];
+        let (s, consumed) = unpack_string(buf).unwrap();
+        assert_eq!(s, "A\u{FFFD}");
+        assert_eq!(consumed, 7);
+    }
+
+    #[test]
+    fn unpack_string_replaces_a_lone_low_surrogate_mid_string() {
+        // Buffer: len=4, 'A', lone low surrogate, 'B', NUL.
+        let buf: &[u8] = &[0x04, b'A', 0x00, 0x00, 0xDE, b'B', 0x00, 0x00, 0x00];
+        let (s, _) = unpack_string(buf).unwrap();
+        assert_eq!(s, "A\u{FFFD}B");
     }
 
     #[test]

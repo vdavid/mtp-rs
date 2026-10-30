@@ -48,6 +48,7 @@ Strings are encoded as:
 
 - **Host (what we send)**: `pack_string` returns `PtpError::StringTooLong` and nothing goes on the wire; the neutral API refuses a name up front with `Error::NameTooLong` (`Storage::upload` / `create_folder` / `rename`). Never truncate: that would write a different name than the caller asked for (mtp-rs#49).
 - **Device (the virtual device)**: `pack_device_string` cuts at 254 units the way AOSP's `MtpStringBuffer::writeToPacket` does, since a device must still list a backing file with a longer name. It backs off rather than split a surrogate pair, which AOSP doesn't bother to do.
+- **Host (what we receive)**: `unpack_string` decodes lossily, so a lone surrogate becomes U+FFFD. One bad name must not fail a whole folder listing (mtp-rs#50). AOSP's cut can only split a pair where a name can exceed 254 units with non-ASCII in it: on ext4 and f2fs (255 bytes of UTF-8) a name over 254 units is all ASCII, so that takes something like an exFAT SD card or another responder.
 
 ## Arrays
 
