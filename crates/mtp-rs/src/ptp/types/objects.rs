@@ -15,7 +15,11 @@ use crate::ptp::{ObjectFormatCode, ObjectHandle, ObjectPropertyCode, PropertyDat
 /// Object information returned by GetObjectInfo.
 ///
 /// Contains file/folder metadata including name, size, timestamps, and hierarchy info.
+///
+/// To send one with [`PtpSession::send_object_info`](crate::ptp::PtpSession::send_object_info),
+/// start from `ObjectInfo::default()` and set the fields you need.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ObjectInfo {
     /// Object handle (set after parsing, not part of protocol data).
     pub handle: ObjectHandle,
@@ -320,6 +324,7 @@ impl ObjectInfo {
 
 /// One element of a `GetObjectPropList` dataset (MTP 1.1 E.2.1.1): one property of one object.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct ObjectPropListElement {
     /// The object the property belongs to.
     pub handle: ObjectHandle,

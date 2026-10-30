@@ -395,6 +395,7 @@ async fn resolve_readfile_override(
                     skipped.error
                 );
             }
+            Ok(_) => {}
             Err(e) => {
                 tlog!("MTP_TEST_READFILE: object fetch failed: {:?}", e);
                 return None;
@@ -438,6 +439,7 @@ async fn find_file_recursive_early_exit(
                 Ok(ListingItem::Skipped(skipped)) => {
                     tlog!("Handle {} unreadable: {}", skipped.handle.0, skipped.error);
                 }
+                Ok(_) => {}
                 Err(e) => {
                     tlog!("Object fetch failed: {:?}", e);
                     return None;

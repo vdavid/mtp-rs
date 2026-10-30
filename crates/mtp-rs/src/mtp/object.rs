@@ -4,7 +4,12 @@ use crate::mtp::{DateTime, ObjectFormat};
 use crate::ptp::{AssociationType, ObjectFormatCode, ObjectInfo as PtpObjectInfo};
 
 /// Information needed to create a new object.
+///
+/// Build it with [`file`](Self::file), [`folder`](Self::folder), or
+/// [`with_format`](Self::with_format), then [`with_modified`](Self::with_modified) if you have a
+/// date.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct NewObjectInfo {
     /// Filename (max 254 characters, no /, \, or null bytes)
     pub filename: String,

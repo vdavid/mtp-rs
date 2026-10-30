@@ -20,6 +20,7 @@ use crate::ptp::pack::{
 /// Used for device property values in `DevicePropDesc`, as well as
 /// for get/set device property operations.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum PropertyValue {
     /// Signed 8-bit integer.
     Int8(i8),
@@ -140,6 +141,7 @@ impl PropertyValue {
 ///
 /// Describes how allowed values are specified for a property.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum PropertyFormType {
     /// No constraints (any value valid).
     #[default]
@@ -183,6 +185,7 @@ impl PropertyFormType {
 ///
 /// Used when `PropertyFormType::Range` is specified.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct PropertyRange {
     /// Minimum allowed value.
     pub min: PropertyValue,
@@ -238,6 +241,7 @@ impl PropertyRange {
 ///
 /// Returned by the GetDevicePropDesc operation.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DevicePropDesc {
     /// Property code identifying this property.
     pub property_code: DevicePropertyCode,

@@ -167,6 +167,7 @@ fn cancel_was_not_acted_on(result: Result<(), TransferError>) -> Result<bool, cr
 ///
 /// Mirrors `nusb::Speed` so callers don't need a direct `nusb` dependency.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[non_exhaustive]
 pub enum UsbSpeed {
     /// USB 1.0 low-speed: 1.5 Mbit/s.
     Low,

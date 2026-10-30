@@ -143,6 +143,8 @@ impl From<ObjectFormatCode> for ObjectFormat {
 /// Tenths of a second are accepted on receive and dropped, so a time is whole seconds. Equality is
 /// field by field: `12:00Z` and `13:00+0100` are the same instant but not equal values.
 ///
+/// Build one with [`new`](Self::new) or [`from_unix_seconds`](Self::from_unix_seconds).
+///
 /// # Writing a date to a device
 ///
 /// [`NewObjectInfo::with_modified`](crate::mtp::NewObjectInfo::with_modified) sends the value as
@@ -169,6 +171,7 @@ impl From<ObjectFormatCode> for ObjectFormat {
 /// assert_eq!((utc.hour, utc.offset), (12, Some(UtcOffset::UTC)));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DateTime {
     /// Year, 0-9999.
     pub year: u16,
@@ -257,6 +260,7 @@ impl DateTime {
 
 /// Type of storage medium.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum StorageType {
     /// Undefined storage type.
     #[default]
@@ -288,6 +292,7 @@ impl From<PtpStorageType> for StorageType {
 
 /// Type of filesystem on a storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum FilesystemType {
     /// Undefined filesystem type.
     #[default]
@@ -316,6 +321,7 @@ impl From<PtpFs> for FilesystemType {
 
 /// Metadata for one object (file or folder) on a device.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ObjectInfo {
     /// Opaque handle for this object (see [`ObjectHandle`]).
     pub handle: ObjectHandle,
@@ -385,6 +391,7 @@ impl ObjectInfo {
 /// low-level [`crate::ptp`] types, not here. What a device can *do* is reported separately via
 /// [`Capabilities`].
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct DeviceInfo {
     /// Manufacturer name, if reported.
     pub manufacturer: String,
@@ -409,6 +416,7 @@ impl DeviceInfo {
 
 /// Description of a single storage on a device, backend-neutral.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct StorageInfo {
     /// Opaque identifier for this storage (see [`StorageId`]).
     pub id: StorageId,
@@ -452,6 +460,7 @@ impl StorageInfo {
 /// Advertised support can still be wrong on some devices (see the Fujifilm quirk in `AGENTS.md`),
 /// so treat these as a strong hint, not a guarantee.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct Capabilities {
     /// Can create new files (upload).
     pub can_upload: bool,

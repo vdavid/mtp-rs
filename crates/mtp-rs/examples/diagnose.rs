@@ -69,6 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     rec_skipped += 1;
                     continue;
                 }
+                _ => continue,
             };
             rec_total += 1;
             if obj.is_folder() {

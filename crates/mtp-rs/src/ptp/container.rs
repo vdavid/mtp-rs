@@ -186,6 +186,7 @@ impl DataContainer {
 
 /// Response container from the device.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ResponseContainer {
     /// Response code indicating success or failure.
     pub code: ResponseCode,
@@ -261,6 +262,7 @@ impl ResponseContainer {
 
 /// Event container from the device.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct EventContainer {
     /// Event code identifying the event type.
     pub code: EventCode,

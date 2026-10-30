@@ -5,6 +5,7 @@ use crate::ptp::{EventCode, EventContainer};
 
 /// Events from an MTP device.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum DeviceEvent {
     /// A new object was added.
     ObjectAdded {

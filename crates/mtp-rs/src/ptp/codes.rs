@@ -13,6 +13,7 @@ use num_enum::{FromPrimitive, IntoPrimitive};
 /// These codes identify the operation being requested in a PTP command container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, FromPrimitive, IntoPrimitive)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum OperationCode {
     /// Get device information (capabilities, manufacturer, etc.).
     GetDeviceInfo = 0x1001,
@@ -99,6 +100,7 @@ pub enum OperationCode {
 /// These codes indicate the result of an operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, FromPrimitive, IntoPrimitive)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum ResponseCode {
     /// Operation completed successfully.
     Ok = 0x2001,
@@ -158,6 +160,7 @@ pub enum ResponseCode {
 /// These codes identify events that the device sends asynchronously.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, FromPrimitive, IntoPrimitive)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum EventCode {
     /// Cancel an in-progress transaction.
     CancelTransaction = 0x4001,
@@ -189,6 +192,7 @@ pub enum EventCode {
 /// These codes identify the format/type of objects stored on the device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, FromPrimitive, IntoPrimitive)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum ObjectFormatCode {
     /// Undefined/unknown format.
     Undefined = 0x3000,
@@ -349,6 +353,7 @@ impl Default for ObjectFormatCode {
 /// These codes identify object properties that can be get/set via MTP operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, FromPrimitive, IntoPrimitive)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum ObjectPropertyCode {
     /// Storage ID containing the object.
     StorageId = 0xDC01,
@@ -378,6 +383,7 @@ pub enum ObjectPropertyCode {
 /// These codes identify the data type of property values in property descriptors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, FromPrimitive, IntoPrimitive)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum PropertyDataType {
     /// Undefined type (0x0000).
     Undefined = 0x0000,
@@ -439,6 +445,7 @@ impl PropertyDataType {
 /// support device properties.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, FromPrimitive, IntoPrimitive)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum DevicePropertyCode {
     /// Undefined property.
     Undefined = 0x5000,

@@ -45,6 +45,7 @@ use std::sync::Arc;
 ///         ListingItem::Skipped(skipped) => {
 ///             eprintln!("could not read handle {}: {}", skipped.handle.0, skipped.error);
 ///         }
+///         _ => {}
 ///     }
 /// }
 /// # Ok(())
@@ -135,6 +136,7 @@ impl ObjectListing {
 /// The streaming and collecting APIs sit over the same stream, so they agree on what a per-object
 /// failure means: this enum is the streaming half of the [`ObjectCollection`] split.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ListingItem {
     /// An object whose metadata the device returned.
     Object(ObjectInfo),
@@ -156,6 +158,7 @@ impl ListingItem {
 /// A per-handle metadata failure that was safe to skip while reading the
 /// other objects in the same directory.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct SkippedObject {
     /// The object handle whose metadata request failed.
     pub handle: ObjectHandle,
@@ -165,6 +168,7 @@ pub struct SkippedObject {
 
 /// A completed tolerant directory read: what was readable, and what wasn't.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ObjectCollection {
     /// Every object whose metadata was read successfully.
     pub objects: Vec<ObjectInfo>,

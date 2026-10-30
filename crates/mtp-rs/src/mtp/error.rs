@@ -277,6 +277,7 @@ pub(crate) fn map_response_code(code: ResponseCode) -> Error {
 /// unless they match on `UploadError` explicitly.
 #[derive(Debug, Error)]
 #[error("{source}")]
+#[non_exhaustive]
 pub struct UploadError {
     /// The underlying failure.
     #[source]

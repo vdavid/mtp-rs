@@ -69,6 +69,7 @@ impl UtcOffset {
 /// Use [`DateTime::new()`] to create validated instances, or [`DateTime::is_valid()`]
 /// to check existing instances.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct DateTime {
     /// Year (0-9999)
     pub year: u16,
@@ -330,7 +331,8 @@ impl DateTime {
     /// );
     ///
     /// // Invalid DateTime returns None
-    /// let invalid = DateTime { month: 13, ..dt };
+    /// let mut invalid = dt;
+    /// invalid.month = 13;
     /// assert_eq!(invalid.format(), None);
     /// ```
     #[must_use]

@@ -12,6 +12,7 @@ use num_enum::{FromPrimitive, IntoPrimitive};
 /// Type of storage medium.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, IntoPrimitive)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum StorageType {
     /// Undefined storage type.
     Undefined = 0,
@@ -38,6 +39,7 @@ impl Default for StorageType {
 /// Type of filesystem on the storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, IntoPrimitive)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum FilesystemType {
     /// Undefined filesystem type.
     Undefined = 0,
@@ -62,6 +64,7 @@ impl Default for FilesystemType {
 /// Access capability of the storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, IntoPrimitive)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum AccessCapability {
     /// Read-write access.
     ReadWrite = 0,
@@ -84,6 +87,7 @@ impl Default for AccessCapability {
 /// Protection status of an object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, IntoPrimitive)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum ProtectionStatus {
     /// No protection.
     None = 0,
@@ -104,6 +108,7 @@ impl Default for ProtectionStatus {
 /// Association type for objects (folder/container type).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, IntoPrimitive)]
 #[repr(u16)]
+#[non_exhaustive]
 pub enum AssociationType {
     /// No association (regular file).
     None = 0,

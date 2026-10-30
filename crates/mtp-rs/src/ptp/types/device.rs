@@ -14,6 +14,7 @@ use crate::ptp::{EventCode, ObjectFormatCode, OperationCode};
 ///
 /// Contains device capabilities, manufacturer info, and supported operations.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct DeviceInfo {
     /// PTP standard version (e.g., 100 = v1.00).
     pub standard_version: u16,
@@ -192,6 +193,7 @@ impl DeviceInfo {
 ///
 /// Contains storage capacity, type, and access information.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct StorageInfo {
     /// Type of storage medium.
     pub storage_type: StorageType,

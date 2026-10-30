@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 /// Progress information for transfers.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Progress {
     /// Bytes transferred so far.
     pub bytes_transferred: u64,

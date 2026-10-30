@@ -37,6 +37,7 @@ use std::time::Duration;
 /// on other platforms it uses USB. `Usb` forces PTP-over-USB (e.g. a Zadig/WinUSB-bound camera on
 /// Windows); `Wpd` forces Windows WPD-over-COM (and errors as unsupported off Windows).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Backend {
     /// Platform default: Windows → WPD then USB; elsewhere → USB.
     #[default]
@@ -52,6 +53,7 @@ pub enum Backend {
 /// Used by the backend's download / read-range primitives to express whole-file, resume, and
 /// bounded-window reads with one type. The façade's download conveniences all desugar to this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ByteRange {
     /// The whole object, `[0, size)`.
     Full,

@@ -20,6 +20,7 @@ impl UsbError {
 
 /// The main error type for mtp-rs operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum PtpError {
     /// USB communication error
     #[error("USB error: {0}")]
