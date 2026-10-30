@@ -14,6 +14,11 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Fixed
+
+- **[lib] Pulling the USB cable mid-transfer on macOS now reads as `Disconnected`**, where the first error after the pull used to arrive as `Io("unknown (error 0xe00002ed)")`. macOS fails the in-flight transfer with `kIOReturnNotResponding` and the next one with `kIOReturnNotOpen`, and nusb maps neither to a disconnect, so apps showed a generic I/O failure for a pulled cable. Both codes now map to `PtpError::Disconnected` (and `Error::Disconnected`), including during a cancel's drain. Reported in [#53](https://github.com/vdavid/mtp-rs/issues/53).
+- **[cli] A cable pulled mid-command on macOS says "device disconnected"**, where it used to print a raw IOKit error code.
+
 ## [0.36.0] - 2026-10-28
 
 Library `0.36.0` and CLI `0.11.1`. A file or folder name longer than MTP allows is refused up front instead of garbling the transfer.

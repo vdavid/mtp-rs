@@ -100,6 +100,33 @@ fn parse_device_status(data: &[u8]) -> Option<(u16, Vec<u8>)> {
 /// subsequent transfer on the endpoint (observed on the Panasonic Lumix
 /// DMC-TZ61, issue #12: a re-run of `ptp_diagnose` failed at `GetDeviceInfo`
 /// with "endpoint stalled" from the previous run's property probing).
+/// `kIOReturnNotResponding`: what macOS returns on the transfer in flight when the
+/// cable is pulled.
+#[cfg(target_os = "macos")]
+const IO_RETURN_NOT_RESPONDING: u32 = 0xe000_02ed;
+/// `kIOReturnNotOpen`: what macOS returns on the next transfer after a pulled cable.
+#[cfg(target_os = "macos")]
+const IO_RETURN_NOT_OPEN: u32 = 0xe000_02cd;
+
+/// Whether a transfer failed because the device is gone.
+///
+/// nusb (0.2.8) maps only `kIOReturnNoDevice` to `TransferError::Disconnected` on
+/// macOS. A real cable pull returns `kIOReturnNotResponding` on the in-flight transfer
+/// and `kIOReturnNotOpen` on the next one, both as `Unknown`, so we fold those in
+/// here (verified on Pixel 9 Pro XL, macOS 27.0.1, cable pulled mid-upload,
+/// 2026-10-30, #53). A wedged-but-plugged device answering `NotResponding` would also
+/// read as a disconnect; that's the lesser evil, since the caller's hotplug watcher
+/// settles real presence. Every site that classifies a `TransferError` must ask this,
+/// not match `TransferError::Disconnected` directly.
+fn is_disconnect(err: TransferError) -> bool {
+    match err {
+        TransferError::Disconnected => true,
+        #[cfg(target_os = "macos")]
+        TransferError::Unknown(IO_RETURN_NOT_RESPONDING | IO_RETURN_NOT_OPEN) => true,
+        _ => false,
+    }
+}
+
 fn clear_halt_if_stalled<T, D>(ep: &mut nusb::Endpoint<T, D>, err: TransferError) -> crate::PtpError
 where
     T: nusb::transfer::BulkOrInterrupt,
@@ -518,6 +545,9 @@ impl NusbTransport {
 
     /// Convert a nusb TransferError to crate::PtpError.
     fn convert_transfer_error(err: TransferError) -> crate::PtpError {
+        if is_disconnect(err) {
+            return crate::PtpError::Disconnected;
+        }
         match err {
             // send_bulk uses transfer_blocking, which cancels the transfer on
             // timeout and returns Cancelled. Map to Timeout so that
@@ -943,10 +973,8 @@ impl Transport for NusbTransport {
                                         Ok(false) // Data, keep draining
                                     }
                                 }
+                                Err(e) if is_disconnect(e) => Err(crate::PtpError::Disconnected),
                                 Err(TransferError::Cancelled) => Ok(true),
-                                Err(TransferError::Disconnected) => {
-                                    Err(crate::PtpError::Disconnected)
-                                }
                                 Err(_) => Ok(true),
                             }
                         }
@@ -1164,7 +1192,7 @@ impl Transport for NusbTransport {
                 None => break Ok(drained),
                 Some(c) => match c.status {
                     Ok(()) => drained += c.actual_len,
-                    Err(TransferError::Disconnected) => break Err(crate::PtpError::Disconnected),
+                    Err(e) if is_disconnect(e) => break Err(crate::PtpError::Disconnected),
                     Err(e) => {
                         let _ = clear_halt_if_stalled(&mut ep, e);
                         break Ok(drained);
@@ -1253,6 +1281,47 @@ mod tests {
             buf.extend_from_slice(&p.to_le_bytes());
         }
         buf
+    }
+
+    #[test]
+    fn disconnect_converts_to_disconnected() {
+        assert!(is_disconnect(TransferError::Disconnected));
+        assert!(matches!(
+            NusbTransport::convert_transfer_error(TransferError::Disconnected),
+            crate::PtpError::Disconnected
+        ));
+    }
+
+    #[test]
+    fn other_transfer_errors_stay_io() {
+        for err in [
+            TransferError::Stall,
+            TransferError::Fault,
+            TransferError::InvalidArgument,
+            TransferError::Unknown(0x1234),
+        ] {
+            assert!(!is_disconnect(err), "{err:?}");
+            assert!(matches!(
+                NusbTransport::convert_transfer_error(err),
+                crate::PtpError::Io(_)
+            ));
+        }
+    }
+
+    /// Pulling the cable mid-transfer on macOS fails the in-flight transfer with
+    /// `kIOReturnNotResponding` and the next one with `kIOReturnNotOpen`, both of which
+    /// nusb (0.2.8) leaves as `Unknown`. Both must read as a disconnect (#53).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_pulled_cable_codes_convert_to_disconnected() {
+        for code in [0xe000_02ed, 0xe000_02cd] {
+            let err = TransferError::Unknown(code);
+            assert!(is_disconnect(err), "{code:#x}");
+            assert!(matches!(
+                NusbTransport::convert_transfer_error(err),
+                crate::PtpError::Disconnected
+            ));
+        }
     }
 
     #[test]

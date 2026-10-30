@@ -135,6 +135,11 @@ range, window_size)` (returns `WindowedDownload`), and buffered `Storage::downlo
   session reuse disabled, the first CLI process succeeded and the second found the recorder back in
   `audio-midi` mode; with reuse enabled, two consecutive CLI processes both succeeded and left it in
   `mtp` mode.
+- **macOS reports a pulled cable as two unmapped IOKit codes**: `kIOReturnNotResponding` (`0xe00002ed`) on the
+  in-flight transfer and `kIOReturnNotOpen` (`0xe00002cd`) on the next, which nusb 0.2.8 leaves as
+  `TransferError::Unknown`. `is_disconnect` in `transport/nusb.rs` folds both into `PtpError::Disconnected`; any site
+  that classifies a `TransferError` must ask it rather than match `TransferError::Disconnected` (Pixel 9 Pro XL, macOS
+  27.0.1, cable pulled mid-upload, 2026-10-30, #53).
 
 ## Testing
 
