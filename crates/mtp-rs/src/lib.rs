@@ -41,8 +41,8 @@
 #[macro_use]
 mod trace;
 
-pub mod cancel;
-pub mod error;
+mod cancel;
+mod error;
 pub mod mtp;
 pub mod ptp;
 #[cfg(feature = "virtual-device")]
@@ -55,9 +55,9 @@ mod transport;
 
 pub use cancel::CancelToken;
 
-// The crate root surfaces the backend-neutral high-level API. `Error` is the neutral
-// `mtp::Error`; the rich low-level PTP error stays available as `PtpError` (and under `ptp::`).
-pub use error::PtpError;
+// The crate root surfaces the backend-neutral high-level API. `Error` is the neutral `mtp::Error`;
+// the rich low-level PTP error lives at `ptp::PtpError`.
+pub(crate) use error::PtpError;
 pub use mtp::{Error, UploadError};
 
 // Backend-neutral high-level types (the default vocabulary for `mtp::`). These root paths are the
@@ -70,10 +70,6 @@ pub use mtp::{
     StorageInfo, StorageType, UtcOffset, WindowedDownload, DEFAULT_CANCEL_TIMEOUT,
     DEFAULT_DOWNLOAD_WINDOW, DEFAULT_SETTLE_DELAY, MAX_NAME_UNITS,
 };
-
-// Low-level PTP escape hatch for cameras / protocol work. These keep their PTP-specific
-// shapes; reach for them via `ptp::` when the neutral surface isn't enough.
-pub use ptp::{receive_stream_to_stream, EventCode, OperationCode, ReceiveStream, ResponseCode};
 
 // The two USB-flavored facts `MtpDeviceInfo` carries: link speed (for example to warn about a slow
 // cable in a UI) and why the device counted as MTP. Neither exposes `nusb`.

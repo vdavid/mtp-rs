@@ -46,8 +46,9 @@ impl PropertyValue {
     ///
     /// # Errors
     ///
-    /// [`PtpError::StringTooLong`](crate::PtpError::StringTooLong) for a string longer than PTP
-    /// can carry (see [`pack_string`]). Every other variant always serializes.
+    /// [`PtpError::StringTooLong`](crate::ptp::PtpError::StringTooLong) for a string longer than PTP
+    /// can carry (see [`MAX_STRING_UNITS`](crate::ptp::MAX_STRING_UNITS)). Every other variant always
+    /// serializes.
     pub fn to_bytes(&self) -> Result<Vec<u8>, crate::PtpError> {
         Ok(match self {
             PropertyValue::Int8(v) => pack_i8(*v).to_vec(),
@@ -154,7 +155,7 @@ pub enum PropertyFormType {
 impl PropertyFormType {
     /// Convert a raw u8 code to a PropertyFormType.
     #[must_use]
-    pub fn from_code(code: u8) -> Self {
+    pub(crate) fn from_code(code: u8) -> Self {
         match code {
             0x00 => PropertyFormType::None,
             0x01 => PropertyFormType::Range,
@@ -164,8 +165,9 @@ impl PropertyFormType {
     }
 
     /// Convert a PropertyFormType to its raw u8 value.
+    #[cfg(test)]
     #[must_use]
-    pub fn to_code(self) -> u8 {
+    pub(crate) fn to_code(self) -> u8 {
         match self {
             PropertyFormType::None => 0x00,
             PropertyFormType::Range => 0x01,
@@ -194,7 +196,7 @@ impl PropertyRange {
     /// Parse a PropertyRange from bytes given the data type.
     ///
     /// Returns the parsed range and the number of bytes consumed.
-    pub fn from_bytes(
+    pub(crate) fn from_bytes(
         buf: &[u8],
         data_type: PropertyDataType,
     ) -> Result<(Self, usize), crate::PtpError> {
@@ -217,7 +219,8 @@ impl PropertyRange {
     /// # Errors
     ///
     /// As [`PropertyValue::to_bytes`]: only a too-long string bound fails.
-    pub fn to_bytes(&self) -> Result<Vec<u8>, crate::PtpError> {
+    #[cfg(test)]
+    pub(crate) fn to_bytes(&self) -> Result<Vec<u8>, crate::PtpError> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&self.min.to_bytes()?);
         buf.extend_from_slice(&self.max.to_bytes()?);
@@ -259,7 +262,7 @@ impl DevicePropDesc {
     ///
     /// The buffer should contain the DevicePropDesc dataset as returned
     /// by GetDevicePropDesc.
-    pub fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
+    pub(crate) fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
         let mut offset = 0;
 
         // 1. PropertyCode (u16)

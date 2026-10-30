@@ -127,7 +127,7 @@ async fn open_test_mtp() -> Result<mtp_rs::mtp::MtpDevice, mtp_rs::Error> {
 }
 
 /// Open the first PTP device with the E2E test timeout (see [`test_timeout`]).
-async fn open_test_ptp() -> Result<mtp_rs::ptp::PtpDevice, mtp_rs::PtpError> {
+async fn open_test_ptp() -> Result<mtp_rs::ptp::PtpDevice, mtp_rs::ptp::PtpError> {
     let result = mtp_rs::ptp::PtpDevice::open_first_with_timeout(test_timeout()).await;
     note_device_seen(&result);
     result

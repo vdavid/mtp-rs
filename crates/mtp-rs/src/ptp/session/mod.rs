@@ -504,7 +504,7 @@ impl PtpSession {
     /// ```rust,no_run
     /// use mtp_rs::ptp::{OperationCode, PtpDevice, ResponseCode};
     ///
-    /// # async fn example() -> Result<(), mtp_rs::PtpError> {
+    /// # async fn example() -> Result<(), mtp_rs::ptp::PtpError> {
     /// let device = PtpDevice::open_first().await?;
     /// let session = device.open_session().await?;
     ///

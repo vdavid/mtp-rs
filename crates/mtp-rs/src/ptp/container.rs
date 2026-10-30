@@ -21,7 +21,7 @@ const HEADER_SIZE: usize = 12;
 /// Container type identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
-pub enum ContainerType {
+pub(crate) enum ContainerType {
     /// Command container (sent to device).
     Command = 1,
     /// Data container (bidirectional).
@@ -35,7 +35,7 @@ pub enum ContainerType {
 impl ContainerType {
     /// Convert a raw u16 value to a ContainerType.
     #[must_use]
-    pub fn from_code(code: u16) -> Option<Self> {
+    pub(crate) fn from_code(code: u16) -> Option<Self> {
         match code {
             1 => Some(ContainerType::Command),
             2 => Some(ContainerType::Data),
@@ -47,7 +47,7 @@ impl ContainerType {
 
     /// Convert a ContainerType to its raw u16 value.
     #[must_use]
-    pub fn to_code(self) -> u16 {
+    pub(crate) fn to_code(self) -> u16 {
         self as u16
     }
 }
@@ -55,7 +55,7 @@ impl ContainerType {
 /// Determine the container type from a raw buffer.
 ///
 /// Returns an error if the buffer is too small or contains an invalid container type.
-pub fn container_type(buf: &[u8]) -> Result<ContainerType, crate::PtpError> {
+pub(crate) fn container_type(buf: &[u8]) -> Result<ContainerType, crate::PtpError> {
     if buf.len() < HEADER_SIZE {
         return Err(crate::PtpError::invalid_data(format!(
             "container too small: need at least {} bytes, have {}",
@@ -72,7 +72,7 @@ pub fn container_type(buf: &[u8]) -> Result<ContainerType, crate::PtpError> {
 
 /// Command container sent to the device.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommandContainer {
+pub(crate) struct CommandContainer {
     /// Operation code for the command.
     pub code: OperationCode,
     /// Transaction ID for this operation.
@@ -83,7 +83,7 @@ pub struct CommandContainer {
 
 impl CommandContainer {
     /// Serialize the command container to bytes.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let param_bytes = self.params.len() * 4;
         let total_len = HEADER_SIZE + param_bytes;
 
@@ -106,7 +106,7 @@ impl CommandContainer {
 
 /// Data container for transferring payload data.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DataContainer {
+pub(crate) struct DataContainer {
     /// Operation code this data belongs to.
     pub code: OperationCode,
     /// Transaction ID for this operation.
@@ -117,7 +117,7 @@ pub struct DataContainer {
 
 impl DataContainer {
     /// Serialize the data container to bytes.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let total_len = HEADER_SIZE + self.payload.len();
 
         let mut buf = Vec::with_capacity(total_len);
@@ -135,7 +135,7 @@ impl DataContainer {
     }
 
     /// Parse a data container from bytes.
-    pub fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
+    pub(crate) fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
         if buf.len() < HEADER_SIZE {
             return Err(crate::PtpError::invalid_data(format!(
                 "data container too small: need at least {} bytes, have {}",
@@ -197,7 +197,7 @@ pub struct ResponseContainer {
 
 impl ResponseContainer {
     /// Parse a response container from bytes.
-    pub fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
+    pub(crate) fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
         if buf.len() < HEADER_SIZE {
             return Err(crate::PtpError::invalid_data(format!(
                 "response container too small: need at least {} bytes, have {}",
@@ -274,7 +274,8 @@ impl EventContainer {
     /// Serialize the event container to bytes.
     ///
     /// Produces a 24-byte container: 12-byte header + 3 u32 parameters.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    #[cfg(test)]
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
         const EVENT_SIZE: usize = HEADER_SIZE + 12; // 3 params
         let mut buf = Vec::with_capacity(EVENT_SIZE);
         buf.extend_from_slice(&pack_u32(EVENT_SIZE as u32));
@@ -291,7 +292,7 @@ impl EventContainer {
     ///
     /// Events can have 0-3 parameters, so valid sizes are 12-24 bytes
     /// (header + 0-3 u32 params). Missing parameters default to 0.
-    pub fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
+    pub(crate) fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
         const MAX_EVENT_SIZE: usize = HEADER_SIZE + 12; // 24 bytes max (3 params)
 
         if buf.len() < HEADER_SIZE {

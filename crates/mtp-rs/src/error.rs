@@ -1,6 +1,5 @@
 //! Error types for mtp-rs.
 
-use crate::ptp::ObjectHandle;
 use thiserror::Error;
 
 /// A failure the OS reported for a USB operation.
@@ -92,50 +91,6 @@ pub enum PtpError {
     /// `docs/notes/android-wedges-and-the-reset-kill-switch.md`.
     #[error("device was reset to recover from a wedged cancel; reopen to continue")]
     DeviceReset,
-}
-
-/// Error from an upload, carrying the handle of the object the device created
-/// during `SendObjectInfo` before the data phase failed.
-///
-/// PTP uploads are two-phase: `SendObjectInfo` creates the object on the device
-/// (returning a handle), then `SendObject` streams the bytes. If the data phase
-/// fails or is cancelled, the device is left holding a partial (often empty or
-/// truncated) object. This error surfaces that handle so the caller owns the
-/// cleanup-or-resume decision, rather than the library guessing.
-///
-/// The library does **not** auto-delete the partial object: deleting it would
-/// issue hidden USB I/O to a possibly-disconnected device, the leave-vs-delete
-/// behavior is device-dependent, and PTP's two-phase model is designed so a
-/// failed `SendObject` can be retried against the same handle (resume).
-///
-/// [`From<PtpUploadError> for PtpError`] keeps `?` ergonomic for callers working in a
-/// [`enum@PtpError`] context; they drop the [`partial`](Self::partial) handle unless
-/// they match on `PtpUploadError` explicitly.
-///
-/// This is the low-level PTP-layer upload error. The high-level [`crate::mtp`] API
-/// has its own backend-neutral [`crate::mtp::UploadError`].
-#[derive(Debug, Error)]
-#[error("{source}")]
-pub struct PtpUploadError {
-    /// The underlying failure (I/O, protocol, cancellation, timeout, …).
-    #[source]
-    pub source: PtpError,
-    /// The handle of the partially-written object the device may still hold.
-    ///
-    /// `Some` iff `SendObjectInfo` succeeded but the data phase did not complete
-    /// (genuine error OR cancellation). The object may be empty or truncated. The
-    /// caller decides: delete it to discard the corrupt artifact, or retry the
-    /// data phase to resume.
-    ///
-    /// `None` iff no object was created (for example, `SendObjectInfo` itself
-    /// failed because the storage is read-only or the parent is invalid).
-    pub partial: Option<ObjectHandle>,
-}
-
-impl From<PtpUploadError> for PtpError {
-    fn from(e: PtpUploadError) -> Self {
-        e.source
-    }
 }
 
 impl PtpError {

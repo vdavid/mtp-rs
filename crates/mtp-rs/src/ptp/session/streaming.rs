@@ -162,6 +162,9 @@ impl PtpSession {
     /// The `total_size` must match the actual total bytes in the stream.
     /// MTP requires knowing the size before transfer begins.
     ///
+    /// `data` must be `Unpin` (wrap it with `Box::pin` if yours isn't) and `Send`, because the
+    /// transfer runs on the session's transport. It doesn't need to be `'static`.
+    ///
     /// When [`is_split_header_data`](Self::is_split_header_data) is enabled, the
     /// 12-byte PTP container header and the streamed payload are sent as
     /// separate USB bulk transfers, mirroring the behavior of
@@ -549,7 +552,9 @@ impl Drop for ReceiveStream {
 /// Convert a ReceiveStream into a futures::Stream using async iteration.
 ///
 /// This creates a proper Stream that can be used with StreamExt methods.
-pub fn receive_stream_to_stream(recv: ReceiveStream) -> impl Stream<Item = Result<Bytes, Error>> {
+pub fn receive_stream_to_stream(
+    recv: ReceiveStream,
+) -> impl Stream<Item = Result<Bytes, Error>> + Send {
     futures::stream::unfold(recv, |mut recv| async move {
         recv.next_chunk().await.map(|result| (result, recv))
     })

@@ -17,11 +17,13 @@
 //! ## Module structure
 //!
 //! - `codes`: Operation, response, event, and format code enums
-//! - `pack`: Binary serialization/deserialization primitives
-//! - `container`: USB container format for PTP messages
 //! - `types`: DeviceInfo, StorageInfo, ObjectInfo structures
-//! - `session`: PTP session management
-//! - `device`: PtpDevice public API
+//! - `session`: PTP session management ([`PtpSession`])
+//! - `device`: [`PtpDevice`], the way in: enumerate, open, start a session
+//! - `pack`, `container`: the wire format, private. A session speaks in the types above, so the
+//!   encoding stays free to change. Only what a signature hands you is public: [`ResponseContainer`]
+//!   and [`EventContainer`] as plain readable values, and [`PropertyValue::to_bytes`] /
+//!   [`PropertyValue::from_bytes`] for the raw-bytes property calls.
 //!
 //! ## Example
 //!
@@ -52,22 +54,26 @@ mod session;
 mod test_utils;
 mod types;
 
-pub use crate::error::{PtpError, PtpUploadError, UsbError};
+pub use crate::error::{PtpError, UsbError};
 pub use codes::{
     DevicePropertyCode, EventCode, ObjectFormatCode, ObjectPropertyCode, OperationCode,
     PropertyDataType, ResponseCode,
 };
-pub use container::{
-    container_type, CommandContainer, ContainerType, DataContainer, EventContainer,
-    ResponseContainer,
-};
+pub(crate) use container::{container_type, CommandContainer, ContainerType, DataContainer};
+pub use container::{EventContainer, ResponseContainer};
 pub use device::PtpDevice;
-pub use pack::{
-    pack_datetime, pack_i16, pack_i32, pack_i64, pack_i8, pack_string, pack_u16, pack_u16_array,
-    pack_u32, pack_u32_array, pack_u64, pack_u8, unpack_datetime, unpack_i16, unpack_i32,
-    unpack_i64, unpack_i8, unpack_string, unpack_u16, unpack_u16_array, unpack_u32,
-    unpack_u32_array, unpack_u64, unpack_u8, DateTime, UtcOffset, MAX_STRING_UNITS,
+// Which of these get used depends on `cfg(test)` and the `virtual-device` feature.
+#[allow(unused_imports)]
+pub(crate) use pack::{
+    pack_datetime, pack_i16, pack_i32, pack_i64, pack_i8, pack_string, pack_u16, pack_u32,
+    pack_u64, pack_u8, unpack_datetime, unpack_i16, unpack_i32, unpack_i64, unpack_i8,
+    unpack_string, unpack_u16, unpack_u16_array, unpack_u32, unpack_u32_array, unpack_u64,
+    unpack_u8,
 };
+#[cfg(any(test, feature = "virtual-device"))]
+#[allow(unused_imports)]
+pub(crate) use pack::{pack_u16_array, pack_u32_array};
+pub use pack::{DateTime, UtcOffset, MAX_STRING_UNITS};
 pub use session::{receive_stream_to_stream, PtpSession, ReceiveStream};
 pub use types::{
     AccessCapability, AssociationType, DeviceInfo, DevicePropDesc, FilesystemType, ObjectInfo,
@@ -117,23 +123,20 @@ pub struct SessionId(pub u32);
 
 /// 32-bit transaction identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct TransactionId(pub u32);
+pub(crate) struct TransactionId(pub u32);
 
 impl TransactionId {
     /// The first valid transaction ID in a session.
-    pub const FIRST: Self = TransactionId(0x00000001);
-
-    /// Invalid transaction ID (must never be used).
-    pub const INVALID: Self = TransactionId(0xFFFFFFFF);
+    pub(crate) const FIRST: Self = TransactionId(0x00000001);
 
     /// Transaction ID for session-less operations (e.g., GetDeviceInfo before OpenSession).
-    pub const SESSION_LESS: Self = TransactionId(0x00000000);
+    pub(crate) const SESSION_LESS: Self = TransactionId(0x00000000);
 
     /// Get the next transaction ID, wrapping correctly.
     ///
     /// Wraps from 0xFFFFFFFE to 0x00000001 (skipping both 0x00000000 and 0xFFFFFFFF).
     #[must_use]
-    pub fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         let next = self.0.wrapping_add(1);
         if next == 0 || next == 0xFFFFFFFF {
             TransactionId(0x00000001)

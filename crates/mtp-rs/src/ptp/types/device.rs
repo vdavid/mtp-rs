@@ -49,7 +49,7 @@ impl DeviceInfo {
     /// Parse DeviceInfo from a byte buffer.
     ///
     /// The buffer should contain the DeviceInfo dataset as returned by GetDeviceInfo.
-    pub fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
+    pub(crate) fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
         let mut offset = 0;
 
         // 1. StandardVersion (u16)
@@ -215,7 +215,7 @@ impl StorageInfo {
     /// Parse StorageInfo from a byte buffer.
     ///
     /// The buffer should contain the StorageInfo dataset as returned by GetStorageInfo.
-    pub fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
+    pub(crate) fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
         let mut offset = 0;
 
         // 1. StorageType (u16)

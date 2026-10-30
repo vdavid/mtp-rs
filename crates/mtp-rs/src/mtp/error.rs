@@ -291,15 +291,6 @@ impl From<UploadError> for Error {
     }
 }
 
-impl From<crate::error::PtpUploadError> for UploadError {
-    fn from(e: crate::error::PtpUploadError) -> Self {
-        UploadError {
-            source: e.source.into(),
-            partial: e.partial.map(Into::into),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

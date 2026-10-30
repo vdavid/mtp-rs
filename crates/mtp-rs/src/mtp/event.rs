@@ -60,7 +60,7 @@ pub enum DeviceEvent {
 impl DeviceEvent {
     /// Parse from an event container.
     #[must_use]
-    pub fn from_container(container: &EventContainer) -> Self {
+    pub(crate) fn from_container(container: &EventContainer) -> Self {
         match container.code {
             EventCode::ObjectAdded => DeviceEvent::ObjectAdded {
                 handle: ObjectHandle(u64::from(container.params[0])),

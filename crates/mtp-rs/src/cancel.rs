@@ -1,59 +1,4 @@
 //! Cooperative cancellation for long-running MTP operations.
-//!
-//! [`CancelToken`] is a cheap-to-clone handle that callers pass into operations
-//! like [`Storage::list_objects`](crate::mtp::Storage::list_objects) so they can
-//! be aborted from another task. The operation checks the token between USB
-//! roundtrips; when set, it returns [`Error::Cancelled`](crate::PtpError::Cancelled)
-//! within one roundtrip's worth of latency instead of running to completion.
-//!
-//! # When to use this
-//!
-//! MTP list and recursive delete on large folders consist of many small
-//! per-object USB transactions (`GetObjectInfo` per handle). A 1k-photo
-//! `/DCIM/Camera` listing on Android can take 15+ seconds over USB 2.0. Without
-//! cooperative cancel, a user-initiated cancel only stops issuing _new_
-//! transactions after the current bulk call's _entire_ for-loop completes. By
-//! then the device may already be wedged from a follow-up op.
-//!
-//! [`CancelToken`] gives every per-handle iteration a fast way to bail.
-//!
-//! # Mid-data-phase cancel
-//!
-//! For streaming downloads, see
-//! [`FileDownload::cancel`](crate::mtp::FileDownload::cancel); that path uses
-//! the USB Still Image Class (SIC) class-cancel mechanism to abort a long
-//! bulk-IN transfer mid-stream. Per-handle list/delete operations don't need
-//! that: each `GetObjectInfo` / `DeleteObject` USB roundtrip completes in
-//! milliseconds, so checking the token between roundtrips is sufficient and
-//! safe (no half-finished transfer to drain).
-//!
-//! # Example
-//!
-//! ```rust,no_run
-//! use mtp_rs::{CancelToken, mtp::MtpDevice};
-//!
-//! # async fn example() -> Result<(), mtp_rs::Error> {
-//! let device = MtpDevice::open_first().await?;
-//! let storages = device.storages().await?;
-//! let storage = &storages[0];
-//!
-//! let cancel = CancelToken::new();
-//!
-//! // Fire the cancel from another task after 500 ms.
-//! let cancel_for_task = cancel.clone();
-//! tokio::spawn(async move {
-//!     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-//!     cancel_for_task.cancel();
-//! });
-//!
-//! match storage.list_objects_with_cancel(None, Some(&cancel)).await {
-//!     Ok(objects) => println!("Listed {} objects", objects.len()),
-//!     Err(mtp_rs::Error::Cancelled) => println!("Cancelled mid-listing"),
-//!     Err(e) => return Err(e),
-//! }
-//! # Ok(())
-//! # }
-//! ```
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -64,7 +9,60 @@ use std::sync::Arc;
 /// stays cancelled (no reset). Construct a fresh `CancelToken` per
 /// logical operation.
 ///
-/// See the [module-level docs](crate::cancel) for usage and semantics.
+/// A cheap-to-clone handle that callers pass into operations
+/// like [`Storage::list_objects`](crate::mtp::Storage::list_objects) so they can
+/// be aborted from another task. The operation checks the token between USB
+/// roundtrips; when set, it returns [`Error::Cancelled`](crate::Error::Cancelled)
+/// within one roundtrip's worth of latency instead of running to completion.
+///
+/// # When to use this
+///
+/// MTP list and recursive delete on large folders consist of many small
+/// per-object USB transactions (`GetObjectInfo` per handle). A 1k-photo
+/// `/DCIM/Camera` listing on Android can take 15+ seconds over USB 2.0. Without
+/// cooperative cancel, a user-initiated cancel only stops issuing _new_
+/// transactions after the current bulk call's _entire_ for-loop completes. By
+/// then the device may already be wedged from a follow-up op.
+///
+/// `CancelToken` gives every per-handle iteration a fast way to bail.
+///
+/// # Mid-data-phase cancel
+///
+/// For streaming downloads, see
+/// [`FileDownload::cancel`](crate::mtp::FileDownload::cancel); that path uses
+/// the USB Still Image Class (SIC) class-cancel mechanism to abort a long
+/// bulk-IN transfer mid-stream. Per-handle list/delete operations don't need
+/// that: each `GetObjectInfo` / `DeleteObject` USB roundtrip completes in
+/// milliseconds, so checking the token between roundtrips is sufficient and
+/// safe (no half-finished transfer to drain).
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use mtp_rs::{CancelToken, mtp::MtpDevice};
+///
+/// # async fn example() -> Result<(), mtp_rs::Error> {
+/// let device = MtpDevice::open_first().await?;
+/// let storages = device.storages().await?;
+/// let storage = &storages[0];
+///
+/// let cancel = CancelToken::new();
+///
+/// // Fire the cancel from another task after 500 ms.
+/// let cancel_for_task = cancel.clone();
+/// tokio::spawn(async move {
+///     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+///     cancel_for_task.cancel();
+/// });
+///
+/// match storage.list_objects_with_cancel(None, Some(&cancel)).await {
+///     Ok(objects) => println!("Listed {} objects", objects.len()),
+///     Err(mtp_rs::Error::Cancelled) => println!("Cancelled mid-listing"),
+///     Err(e) => return Err(e),
+/// }
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct CancelToken {
     cancelled: Arc<AtomicBool>,

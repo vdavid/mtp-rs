@@ -258,6 +258,7 @@ pub fn unpack_string(buf: &[u8]) -> Result<(String, usize), crate::PtpError> {
 /// Arrays are encoded as:
 /// 1. 4 bytes: Element count (u32, little-endian)
 /// 2. N * 2 bytes: Elements (u16, little-endian each)
+#[cfg(any(test, feature = "virtual-device"))]
 pub fn pack_u16_array(arr: &[u16]) -> Vec<u8> {
     let mut result = Vec::with_capacity(4 + arr.len() * 2);
 
@@ -277,6 +278,7 @@ pub fn pack_u16_array(arr: &[u16]) -> Vec<u8> {
 /// Arrays are encoded as:
 /// 1. 4 bytes: Element count (u32, little-endian)
 /// 2. N * 4 bytes: Elements (u32, little-endian each)
+#[cfg(any(test, feature = "virtual-device"))]
 pub fn pack_u32_array(arr: &[u32]) -> Vec<u8> {
     let mut result = Vec::with_capacity(4 + arr.len() * 4);
 

@@ -73,7 +73,7 @@ impl ObjectInfo {
     /// Parse ObjectInfo from a byte buffer.
     ///
     /// The buffer should contain the ObjectInfo dataset as returned by GetObjectInfo.
-    pub fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
+    pub(crate) fn from_bytes(buf: &[u8]) -> Result<Self, crate::PtpError> {
         let mut offset = 0;
 
         // 1. StorageID (u32)
@@ -180,7 +180,7 @@ impl ObjectInfo {
     /// Used for SendObjectInfo operation.
     ///
     /// Returns an error if the created or modified DateTime contains invalid values.
-    pub fn to_bytes(&self) -> Result<Vec<u8>, crate::PtpError> {
+    pub(crate) fn to_bytes(&self) -> Result<Vec<u8>, crate::PtpError> {
         let mut buf = Vec::new();
 
         // 1. StorageID (u32)
@@ -263,7 +263,7 @@ impl ObjectInfo {
     /// whose type doesn't fit the field (a string where a number belongs, or a number too wide
     /// for it). Integer properties take any unsigned width that fits, since devices don't all
     /// send the spec's type. An unparseable date string still sets the date, to `None`, the
-    /// same leniency as [`ObjectInfo::from_bytes`].
+    /// same leniency as parsing a whole `ObjectInfo` dataset.
     pub fn set_property(&mut self, property: ObjectPropertyCode, value: &PropertyValue) -> bool {
         use ObjectPropertyCode as P;
 
