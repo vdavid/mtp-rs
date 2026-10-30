@@ -14,6 +14,14 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.36.2] - 2026-10-30
+
+Library `0.36.2` and CLI `0.11.3`. A cancel on a device that has stopped answering now tells you to reopen.
+
+### Fixed
+
+- **[lib] A cancel on a device that has stopped answering now returns `Error::DeviceReset`**, where it could return `Timeout` after 0.3 s with no drain and no reset, leaving the caller with a dead session and no hint to reopen. When the USB cancel request itself times out, the cancel now continues like a refused one, and the status check after the drains decides whether the device is wedged. Seen on a Galaxy A57 on Linux in [#43](https://github.com/vdavid/mtp-rs/issues/43).
+
 ## [0.36.1] - 2026-10-30
 
 Library `0.36.1` and CLI `0.11.2`. A USB cable pulled mid-transfer on macOS reads as a disconnect instead of an unknown I/O error.
