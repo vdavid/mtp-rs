@@ -24,7 +24,6 @@ use serde::Serialize;
 use std::time::Duration;
 
 use mtp_rs::ptp::PtpDevice;
-use mtp_rs::transport::NusbTransport;
 
 use crate::cli::args::Cli;
 use crate::cli::error::{CliError, CliErrorKind};
@@ -46,7 +45,7 @@ pub async fn run(cli: &Cli) -> Result<(), CliError> {
     } else if let Some(location) = cli.location {
         PtpDevice::open_by_location_with_timeout(location, timeout).await
     } else {
-        let devices = NusbTransport::list_mtp_devices()
+        let devices = PtpDevice::list_devices()
             .map_err(|e| CliError::from_mtp("list devices", e.into(), cli.verbose))?;
         match devices.as_slice() {
             [] => {

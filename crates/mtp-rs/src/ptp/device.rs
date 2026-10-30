@@ -1,5 +1,6 @@
 //! Low-level PTP device API.
 
+use crate::mtp::MtpDeviceInfo;
 use crate::ptp::{
     container_type, unpack_u32, CommandContainer, ContainerType, DataContainer, DeviceInfo,
     OperationCode, PtpSession, ResponseCode, ResponseContainer,
@@ -13,11 +14,25 @@ use std::time::Duration;
 ///
 /// Use this for camera support or when you need raw PTP operations.
 /// For typical MTP usage with Android devices, prefer `MtpDevice` instead.
+///
+/// Enumerate with [`list_devices`](Self::list_devices), then open what you picked with
+/// [`open_by_serial`](Self::open_by_serial) or [`open_by_location`](Self::open_by_location).
 pub struct PtpDevice {
     transport: Arc<dyn Transport>,
 }
 
 impl PtpDevice {
+    /// List the USB devices this type can open, without opening them.
+    ///
+    /// Unlike [`MtpDevice::list_devices`](crate::mtp::MtpDevice::list_devices), this never
+    /// includes virtual devices: they have no USB transport, so `PtpDevice` can't open them.
+    pub fn list_devices() -> Result<Vec<MtpDeviceInfo>, Error> {
+        Ok(NusbTransport::list_mtp_devices()?
+            .into_iter()
+            .map(MtpDeviceInfo::from_usb)
+            .collect())
+    }
+
     /// Open a PTP device at a specific USB location (port).
     pub async fn open_by_location(location_id: u64) -> Result<Self, Error> {
         Self::open_by_location_with_timeout(location_id, NusbTransport::DEFAULT_TIMEOUT).await
