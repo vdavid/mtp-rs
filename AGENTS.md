@@ -115,7 +115,7 @@ The release that shaped this is 0.37.0 (#34). The goal: a 1.0 that's only a matt
 - **Promoting `ptp::` at 1.0 is decided by data, not now.** During the quiet period, track whether `cargo-semver-checks`
   or the changelog shows a `ptp::` break. If `ptp::` stayed quiet, it's stable in 1.0. If not, 1.0 ships with `ptp::`
   behind a feature, and a later 1.x promotes it. Feature-gated to stable is additive; the other direction is breaking.
-- **When to call it 1.0**: track weeks since the last breaking change, per layer (`mtp::` and `ptp::`). At about 8–12
+- **When to call it 1.0**: the clock started with 0.37.0 (2026-10-31), the last breaking release so far; a later break restarts it. Track weeks since the last breaking change, per layer (`mtp::` and `ptp::`). At about 8–12
   weeks, release 1.0, possibly through a `1.0.0-rc.1`.
 
 Policies (the README's "Stability" section says the same to users):
