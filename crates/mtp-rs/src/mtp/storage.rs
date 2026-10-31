@@ -45,7 +45,6 @@ use std::sync::Arc;
 ///         ListingItem::Skipped(skipped) => {
 ///             eprintln!("could not read handle {}: {}", skipped.handle.0, skipped.error);
 ///         }
-///         _ => {}
 ///     }
 /// }
 /// # Ok(())
@@ -135,8 +134,12 @@ impl ObjectListing {
 ///
 /// The streaming and collecting APIs sit over the same stream, so they agree on what a per-object
 /// failure means: this enum is the streaming half of the [`ObjectCollection`] split.
+///
+/// Deliberately not `#[non_exhaustive]`: a new kind of item must be a compile error, so each consumer
+/// decides what it means. In a wildcard arm it would silently vanish from a listing, and to a sync
+/// tool a missing file can read as a deleted one. The payloads are `#[non_exhaustive]`, so new facts
+/// about an object or a skip still land without breaking anyone.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum ListingItem {
     /// An object whose metadata the device returned.
     Object(ObjectInfo),

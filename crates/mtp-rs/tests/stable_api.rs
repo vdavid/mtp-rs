@@ -6,9 +6,9 @@
 
 use mtp_rs::ptp::{self, PtpDevice, PtpError};
 use mtp_rs::{
-    Backend, ByteRange, CancelToken, DateTime, DeviceEvent, Error, ListingItem, MtpDevice,
-    MtpDeviceInfo, MtpMatchReason, NewObjectInfo, ObjectFormat, ObjectHandle, ObjectInfo,
-    StorageId, UsbSpeed, UtcOffset,
+    Backend, ByteRange, CancelToken, DateTime, DeviceEvent, Error, HotplugEvent, ListingItem,
+    MtpDevice, MtpDeviceInfo, MtpMatchReason, NewObjectInfo, ObjectFormat, ObjectHandle,
+    ObjectInfo, StorageId, UsbSpeed, UtcOffset,
 };
 
 #[test]
@@ -68,6 +68,17 @@ fn output_types_are_readable_through_root_paths() {
 
     let item = ListingItem::Object(info);
     assert!(item.object().is_some());
+
+    // These two stay exhaustive on purpose: a new variant must be a compile error here. See their
+    // doc comments for why.
+    let _describe_item = |item: ListingItem| match item {
+        ListingItem::Object(_) => "object",
+        ListingItem::Skipped(_) => "skipped",
+    };
+    let _describe_hotplug = |event: HotplugEvent| match event {
+        HotplugEvent::Arrived(_) => "arrived",
+        HotplugEvent::Left(_) => "left",
+    };
 
     // Exhaustive-looking matches need the wildcard: new variants aren't a break.
     let _describe_event = |event: DeviceEvent| match event {

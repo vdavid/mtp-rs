@@ -111,7 +111,7 @@ The release that shaped this is 0.37.0 (#34). The goal: a 1.0 that's only a matt
 - **`#[non_exhaustive]` on anything the library produces or a spec can extend.** Caller-built types need a way in:
   constructors or `Default` plus field assignment. `tests/stable_api.rs` pins that from outside the crate, the only place
   the attribute bites. Deliberate exceptions: `VirtualDeviceConfig` (see CONTRIBUTING.md), `HotplugEvent` (no third state),
-  and the ID newtypes.
+  `ListingItem` (a new kind must be a compile error, or it could vanish from a listing), and the ID newtypes.
 - **Promoting `ptp::` at 1.0 is decided by data, not now.** During the quiet period, track whether `cargo-semver-checks`
   or the changelog shows a `ptp::` break. If `ptp::` stayed quiet, it's stable in 1.0. If not, 1.0 ships with `ptp::`
   behind a feature, and a later 1.x promotes it. Feature-gated to stable is additive; the other direction is breaking.
