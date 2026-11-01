@@ -14,6 +14,18 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-11-01
+
+Library `0.37.1`. The CLI doesn't use the changed call, so it stays at `0.11.5`.
+
+### Fixed
+
+- **[lib] `ptp::PtpError::is_exclusive_access` now works on Linux, and always agrees with `mtp::Error`.** It searched the error message for "device or resource busy", but nusb's Linux text is "interface is busy (errno 16)", so it answered `false` when another process or a kernel driver held the device. It now goes by nusb's error kind, like `mtp::Error` does. One visible change: `PtpError::Io` always answers `false` now. In the library it only carries transfer faults, and an "access denied" message there is `mtp::Error::PermissionDenied`, which has a different remedy.
+
+### Changed
+
+- **[workspace]** `serial_test` 4 (dev-only), `actions/checkout` 7, and `ubuntu-26.04` for the Homebrew formula job.
+
 ## [0.37.0] - 2026-10-31
 
 Library `0.37.0` and CLI `0.11.5`. The API gets small enough to promise: `nusb` is out of it, the wire format is private, and new enum variants and struct fields can land without breaking you. No device behavior changes on any backend. This starts the quiet period toward 1.0.
