@@ -92,9 +92,9 @@ src/
 │   ├── mod.rs             # Module exports
 │   ├── codes.rs           # Operation, response, event codes
 │   ├── container.rs       # USB container format
-│   ├── pack.rs            # Binary serialization
-│   ├── types.rs           # DeviceInfo, ObjectInfo, StorageInfo
-│   ├── session.rs         # PTP session management
+│   ├── pack/              # Binary serialization
+│   ├── types/             # DeviceInfo, ObjectInfo, StorageInfo
+│   ├── session/           # PTP session management
 │   └── device.rs          # PtpDevice (public low-level API)
 │
 ├── mtp/                   # High-level, backend-neutral API
@@ -269,7 +269,7 @@ impl PtpSession {
 
 ### Cancellation and cleanup
 
-**Download cancellation**: Call `FileDownload::cancel(idle_timeout)` (or `ReceiveStream::cancel()`) to safely abort a mid-stream download. This sends a USB Still Image Class cancel control request (bRequest=0x64) to the device, then drains remaining data from the USB pipes. The session remains healthy for subsequent operations. Dropping without calling `cancel()` corrupts the session (`debug_assert` catches this in debug builds). The implementation follows libmtp's proven approach; see `NusbTransport::cancel_transfer()` for details.
+**Download cancellation**: Call `FileDownload::cancel(idle_timeout)` (or `ReceiveStream::cancel()`) to safely abort a mid-stream download. This sends a USB Still Image Class cancel control request (bRequest=0x64) to the device, then drains remaining data from the USB pipes. The session remains healthy for subsequent operations. Dropping one instead flags the session, and the next operation drains the pipe first (see "In-session desync self-healing" in `AGENTS.md`); prefer `cancel()`, which drains right away. The implementation follows libmtp's proven approach; see `NusbTransport::cancel_transfer()` for details.
 
 **Upload cancellation**: If an upload future is dropped after `SendObjectInfo` succeeds but before `SendObject` completes, a partial/empty object may remain on the device. The protocol has no abort mechanism. Callers should track the handle and delete incomplete objects if needed.
 
@@ -304,13 +304,13 @@ Some errors are transient:
 ```rust
 impl Error {
     pub fn is_retryable(&self) -> bool {
-        matches!(self,
-            Error::Protocol { code: ResponseCode::DeviceBusy, .. } |
-            Error::Timeout
-        )
+        matches!(self, Error::Busy | Error::Timeout)
     }
 }
 ```
+
+`ptp::PtpError` has the same predicate, for `DeviceBusy` and `Timeout`. Its other predicates must answer the same as the
+neutral error's too, so they classify USB failures by nusb's kind, never by message text.
 
 ## File ownership
 
@@ -321,14 +321,15 @@ impl Error {
 | `cancel.rs`         | `CancelToken`                                 |
 | `virtual_device.rs` | Public virtual-device re-exports              |
 | `ptp/codes.rs`      | Operation, response, event, format code enums |
-| `ptp/pack.rs`       | Binary serialization primitives               |
+| `ptp/pack/`         | Binary serialization primitives               |
 | `ptp/container.rs`  | USB container format                          |
-| `ptp/types.rs`      | DeviceInfo, StorageInfo, ObjectInfo structs   |
-| `ptp/session.rs`    | Transaction management, operation execution   |
+| `ptp/types/`        | DeviceInfo, StorageInfo, ObjectInfo structs   |
+| `ptp/session/`      | Transaction management, operation execution   |
 | `ptp/device.rs`     | PtpDevice public API                          |
 | `mtp/device.rs`     | MtpDevice, MtpDeviceBuilder                   |
 | `mtp/storage.rs`    | Storage struct and methods                    |
-| `mtp/object.rs`     | ObjectInfo, NewObjectInfo, ObjectFormat       |
+| `mtp/types.rs`      | ObjectInfo, ObjectFormat, other neutral types |
+| `mtp/object.rs`     | NewObjectInfo                                 |
 | `mtp/event.rs`      | DeviceEvent enum, event stream                |
 | `mtp/hotplug.rs`    | Device arrival/departure watch                |
 | `mtp/stream.rs`     | FileDownload, upload helpers                |

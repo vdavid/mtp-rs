@@ -4,7 +4,7 @@ Catch-up reading for any agent that picks up issue or PR work, so you don't have
 start. Read this first when triaging a new issue or PR, and update it after work that affects community-facing context
 (see [Updating this doc](#updating-this-doc) at the bottom).
 
-Last updated: 2026-10-30.
+Last updated: 2026-11-01.
 
 ## Intentionally / continuously open threads
 
@@ -113,26 +113,6 @@ Android 16 (BP2A.250605.031.A3).
 - **Test-harness gap it exposed**: after the wedge, later tests timed out, printed `SKIPPING`, and counted as passed.
   Fixed on the same branch: a hardware error fails the test once the device has answered earlier in the run
   (`should_skip` in `tests/integration.rs`); another app holding the device still skips.
-
-### #52: WPD calls stall for 5–6 minutes after changes on the phone (opened 2026-10-28)
-
-Reporter: [@IoSonoPiero](https://github.com/IoSonoPiero). POCO X7 Pro, Windows 11, long-lived app, one call at a time.
-A `list` after a recursive delete took 301 s, the sixth of ten single deletes 377 s, then everything queued ran normally.
-Reliable recipe (2026-10-29): list a folder, `adb shell rm` a file in it, call `size()` on that file: 345 s, then
-`StaleHandle`. Linux gives the error at once.
-
-- **Likely the #43 open wait**: same phone, same ~5 minutes, follows changes on the phone, and Explorer hung there too.
-  Not proven; don't call it settled again.
-- **The logcat doesn't show "WPD sent nothing"**: AOSP's `MtpServer.cpp` logs commands with `ALOGV` and responses only when
-  they aren't OK, so successful traffic is invisible. The driver may have been talking to the phone all along.
-- **Stale handles aren't the whole story**: the sixth delete was on a file that still existed.
-- **Ruled out**: the kept read stream (released before any other request and after 1 s idle; the recipe's gap was
-  18.8 s), and batching deletes (the recipe has no delete).
-- **Not seen on David's S23 Ultra or Pixel**, though those haven't been through this recipe.
-- **Explorer stalls too (2026-10-30)**: on the POCO, with no mtp-rs and no app running, a right-click on the deleted file
-  hung for 3–4 min. A second run a few minutes later answered at once from cache and gave "Catastrophic failure" on a
-  drag. So it isn't our calls. No WPD code change; documented in `AGENTS.md` and the README.
-- **Next**: asked whether it still stalls with USB debugging off. If that changes nothing, close it.
 
 ## Closed and merged
 
@@ -568,6 +548,27 @@ MB/s, SHA-256-identical to an Explorer copy; read-only suite 12/13 (`test_ptp_de
 Follow-up: the kept stream is also released after 1 s with no request (a paused copy shouldn't hold the phone), and
 the worker drops it before `CoUninitialize` when the request channel closes without a `Shutdown`.
 Open item: a rerun of the comparison on the POCO by @IoSonoPiero, since the request pattern changed.
+
+### #52: WPD calls stall for 5–6 minutes after changes on the phone (opened 2026-10-28, closed 2026-11-01)
+
+Reporter: [@IoSonoPiero](https://github.com/IoSonoPiero). POCO X7 Pro, Windows 11, long-lived app, one call at a time.
+A `list` after a recursive delete took 301 s, the sixth of ten single deletes 377 s, then everything queued ran normally.
+Reliable recipe (2026-10-29): list a folder, `adb shell rm` a file in it, call `size()` on that file: 345 s, then
+`StaleHandle`. Linux gives the error at once.
+
+- **Closed as the Windows driver's, with no WPD code change**: on the POCO, with no mtp-rs and no app running, a
+  right-click on the deleted file in Explorer hung for 3–4 min. A second run a few minutes later answered at once from
+  cache and gave "Catastrophic failure" on a drag. With USB and wireless debugging off and the file deleted in the
+  phone's own file manager, it hung for ~6 min, so adb isn't part of it (2026-10-30). The README tells apps to wrap
+  calls in a timeout and tell the user. @IoSonoPiero may send a USBPcap capture; reopen if it shows something of ours.
+- **Likely the #43 open wait**: same phone, same ~5 minutes, follows changes on the phone, and Explorer hung there too.
+  Not proven; don't call it settled again.
+- **The logcat doesn't show "WPD sent nothing"**: AOSP's `MtpServer.cpp` logs commands with `ALOGV` and responses only when
+  they aren't OK, so successful traffic is invisible. The driver may have been talking to the phone all along.
+- **Stale handles aren't the whole story**: the sixth delete was on a file that still existed.
+- **Ruled out**: the kept read stream (released before any other request and after 1 s idle; the recipe's gap was
+  18.8 s), and batching deletes (the recipe has no delete).
+- **Not seen on David's S23 Ultra or Pixel**, though those haven't been through this recipe.
 
 ## Device quirks reference
 
