@@ -18,6 +18,14 @@ impl UsbError {
     }
 }
 
+/// Whether a USB failure of this kind means something else holds the device.
+///
+/// `Busy` covers macOS `kIOReturnExclusiveAccess` and Linux `EBUSY`. Go by the kind, not the
+/// message: nusb's Linux text is "interface is busy (errno 16)", which is easy to miss.
+fn usb_kind_means_exclusive_access(kind: nusb::ErrorKind) -> bool {
+    kind == nusb::ErrorKind::Busy
+}
+
 /// The main error type for mtp-rs operations.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -137,8 +145,14 @@ impl PtpError {
     /// Check if this error indicates another process has exclusive access to the device.
     ///
     /// This typically happens on macOS when `ptpcamerad` or another application
-    /// has already claimed the USB interface. Applications can use this to provide
+    /// has already claimed the USB interface, or on Linux when a kernel driver or
+    /// another process holds it. Applications can use this to provide
     /// platform-specific guidance to users.
+    ///
+    /// Answers the same as [`mtp::Error::is_exclusive_access`](crate::Error::is_exclusive_access)
+    /// on the converted error. Missing OS permission (Linux `udev` rules, for example) doesn't
+    /// count: the remedy there is different, see
+    /// [`mtp::Error::is_permission_denied`](crate::Error::is_permission_denied).
     ///
     /// # Example
     ///
@@ -155,24 +169,7 @@ impl PtpError {
     /// ```
     #[must_use]
     pub fn is_exclusive_access(&self) -> bool {
-        match self {
-            PtpError::Usb(io_err) => {
-                let msg = io_err.to_string().to_lowercase();
-                // macOS: "could not be opened for exclusive access"
-                // Linux: typically EBUSY, but message varies
-                // Windows: "access denied" or similar
-                msg.contains("exclusive access")
-                    || msg.contains("device or resource busy")
-                    || (msg.contains("access") && msg.contains("denied"))
-            }
-            PtpError::Io(io_err) => {
-                let msg = io_err.to_string().to_lowercase();
-                msg.contains("exclusive access")
-                    || msg.contains("device or resource busy")
-                    || (msg.contains("access") && msg.contains("denied"))
-            }
-            _ => false,
-        }
+        matches!(self, PtpError::Usb(usb) if usb_kind_means_exclusive_access(usb.kind()))
     }
 }
 
@@ -182,35 +179,39 @@ mod tests {
     use std::io::{Error as IoError, ErrorKind};
 
     #[test]
-    fn test_is_exclusive_access_macos_message() {
-        // macOS nusb error message (tested via Io variant; same logic as Usb variant)
-        let io_err = IoError::other("could not be opened for exclusive access");
-        let err = PtpError::Io(io_err);
-        assert!(err.is_exclusive_access());
+    fn only_a_busy_usb_kind_means_exclusive_access() {
+        // nusb can't build an `Error` from outside, so the test pins the classification itself.
+        assert!(usb_kind_means_exclusive_access(nusb::ErrorKind::Busy));
+        for kind in [
+            nusb::ErrorKind::PermissionDenied,
+            nusb::ErrorKind::Disconnected,
+            nusb::ErrorKind::NotFound,
+            nusb::ErrorKind::Unsupported,
+            nusb::ErrorKind::Other,
+        ] {
+            assert!(!usb_kind_means_exclusive_access(kind), "{kind:?}");
+        }
     }
 
     #[test]
-    fn test_is_exclusive_access_linux_busy() {
-        // Linux EBUSY style message (tested via Io variant; same logic as Usb variant)
-        let io_err = IoError::other("Device or resource busy");
-        let err = PtpError::Io(io_err);
-        assert!(err.is_exclusive_access());
-    }
+    fn io_errors_agree_with_the_neutral_error() {
+        // `PtpError::Io` only carries transfer faults (a stall, a fault), never a claim refusal,
+        // whatever its text says. The neutral error has always read them that way.
+        for message in [
+            "could not be opened for exclusive access",
+            "Device or resource busy",
+        ] {
+            let low = PtpError::Io(IoError::other(message));
+            assert!(!low.is_exclusive_access(), "{message}");
+            assert!(!crate::Error::from(low).is_exclusive_access(), "{message}");
+        }
 
-    #[test]
-    fn test_is_exclusive_access_windows_denied() {
-        // Windows access denied style message (tested via Io variant; same logic as Usb variant)
-        let io_err = IoError::new(ErrorKind::PermissionDenied, "Access is denied");
-        let err = PtpError::Io(io_err);
-        assert!(err.is_exclusive_access());
-    }
-
-    #[test]
-    fn test_is_exclusive_access_io_error() {
-        // Also works for Io variant
-        let io_err = IoError::other("could not be opened for exclusive access");
-        let err = PtpError::Io(io_err);
-        assert!(err.is_exclusive_access());
+        let denied = PtpError::Io(IoError::new(
+            ErrorKind::PermissionDenied,
+            "Access is denied",
+        ));
+        assert!(!denied.is_exclusive_access());
+        assert!(crate::Error::from(denied).is_permission_denied());
     }
 
     #[test]
