@@ -596,6 +596,9 @@ demonstrates it with no hardware. Real-device coverage:
   file), dead with or without the reset, so the reset costs nothing there. A Galaxy S23
   Ultra recovered 4 of 4 with it and 0 of 2 without. Evidence:
   [docs/notes/android-wedges-and-the-reset-kill-switch.md](docs/notes/android-wedges-and-the-reset-kill-switch.md).
+- **Skipping CLASS_CANCEL and draining stopped the Pixel's wedge in an experiment** (no wedge in 153 runs, stock
+  wedged on its 15th, 2026-11-02). Not shipped: no Samsung run yet, and a cancel then takes the rest of the transfer.
+  Same note, and #54.
 - **The neutral reset is a free-standing selector, not a method on an open
   `MtpDevice`, and that's deliberate.** It claims the USB interface and stops;
   the regular opens run `OpenSession` + `GetDeviceInfo`, which a wedged device

@@ -22,7 +22,7 @@
 //!
 //! One test is opt-in: `test_drop_mid_stream_then_software_reconnect` poisons
 //! the session on purpose and can wedge some camera firmware until a USB
-//! replug, so it only runs with `MTP_RUN_DROP_RECOVERY=1` (and `--release`).
+//! replug, so it only runs with `MTP_RUN_DROP_RECOVERY=1`.
 //!
 //! ## Picking a writable folder
 //!
@@ -1062,10 +1062,9 @@ mod readonly {
     /// runs when `MTP_RUN_DROP_RECOVERY=1` is set, so you opt in knowing you may
     /// have to replug afterward.
     ///
-    /// Run it with `--release` (the debug_assert in `ReceiveStream::Drop` is the
-    /// exact scenario under test) and the opt-in flag:
+    /// Run it with the opt-in flag:
     /// ```sh
-    /// MTP_RUN_DROP_RECOVERY=1 cargo test --release --test integration test_drop_mid_stream -- --ignored --nocapture --test-threads=1
+    /// MTP_RUN_DROP_RECOVERY=1 cargo test --test integration test_drop_mid_stream -- --ignored --nocapture --test-threads=1
     /// ```
     #[tokio::test]
     #[ignore]
@@ -1075,13 +1074,6 @@ mod readonly {
         // firmware (see the doc comment), so it stays out of default runs.
         if !env_enabled("MTP_RUN_DROP_RECOVERY") {
             tlog!("SKIPPING: set MTP_RUN_DROP_RECOVERY=1 to run (can wedge the device until a USB replug)");
-            return;
-        }
-
-        // This test intentionally drops mid-stream, which fires the debug_assert
-        // in ReceiveStream::Drop. Skip in debug builds to avoid panicking.
-        if cfg!(debug_assertions) {
-            tlog!("SKIPPING: requires --release (debug_assert would panic)");
             return;
         }
 
@@ -1114,9 +1106,9 @@ mod readonly {
                 download.progress() * 100.0
             );
 
-            // download drops here; in release mode the debug_assert is a no-op,
-            // so Drop just releases the session lock and USB interface normally.
-            // The USB pipe is left with stale data (intentionally).
+            // download drops here, which flags the old session for recovery and
+            // releases the USB interface. The fresh open below doesn't inherit
+            // that flag, so the pipe still holds stale data (intentionally).
         }
         tlog!("Dropped mid-stream (no cancel, no drain)");
 

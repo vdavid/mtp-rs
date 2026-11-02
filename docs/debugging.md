@@ -41,7 +41,18 @@ daemon, check the obvious ones:
   Pixel 9 Pro XL refused five consecutive opens with `already in use` while Cmdr
   held it, and the run that finally worked coincided with Cmdr quitting.
 - **A running `adb` server**, which holds the device and looks identical
-  (`adb kill-server`, then `adb start-server` when you're done).
+  (`adb kill-server`, then `adb start-server` when you're done). One can come back
+  by itself mid-run: on 2026-11-02 a new one appeared during a test loop with Cmdr
+  running, though what started it wasn't confirmed. Check before each run.
+- **A locked screen**, which gives `open device - Timeout` with no owner at all.
+  A Pixel 9 Pro XL with a 120 s screen timeout went silent mid-loop, with `MtpServer`
+  alive and no MTP lines in its log, then answered at once when unlocked, no replug
+  (one observation, 2026-11-02). For long runs: `adb shell svc power stayon usb` while
+  the phone is unlocked, and `svc power stayon false` afterward. Note the old value of
+  `settings get global stay_on_while_plugged_in` first.
+
+**A test that skips prints `ok`.** Every integration test skips on another app holding
+the device, so a green run can mean nothing was tested. Read the output for `SKIPPING`.
 
 ### 2. Recover a wedged device: quiet reopens first, reset last
 

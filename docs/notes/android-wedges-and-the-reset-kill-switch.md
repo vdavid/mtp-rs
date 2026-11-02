@@ -124,6 +124,27 @@ so any other error ends it (`media/mtp/MtpServer.cpp`, `MtpFfsHandle.cpp`, AOSP 
 `Operation Canceled` and a `0x201F` response instead. So on a Pixel the phone loses a race with our CLASS_CANCEL,
 and no host recovery exists. The Pixel's USB debugging also vanished during that wedge; adb came back with the replug.
 
+## Experiment: draining instead of CLASS_CANCEL (#54)
+
+A throwaway build skipped CLASS_CANCEL and took the path a refused cancel already takes: read the rest of the transfer
+until the closing Response. Pixel 9 Pro XL, Android build CP3A.261005.005, macOS/nusb 0.2.9, 2026-11-02, one process per
+run, with the same 697 KB file as the control run. The S23 wasn't available, so nothing here covers Samsung.
+
+- **Draining, no wedge in 153 runs**: 103 explicit cancels (`cancel()`, 100 of them on the small file, 3 on a 709 MB
+  video), 25 window futures dropped mid-flight, and 25 dropped held-open streams. The two drop kinds then listed and
+  downloaded on the same session, so they went through `recover_if_needed` into `cancel_transfer`.
+- **Stock on the same day: 15 cancels, one wedge**, on the 15th (a first run, one on the video, then 12 clean and the
+  wedge in a row). The full `Mtp couldn't cancel request` ... `errno: 104` signature from the control run, the reset
+  fired, 10 spaced reopens failed, adb vanished, and a replug fixed it. That rate is lower than the 3 in 15 above, so
+  the rate moves from day to day. Even at this lower one, 153 clean runs by luck is under one in 10,000.
+- **Why it works**: the stock runs that didn't wedge each logged `Mtp send file got error Operation Canceled`, and the
+  logs covering the drain runs have none of it, so the phone's cancel path never runs and can't lose its race.
+- **What it costs**: the cancel of a 697 KB file took ~0.3 s draining and 0.3–0.6 s stock. On a 709 MB video, from one
+  chunk in, a run from open through the cancel and a listing took ~3 s draining and ~1 s stock, so about 2.5 s per
+  700 MB on this USB link. A slower link pays proportionally.
+
+Not shipped: it would change every Android device on the strength of one phone. Open questions are on #54.
+
 ## Guidance that follows
 
 For a consumer recovering a wedged Android device:
