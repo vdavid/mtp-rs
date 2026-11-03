@@ -1,0 +1,10 @@
+target
+coverage
+
+# Keep the committed seeds (seed_*.bin, written by `tests/fuzz_seeds.rs`) and ignore what a run adds.
+# The negation has to let git descend into corpus/<target>/, so it ignores by file name.
+corpus/*/*
+!corpus/*/seed_*.bin
+
+# Crash artifacts are per-run; a minimized crash becomes a unit test, not a file here.
+artifacts/

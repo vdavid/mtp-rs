@@ -1,0 +1,106 @@
+name: Fuzz
+
+# Short-duration fuzz run: weekly schedule + manual dispatch. Each target
+# runs for 5 minutes with the committed seed corpus. For longer hunts, run
+# locally: `cargo +nightly fuzz run <target> -- -max_total_time=1800`.
+#
+# We deliberately do NOT fuzz on every push -- runs are too long for that.
+#
+# The target list comes from `crates/mtp-rs/fuzz/Cargo.toml`, so a new `[[bin]]`
+# is fuzzed here without editing this file. See `crates/mtp-rs/fuzz/CLAUDE.md`.
+
+on:
+  schedule:
+    # Mondays 04:45 UTC.
+    - cron: "45 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: "Per-target fuzz time (seconds)"
+        required: false
+        default: "300"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  targets:
+    name: List fuzz targets
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Read the `[[bin]]` names
+        id: list
+        run: |
+          targets=$(sed -n 's/^name = "\(fuzz_[a-z0-9_]*\)"$/\1/p' crates/mtp-rs/fuzz/Cargo.toml | jq -R . | jq -cs .)
+          echo "Targets: $targets"
+          [ "$targets" != "[]" ] || { echo "No fuzz targets found"; exit 1; }
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
+  # OSS Verify builds these targets with Rust nightly-2025-07-16 (rustc 1.90).
+  # Our MSRV is 1.91, so its build lowers `rust-version` with a patch; this job
+  # makes sure the code itself still compiles there, so a newer-Rust feature in
+  # a parse path shows up here and not as a broken proof build.
+  oss-verify-toolchain:
+    name: Build on the OSS Verify toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust nightly-2025-07-16
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2025-07-16
+
+      - name: Build every fuzz target
+        run: |
+          cargo +nightly-2025-07-16 build --locked --ignore-rust-version \
+            --manifest-path crates/mtp-rs/fuzz/Cargo.toml --bins
+
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    needs: targets
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.targets) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            crates/mtp-rs/fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Run fuzz target
+        env:
+          DURATION: ${{ github.event.inputs.duration_seconds || '300' }}
+        # cargo-fuzz looks for `fuzz/` beside the package it targets.
+        working-directory: crates/mtp-rs
+        run: |
+          cargo +nightly fuzz run "${{ matrix.target }}" \
+            -- -max_total_time="${DURATION}" -print_final_stats=1
+
+      - name: Upload crash artifacts (if any)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: crates/mtp-rs/fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore

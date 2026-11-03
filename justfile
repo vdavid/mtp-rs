@@ -34,6 +34,8 @@
 #     release-dry  - cargo publish --dry-run for both published crates
 #
 #   Utility commands:
+#     fuzz          - Fuzz one parse entry point (nightly + cargo-fuzz)
+#     fuzz-seeds    - Regenerate the committed fuzz seed corpus
 #     clean         - Remove build artifacts
 #     install-tools - Install required development tools
 #
@@ -237,6 +239,28 @@ release-dry-cli:
 # ==============================================================================
 # Utility Commands
 # ==============================================================================
+
+# Fuzz one parse entry point for a short sweep (default: 5 minutes). See `crates/mtp-rs/fuzz/CLAUDE.md`.
+# Example: `just fuzz fuzz_container_parse` or `just fuzz fuzz_object_info_parse 1800`.
+# Requires the nightly toolchain and `cargo-fuzz` (`cargo install cargo-fuzz`).
+fuzz target duration="300":
+    @if ! rustup run nightly rustc --version &> /dev/null; then \
+        echo "[!] Nightly toolchain not found. Install with: rustup toolchain install nightly"; \
+        exit 1; \
+    fi
+    @if ! command -v cargo-fuzz &> /dev/null; then \
+        echo "[!] cargo-fuzz not found. Install with: cargo install cargo-fuzz"; \
+        exit 1; \
+    fi
+    @echo "[*] Fuzzing {{target}} for {{duration}}s..."
+    # cargo-fuzz looks for `fuzz/` beside the package it targets, so run from the library crate.
+    cd crates/mtp-rs && cargo +nightly fuzz run {{target}} -- -max_total_time={{duration}} -print_final_stats=1
+
+# Regenerate the committed seed corpus under `crates/mtp-rs/fuzz/corpus/` (from `src/fuzzing.rs`).
+fuzz-seeds:
+    @echo "[*] Regenerating fuzz seed corpus..."
+    @cargo test -p mtp-rs --lib --features fuzzing write_seed_corpus -- --ignored --quiet
+    @echo "[+] Seed corpus updated"
 
 # Remove build artifacts
 clean:

@@ -1,0 +1,93 @@
+[package]
+name = "mtp-rs-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Its own workspace, outside the outer one: the targets need nightly (libFuzzer's sanitizer
+# instrumentation), and cargo-fuzz keeps a separate Cargo.lock here.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+
+[dependencies.mtp-rs]
+path = ".."
+features = ["fuzzing"]
+
+# One `bin` per entry point in `src/fuzzing.rs`, so libFuzzer links one target each. The weekly
+# workflow reads this list, so a new `[[bin]]` is fuzzed without editing it. Keep
+# `test`/`doc`/`bench` off: a target isn't a standalone program.
+
+[[bin]]
+name = "fuzz_container_parse"
+path = "fuzz_targets/fuzz_container_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_device_info_parse"
+path = "fuzz_targets/fuzz_device_info_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_storage_info_parse"
+path = "fuzz_targets/fuzz_storage_info_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_object_info_parse"
+path = "fuzz_targets/fuzz_object_info_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_object_prop_list_parse"
+path = "fuzz_targets/fuzz_object_prop_list_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_device_prop_desc_parse"
+path = "fuzz_targets/fuzz_device_prop_desc_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_property_value_parse"
+path = "fuzz_targets/fuzz_property_value_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_string_parse"
+path = "fuzz_targets/fuzz_string_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_datetime_parse"
+path = "fuzz_targets/fuzz_datetime_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_device_status_parse"
+path = "fuzz_targets/fuzz_device_status_parse.rs"
+test = false
+doc = false
+bench = false

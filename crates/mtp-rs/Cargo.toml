@@ -84,3 +84,6 @@ tracing = ["dep:tracing"]
 # `MtpDeviceBuilder::open_nusb_device`, and `PtpSession::open` on your own transport.
 # Exempt from SemVer, since it exposes `nusb` types. See the README's "Stability" section.
 unstable-raw = []
+# Parse entry points for the cargo-fuzz targets in `fuzz/` (`src/fuzzing.rs`). Not for applications:
+# exempt from SemVer and hidden from the docs.
+fuzzing = []

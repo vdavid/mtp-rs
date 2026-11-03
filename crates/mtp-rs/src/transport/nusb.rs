@@ -67,7 +67,7 @@ const SIC_STATUS_DEVICE_BUSY: u16 = 0x2019;
 ///
 /// Returns `(code, stalled_endpoint_addresses)`, or `None` when the response
 /// is too short to contain a status code.
-fn parse_device_status(data: &[u8]) -> Option<(u16, Vec<u8>)> {
+pub(crate) fn parse_device_status(data: &[u8]) -> Option<(u16, Vec<u8>)> {
     if data.len() < 4 {
         return None;
     }

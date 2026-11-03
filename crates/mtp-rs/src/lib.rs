@@ -59,6 +59,11 @@ pub mod ptp;
 #[cfg(feature = "virtual-device")]
 pub mod virtual_device;
 
+// Parse entry points for `fuzz/`, exempt from SemVer like the other unstable features.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
+
 #[cfg(feature = "unstable-raw")]
 pub mod transport;
 #[cfg(not(feature = "unstable-raw"))]

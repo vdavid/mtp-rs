@@ -14,6 +14,14 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Fixed
+
+- **[lib] A response container whose length field is shorter than its 12-byte header is now an error, not a crash.** The parameter count subtracted the header from the device-chosen length, so a length below 12 panicked in debug builds and, in release, wrapped to a count that aborted the process on allocation. Any device, or a USB glitch, could send one. Found by the new fuzz targets.
+
+### Added
+
+- **[workspace]** cargo-fuzz targets for every parser that reads device bytes (containers, `DeviceInfo`, `StorageInfo`, `ObjectInfo`, `GetObjectPropList`, `DevicePropDesc`, property values, strings and arrays, dates, and the SIC device status), with round-trip properties where one applies, a committed seed corpus, and a weekly fuzz workflow. They follow OSS Verify's rules (single-threaded, input only), so the parsers can get machine-checked proofs. The `fuzzing` feature that exposes them is for the fuzz crate only and exempt from SemVer.
+
 ## [0.37.1] - 2026-11-01
 
 Library `0.37.1`. The CLI doesn't use the changed call, so it stays at `0.11.5`.
