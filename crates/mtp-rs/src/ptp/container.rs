@@ -221,7 +221,14 @@ impl ResponseContainer {
             )));
         }
 
-        // Validate length
+        // Validate length: at least the header (the device picks this field, and the parameter
+        // count below subtracts the header from it), and no more than the buffer.
+        if length < HEADER_SIZE {
+            return Err(crate::PtpError::invalid_data(format!(
+                "response container length too small: {} < header size {}",
+                length, HEADER_SIZE
+            )));
+        }
         if buf.len() < length {
             return Err(crate::PtpError::invalid_data(format!(
                 "response container length mismatch: header says {}, have {}",
@@ -515,6 +522,24 @@ mod tests {
             0x0D, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x20, 0x01, 0x00, 0x00, 0x00, 0xFF,
         ];
         assert!(ResponseContainer::from_bytes(&unaligned).is_err());
+    }
+
+    /// Regression (found by `fuzz_container_parse`): a response whose length field is shorter
+    /// than the header underflowed `length - HEADER_SIZE`, which panics in a debug build and, in
+    /// release, wraps to a parameter count that aborts on allocation. A device picks that field.
+    #[test]
+    fn response_container_length_below_header_is_an_error() {
+        for length in [0u32, 5, 11] {
+            let mut buf = pack_u32(length).to_vec();
+            buf.extend_from_slice(&pack_u16(ContainerType::Response.to_code()));
+            buf.extend_from_slice(&pack_u16(0x2001));
+            buf.extend_from_slice(&pack_u32(7));
+            buf.extend_from_slice(&[0; 8]);
+            assert!(
+                ResponseContainer::from_bytes(&buf).is_err(),
+                "length {length} parsed"
+            );
+        }
     }
 
     // --- EventContainer tests ---
