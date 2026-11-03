@@ -42,9 +42,10 @@ jobs:
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
 
   # OSS Verify builds these targets with Rust nightly-2025-07-16 (rustc 1.90).
-  # Our MSRV is 1.91, so its build lowers `rust-version` with a patch; this job
-  # makes sure the code itself still compiles there, so a newer-Rust feature in
-  # a parse path shows up here and not as a broken proof build.
+  # That nightly predates the 1.90 release our `rust-version` names, so the build
+  # passes `--ignore-rust-version`. This job makes sure the code itself still
+  # compiles there, so a newer-Rust feature in a parse path shows up here and
+  # not as a broken proof build.
   oss-verify-toolchain:
     name: Build on the OSS Verify toolchain
     runs-on: ubuntu-latest

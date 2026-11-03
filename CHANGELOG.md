@@ -14,13 +14,22 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.37.2] - 2026-11-04
+
+Library `0.37.2` and CLI `0.11.6`. A malformed response from a device can no longer abort the process.
+
 ### Fixed
 
-- **[lib] A response container whose length field is shorter than its 12-byte header is now an error, not a crash.** The parameter count subtracted the header from the device-chosen length, so a length below 12 panicked in debug builds and, in release, wrapped to a count that aborted the process on allocation. Any device, or a USB glitch, could send one. Found by the new fuzz targets.
+- **[lib] A response container whose length field is shorter than its 12-byte header is now an error, not a crash.** The parameter count subtracted the header from the device-chosen length, so a length below 12 panicked in debug builds and, in release, wrapped to a count that aborted the process on allocation. Any device, or a USB glitch, could send one. Found by the new fuzz targets. The CLI ships with the fix in `0.11.6`.
 
 ### Added
 
 - **[workspace]** cargo-fuzz targets for every parser that reads device bytes (containers, `DeviceInfo`, `StorageInfo`, `ObjectInfo`, `GetObjectPropList`, `DevicePropDesc`, property values, strings and arrays, dates, and the SIC device status), with round-trip properties where one applies, a committed seed corpus, and a weekly fuzz workflow. They follow OSS Verify's rules (single-threaded, input only), so the parsers can get machine-checked proofs. The `fuzzing` feature that exposes them is for the fuzz crate only and exempt from SemVer.
+
+### Changed
+
+- **[workspace] The MSRV is now Rust 1.90 (was 1.91).** Both crates build on it as they are, and 1.90 is the toolchain OSS Verify proves fuzz targets with. Lowering it breaks no one, so it ships in a patch.
+- **[workspace]** `parking_lot` 0.13 (dev-only) and refreshed lockfile dependencies, `nusb` 0.2.9 among them.
 
 ## [0.37.1] - 2026-11-01
 

@@ -4,7 +4,7 @@
 [![docs.rs](https://img.shields.io/docsrs/mtp-rs)](https://docs.rs/mtp-rs)
 [![CI](https://github.com/vdavid/mtp-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/vdavid/mtp-rs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/crates/l/mtp-rs)](LICENSE-MIT)
-[![MSRV](https://img.shields.io/badge/MSRV-1.91-blue)](https://blog.rust-lang.org/2025/10/30/Rust-1.91.0/)
+[![MSRV](https://img.shields.io/badge/MSRV-1.90-blue)](https://blog.rust-lang.org/2025/09/18/Rust-1.90.0/)
 
 A pure-Rust, async MTP/PTP library.
 No C dependencies, consistently faster than libmtp (up to 4x for large transfers), and way more predictable.
@@ -129,7 +129,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 ### MSRV
 
-mtp-rs supports the Rust releases from the last 12 months, currently Rust 1.91 or newer. Raising this minimum is a
+mtp-rs supports the Rust releases from the last 12 months, currently Rust 1.90 or newer. Raising this minimum is a
 minor version bump (like 0.36 to 0.37), and the changelog always says so. When one of mtp-rs's dependencies ships a
 release that needs a newer Rust than yours, Cargo's MSRV-aware resolver (on by default with `resolver = "3"` or edition
 2024) picks a version your Rust can build.
@@ -140,13 +140,13 @@ We're heading to 1.0, and this is already how we work:
 
 - **SemVer covers the stable core**: everything at the crate root, plus `mtp::` and `ptp::`. Before 1.0 a minor can
   break (0.37 to 0.38), and the changelog tells you how to migrate. `cargo-semver-checks` in CI catches accidental breaks.
-- **Not covered**: the `unstable-raw` and `virtual-device` features, the `tracing` feature's event names and fields, and
-  log output. These can change in any release.
+- **Not covered**: the `unstable-raw`, `virtual-device`, and `fuzzing` features (`fuzzing` exists only for the repo's
+  fuzz targets), the `tracing` feature's event names and fields, and log output. These can change in any release.
 - **Default values aren't API.** We can change a timeout or a window size in any release. The changelog says so.
 - **Pure fixes ship as patches**, so `cargo update` gets them. Minors are for features and (before 1.0) breaking changes.
 - **Security fixes** may change behavior in a minor. Only the latest release gets fixes (no backports). See
   [SECURITY.md](https://github.com/vdavid/mtp-rs/blob/main/SECURITY.md).
-- **MSRV**: Rust releases from the last 12 months, so 1.91 today. Raising it is a minor bump with a changelog line, not
+- **MSRV**: Rust releases from the last 12 months, so 1.90 today. Raising it is a minor bump with a changelog line, not
   a SemVer break.
 
 The `unstable-raw` feature is the escape hatch for when you enumerate USB devices with `nusb` yourself or bring your own

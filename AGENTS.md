@@ -102,7 +102,8 @@ The release that shaped this is 0.37.0 (#34). The goal: a 1.0 that's only a matt
   `mtp::` paths work too. Every new stable item gets a root re-export.
 - **Exempt from SemVer**: the `unstable-raw` feature (`transport::`, `MtpDeviceBuilder::open_nusb_device`,
   `PtpSession::open`, `PtpSession::open_reusing_existing`), the `virtual-device` feature (`mtp_rs::virtual_device`,
-  `open_virtual`), the `tracing` feature's event names and fields, and log output.
+  `open_virtual`), the `fuzzing` feature (`mtp_rs::fuzzing`, doc-hidden, for `fuzz/` only), the `tracing` feature's
+  event names and fields, and log output.
 - **Nothing `nusb`-typed in a stable signature**, including errors and trait impls. `nusb` is 0.x, and its next release
   must not be able to force an mtp-rs major. Nothing in this repo needs `unstable-raw`: if a test, example, or the CLI
   starts to, or a consumer does, that's a gap in the stable core, so widen the core.

@@ -22,7 +22,7 @@ Publishing is manual. There's no CI automation for it.
 2. **Update `CHANGELOG.md`** at the repo root with one entry covering both crates. Tag each bullet with `[lib]`, `[cli]`, or `[workspace]` so readers can skim.
 3. **Run `just check-all`** (format, clippy, test, doc, MSRV, audit, deny, semver). `just semver` reads the bumped version, so a deliberate break passes only once step 1 says so, and it needs network access to fetch the baseline from crates.io. The release commit must produce zero warnings, zero formatting diffs, zero doc-link issues. Re-run until clean.
 
-   This also refreshes `Cargo.lock` to the new versions, since the workspace members resolve by path: editing their `Cargo.toml` and building is all it takes. Check that `Cargo.lock` shows the new versions and goes into the release commit. (No `cargo update --precise` needed; against path deps it reports only "unchanged dependencies" and does nothing.)
+   This also refreshes `Cargo.lock` to the new versions, since the workspace members resolve by path: editing their `Cargo.toml` and building is all it takes. Check that `Cargo.lock` shows the new versions and goes into the release commit. (No `cargo update --precise` needed; against path deps it reports only "unchanged dependencies" and does nothing.) The fuzz crate is its own workspace with its own `crates/mtp-rs/fuzz/Cargo.lock`, which `just check-all` doesn't touch: refresh it with `cargo metadata --format-version 1 --manifest-path crates/mtp-rs/fuzz/Cargo.toml > /dev/null` and commit it too, or the fuzz workflow's `--locked` build fails.
 4. **Commit and tag**. Tag the workspace release with the lib version (since that's the API contract downstream consumers track):
    ```bash
    git commit -m "Prepare vX.Y.Z for release"
