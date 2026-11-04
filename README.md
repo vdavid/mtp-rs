@@ -31,7 +31,7 @@ minor version bump, and the changelog always says so.
 
 ## Sister projects
 
-- [Cmdr](https://github.com/vdavid/cmdr): an AI-native file manager that uses `mtp-rs` for MTP access.
+- [Cmdr](https://github.com/vdavid/cmdr): an extremely fast, keyboard-driven two-pane file manager for macOS that uses `mtp-rs` for MTP access.
 - [mtp-mount](https://github.com/vdavid/mtp-mount): mount a phone or camera as a normal folder, via FUSE. Unlike gvfs,
   it can also _write_, so `cp` and `rsync` onto the device work.
 
