@@ -168,6 +168,18 @@ of it. It reads the version in `Cargo.toml`: a deliberate break passes once the 
   binary created a root folder, uploaded a root file, verified it, and deleted both. So the old "Android can't create in
   the storage root" line in these docs was describing this bug, not Android.
 - **Android**: Object handles are NOT stable. MediaProvider re-keys object IDs across a media rescan, so a handle a host cached when it last listed a folder can be silently invalidated before a later operation (upload, delete) into that folder: the device then returns `InvalidObjectHandle`/`InvalidParentObject`, not for a missing object but for a stale ID. Hosts should treat those codes on a previously-valid handle as "re-list the parent and re-resolve, then retry once", not as a hard not-found. (A downstream, Cmdr, hit this as a 307 MB upload failing at `SendObjectInfo` and surfacing as "Path not found" on the intact *source* file.) Reproducible against the virtual device with `rekey_virtual_object` (see Testing).
+- **Android answers a `CopyObject` into a folder that already holds the name with OK and makes no copy** (#59). Read
+  from AOSP `main` on 2026-11-04: `MtpStorageManager.beginCopyObject` refuses with -1, `android_mtp_MtpDatabase.cpp`
+  passes it back as a 16-bit `MtpResponseCode` (0xFFFF), and `MtpServer::doCopyObject` compares that against the
+  32-bit `kInvalidObjectHandle`, misses, and runs the copy anyway. `copyFile` (`MtpUtils.cpp`) opens the destination
+  without `O_TRUNC`, so a same-folder copy rewrites the file onto itself and a copy onto a same-named file elsewhere
+  overwrites it in place, keeping its tail if it was longer. A folder merges into the existing one (`GeneralError`).
+  The response carries handle 0xFFFF; WPD passes the OK through. `MtpStorageManager` matches names exactly while shared
+  storage is case-insensitive, so `a.jpg` onto `A.JPG` gets past the check with a real handle and overwrites too.
+  Hence three guards, keep all of them: `Storage::copy_object` refuses a destination holding the name (case
+  ignored) with `Error::AlreadyExists`; `UsbBackend::verify_copy` checks the answered handle with `GetObjectInfo`;
+  WPD's `copy_object` returns only an object that wasn't in the destination before (it used to match the name and
+  return the original, which an app then renamed). The virtual device models AOSP's answer.
 - **Xiaomi POCO X7 Pro (HyperOS 3)** declines `GetObjectPropList` for "all properties" (`0xFFFFFFFF`) with
   `InvalidObjectPropCode` (0xA801) in most folders but answers each property alone, and sends a property it has no
   value for (`DateCreated`) with data type 0 and no value. We never ask "all"; see § Folder listings via

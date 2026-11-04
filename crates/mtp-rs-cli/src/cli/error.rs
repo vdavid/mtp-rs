@@ -100,6 +100,12 @@ impl CliError {
                         mtp_rs::MAX_NAME_UNITS
                     ),
                 ),
+                Error::AlreadyExists => Self::new(
+                    CliErrorKind::RemotePath,
+                    format!(
+                        "{context}: the destination folder already holds an object with that name"
+                    ),
+                ),
                 Error::StorageFull => Self::new(
                     CliErrorKind::Transfer,
                     format!("{context}: storage is full"),

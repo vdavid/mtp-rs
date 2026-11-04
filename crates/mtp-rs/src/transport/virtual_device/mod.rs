@@ -2017,6 +2017,183 @@ mod tests {
         );
     }
 
+    // -- Copy name clashes (#59) ---------------------------------------------------
+    //
+    // AOSP answers a `CopyObject` whose destination already holds that name with OK and handle
+    // 0xFFFF, then writes the source over the existing file without truncating it. The virtual
+    // device models that, so these tests pin that the façade refuses before the device sees it.
+
+    #[tokio::test]
+    async fn copy_into_its_own_folder_is_refused_and_leaves_the_original_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), "original bytes").unwrap();
+
+        let config = test_config_with_serial(dir.path(), "copy-clash-same-folder");
+        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        let storages = device.storages().await.unwrap();
+        let items = storages[0].list_objects(None).await.unwrap();
+        let original = items.iter().find(|i| i.filename == "a.jpg").unwrap();
+
+        let result = storages[0]
+            .copy_object(original.handle, crate::mtp::ObjectHandle::ROOT, None)
+            .await;
+        assert!(
+            matches!(result, Err(crate::mtp::Error::AlreadyExists)),
+            "expected AlreadyExists, got {result:?}"
+        );
+
+        let after = storages[0].list_objects(None).await.unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].handle, original.handle);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.jpg")).unwrap(),
+            "original bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_onto_a_same_named_file_elsewhere_is_refused_and_leaves_it_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), "short").unwrap();
+        std::fs::create_dir(dir.path().join("dest")).unwrap();
+        std::fs::write(dir.path().join("dest/a.jpg"), "a much longer existing file").unwrap();
+
+        let config = test_config_with_serial(dir.path(), "copy-clash-other-folder");
+        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        let storages = device.storages().await.unwrap();
+        let items = storages[0].list_objects(None).await.unwrap();
+        let source = items.iter().find(|i| i.filename == "a.jpg").unwrap();
+        let dest = items.iter().find(|i| i.filename == "dest").unwrap();
+
+        let result = storages[0]
+            .copy_object(source.handle, dest.handle, None)
+            .await;
+        assert!(
+            matches!(result, Err(crate::mtp::Error::AlreadyExists)),
+            "expected AlreadyExists, got {result:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dest/a.jpg")).unwrap(),
+            "a much longer existing file"
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_onto_a_name_differing_only_in_case_is_refused() {
+        // Android's shared storage is case-insensitive while `MtpStorageManager` matches names
+        // exactly, so `A.JPG` next to `a.jpg` gets "copied" over the existing file.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), "source").unwrap();
+        std::fs::create_dir(dir.path().join("dest")).unwrap();
+        std::fs::write(dir.path().join("dest/A.JPG"), "existing").unwrap();
+
+        let config = test_config_with_serial(dir.path(), "copy-clash-case");
+        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        let storages = device.storages().await.unwrap();
+        let items = storages[0].list_objects(None).await.unwrap();
+        let source = items.iter().find(|i| i.filename == "a.jpg").unwrap();
+        let dest = items.iter().find(|i| i.filename == "dest").unwrap();
+
+        let result = storages[0]
+            .copy_object(source.handle, dest.handle, None)
+            .await;
+        assert!(
+            matches!(result, Err(crate::mtp::Error::AlreadyExists)),
+            "expected AlreadyExists, got {result:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dest/A.JPG")).unwrap(),
+            "existing"
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_returns_a_new_handle_in_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), "bytes").unwrap();
+        std::fs::create_dir(dir.path().join("dest")).unwrap();
+
+        let config = test_config_with_serial(dir.path(), "copy-new-handle");
+        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        let storages = device.storages().await.unwrap();
+        let items = storages[0].list_objects(None).await.unwrap();
+        let source = items.iter().find(|i| i.filename == "a.jpg").unwrap();
+        let dest = items.iter().find(|i| i.filename == "dest").unwrap();
+
+        let copy = storages[0]
+            .copy_object(source.handle, dest.handle, None)
+            .await
+            .unwrap();
+        assert_ne!(copy, source.handle);
+        let info = storages[0].get_object_info(copy).await.unwrap();
+        assert_eq!(info.parent, dest.handle);
+        assert_eq!(info.filename, "a.jpg");
+    }
+
+    /// The raw AOSP answer, one layer down: OK with handle 0xFFFF, no new object, and the
+    /// destination overwritten in place without truncation.
+    #[tokio::test]
+    async fn ptp_copy_onto_an_existing_name_answers_like_aosp() {
+        use crate::ptp::{ObjectHandle as PtpHandle, PtpSession};
+        use crate::transport::virtual_device::VirtualTransport;
+        use crate::transport::Transport;
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), "SHORT").unwrap();
+        std::fs::create_dir(dir.path().join("dest")).unwrap();
+        std::fs::write(dir.path().join("dest/a.jpg"), "existing long tail").unwrap();
+
+        let config = test_config_with_serial(dir.path(), "copy-aosp-raw");
+        let transport: Arc<dyn Transport> = Arc::new(VirtualTransport::new(config));
+        let session = PtpSession::open(transport, 1).await.unwrap();
+        let storage = session.get_storage_ids().await.unwrap()[0];
+        let root = session
+            .get_object_handles(storage, None, Some(PtpHandle::ROOT))
+            .await
+            .unwrap();
+        let mut source = None;
+        let mut dest = None;
+        for handle in root {
+            let info = session.get_object_info(handle).await.unwrap();
+            match info.filename.as_str() {
+                "a.jpg" => source = Some(handle),
+                "dest" => dest = Some(handle),
+                _ => {}
+            }
+        }
+        let (source, dest) = (source.unwrap(), dest.unwrap());
+        let before = session
+            .get_object_handles(storage, None, Some(dest))
+            .await
+            .unwrap();
+
+        let copy = session.copy_object(source, storage, dest).await.unwrap();
+        assert_eq!(copy, PtpHandle(0x0000_FFFF));
+        assert!(session.get_object_info(copy).await.is_err());
+
+        let after = session
+            .get_object_handles(storage, None, Some(dest))
+            .await
+            .unwrap();
+        assert_eq!(before, after, "no new object appears");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dest/a.jpg")).unwrap(),
+            "SHORTing long tail"
+        );
+
+        // Into its own folder: still 0xFFFF, and the file is untouched.
+        let copy = session
+            .copy_object(source, storage, PtpHandle::ROOT)
+            .await
+            .unwrap();
+        assert_eq!(copy, PtpHandle(0x0000_FFFF));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.jpg")).unwrap(),
+            "SHORT"
+        );
+    }
+
     #[tokio::test]
     async fn path_traversal_rejected() {
         let dir = tempfile::tempdir().unwrap();

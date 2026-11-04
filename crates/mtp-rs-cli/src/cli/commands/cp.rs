@@ -38,6 +38,26 @@ pub async fn run(cli: &Cli, args: &CopyArgs) -> Result<(), CliError> {
         ensure_rename_supported(&device)?;
     }
     let replaced = target.existing.is_some();
+    // The copy itself keeps the source's name and only gets renamed afterwards, so the
+    // destination folder mustn't hold that name (the library refuses it, #59). Check before
+    // `--replace` deletes anything: otherwise a copy that can't happen costs the destination.
+    let siblings = storage
+        .list_objects(target.parent)
+        .await
+        .map_err(|e| CliError::from_mtp("list destination folder", e, cli.verbose))?;
+    let replaced_handle = target.existing.as_ref().map(|e| e.handle);
+    if let Some(clash) = siblings.iter().find(|o| {
+        Some(o.handle) != replaced_handle && o.filename.to_lowercase() == source_name.to_lowercase()
+    }) {
+        return Err(CliError::new(
+            CliErrorKind::RemotePath,
+            format!(
+                "the destination folder already holds `{}`, and an MTP copy keeps the source's \
+                 name until it's renamed; copy into another folder first, then rename and move it",
+                clash.filename
+            ),
+        ));
+    }
     if let Some(existing) = &target.existing {
         ensure_not_same_object(source.handle, existing.handle)?;
         if !args.replace {

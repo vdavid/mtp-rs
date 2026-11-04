@@ -126,6 +126,58 @@ impl UsbBackend {
         }
     }
 
+    /// Check that the handle a `CopyObject` answered with is a real copy in the destination.
+    ///
+    /// Android can answer OK without copying (#59): when the destination already holds the
+    /// name, its JNI glue squeezes the refusal (-1) through a 16-bit type and the response
+    /// carries handle 0xFFFF, which names nothing. The [`Storage`](crate::mtp::Storage) façade
+    /// refuses that case up front; this catches whatever slips past it (a name created on the
+    /// phone in between, a device we haven't met) so the caller never renames or deletes "the
+    /// copy" and hits some other object. One `GetObjectInfo` per copy.
+    ///
+    /// Only `InvalidObjectHandle` means "no such copy". Session failures (`Timeout`,
+    /// `Disconnected`, `Busy`, …) propagate as themselves: they say nothing about the copy.
+    async fn verify_copy(
+        &self,
+        source: PtpHandle,
+        copy: PtpHandle,
+        dest_parent: PtpHandle,
+        dest_storage: PtpStorageId,
+    ) -> Result<(), Error> {
+        let phantom = |why: String| {
+            Error::invalid_data(format!(
+                "the device reported a copy it didn't make: handle {:#x} {why}",
+                copy.0
+            ))
+        };
+        if copy == source {
+            return Err(phantom("is the source object itself".into()));
+        }
+        let info = match self.session.get_object_info(copy).await {
+            Ok(info) => info,
+            Err(PtpError::Protocol {
+                code: ResponseCode::InvalidObjectHandle,
+                ..
+            }) => return Err(phantom("names no object".into())),
+            Err(e) => return Err(e.into()),
+        };
+        // The root is spelled three ways on the wire (0, 0xFFFFFFFF, or the storage ID, PR #20).
+        // One object can't make the storage-ID spelling ambiguous the way a whole listing can, so
+        // accept all three.
+        let expected = if dest_parent == PtpHandle::ROOT {
+            ParentFilter::Root(Some(dest_storage))
+        } else {
+            ParentFilter::Exact(dest_parent)
+        };
+        if !expected.accepts(info.parent) {
+            return Err(phantom(format!(
+                "sits under parent {:#x}, not the destination {:#x}",
+                info.parent.0, dest_parent.0
+            )));
+        }
+        Ok(())
+    }
+
     /// Decide how to issue a ranged/offset read for this device and offset.
     fn partial_read(&self, offset: u64) -> Result<PartialReadOp, Error> {
         plan_partial_read(self.has_partial_object_64, self.has_partial_object, offset)
@@ -972,6 +1024,13 @@ impl MtpBackend for UsbBackend {
             .session
             .copy_object(obj.to_ptp(), new_storage.to_ptp(), new_parent.to_ptp())
             .await?;
+        self.verify_copy(
+            obj.to_ptp(),
+            handle,
+            new_parent.to_ptp(),
+            new_storage.to_ptp(),
+        )
+        .await?;
         Ok(handle.into())
     }
 
@@ -2115,6 +2174,7 @@ mod tests {
         mock.queue_response(ok_response(0));
         mock.queue_response(ok_response(1));
         mock.queue_response(response_with_params(2, ResponseCode::Ok, &[99]));
+        queue_object_info(&mock, 3, "a.jpg", 0);
 
         let backend = mock_backend(transport, "").await;
         backend
@@ -2134,6 +2194,113 @@ mod tests {
             command_params(&mock, OperationCode::CopyObject),
             vec![vec![5, SID.0 as u32, 0]]
         );
+    }
+
+    // -- Copy verification (#59) -------------------------------------------------
+
+    fn assert_phantom_copy(result: Result<ObjectHandle, Error>) {
+        match result {
+            Err(Error::InvalidData { message }) => assert!(
+                message.contains("copy it didn't make"),
+                "unexpected message: {message}"
+            ),
+            other => panic!("expected InvalidData about a phantom copy, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn copy_with_a_handle_the_device_cannot_describe_is_an_error() {
+        // Android's answer when the name already exists: OK, handle 0xFFFF, no copy.
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(response_with_params(1, ResponseCode::Ok, &[0xFFFF]));
+        mock.queue_response(error_response(2, ResponseCode::InvalidObjectHandle));
+
+        let backend = mock_backend(transport, "").await;
+        assert_phantom_copy(
+            backend
+                .copy_object(ObjectHandle(5), ObjectHandle(42), SID)
+                .await,
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_that_lands_outside_the_destination_is_an_error() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(response_with_params(1, ResponseCode::Ok, &[99]));
+        queue_object_info(&mock, 2, "a.jpg", 7);
+
+        let backend = mock_backend(transport, "").await;
+        assert_phantom_copy(
+            backend
+                .copy_object(ObjectHandle(5), ObjectHandle(42), SID)
+                .await,
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_that_answers_with_the_source_handle_is_an_error() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(response_with_params(1, ResponseCode::Ok, &[5]));
+
+        let backend = mock_backend(transport, "").await;
+        assert_phantom_copy(
+            backend
+                .copy_object(ObjectHandle(5), ObjectHandle(42), SID)
+                .await,
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_into_a_folder_returns_the_verified_handle() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(response_with_params(1, ResponseCode::Ok, &[99]));
+        queue_object_info(&mock, 2, "a.jpg", 42);
+
+        let backend = mock_backend(transport, "").await;
+        let copy = backend
+            .copy_object(ObjectHandle(5), ObjectHandle(42), SID)
+            .await
+            .unwrap();
+        assert_eq!(copy, ObjectHandle(99));
+    }
+
+    #[tokio::test]
+    async fn copy_to_the_root_accepts_every_root_parent_spelling() {
+        // 0, 0xFFFFFFFF, and the storage ID (DBI/Sphaira, PR #20) all mean "at the root".
+        for (i, parent) in [0, 0xFFFF_FFFF, SID.0 as u32].into_iter().enumerate() {
+            let (transport, mock) = mock_transport();
+            mock.queue_response(ok_response(0));
+            mock.queue_response(response_with_params(1, ResponseCode::Ok, &[99]));
+            queue_object_info(&mock, 2, "a.jpg", parent);
+
+            let backend = mock_backend(transport, "").await;
+            let copy = backend
+                .copy_object(ObjectHandle(5), ObjectHandle::ROOT, SID)
+                .await;
+            assert_eq!(
+                copy.unwrap(),
+                ObjectHandle(99),
+                "case {i}: parent {parent:#x}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn copy_verification_propagates_session_failures() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0));
+        mock.queue_response(response_with_params(1, ResponseCode::Ok, &[99]));
+        mock.queue_response(error_response(2, ResponseCode::DeviceBusy));
+
+        let backend = mock_backend(transport, "").await;
+        let result = backend
+            .copy_object(ObjectHandle(5), ObjectHandle(42), SID)
+            .await;
+        assert!(matches!(result, Err(Error::Busy)), "got {result:?}");
     }
 
     // -- Tolerant collection (per-object metadata failures) ----------------------

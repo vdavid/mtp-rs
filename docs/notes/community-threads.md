@@ -570,6 +570,25 @@ Reliable recipe (2026-10-29): list a folder, `adb shell rm` a file in it, call `
   18.8 s), and batching deletes (the recipe has no delete).
 - **Not seen on David's S23 Ultra or Pixel**, though those haven't been through this recipe.
 
+### #59: `copy_object` into the object's own folder (opened 2026-11-03)
+
+Reporter: [@IoSonoPiero](https://github.com/IoSonoPiero). POCO X7 Pro, Windows 11 (WPD, mtp-rs 0.36.0) and Fedora (USB).
+A same-folder copy answered OK and made nothing: USB returned handle 65,535, WPD returned the original's handle (its
+copy lookup matched on the name), and his app's rename of "the copy" renamed the original.
+
+- **Root cause is Android's, read from AOSP `main` on 2026-11-04**: `MtpStorageManager.beginCopyObject` returns -1 when
+  the destination holds the name; `android_mtp_MtpDatabase.cpp` returns it as a 16-bit `MtpResponseCode` (0xFFFF);
+  `MtpServer::doCopyObject` compares against the 32-bit `kInvalidObjectHandle`, misses, and copies anyway with
+  `copyFile` (`MtpUtils.cpp`), which opens without `O_TRUNC`. Same folder: the file is rewritten onto itself. Another
+  folder: the existing file is overwritten in place and keeps its tail if it was longer. The logcat line
+  `Failed to end copy object` is `endCopyObject(0xFFFF)` finding nothing.
+- **Fix**: the `Storage` façade refuses the copy with `Error::AlreadyExists` (case-insensitive, since shared storage is),
+  `UsbBackend` checks the answered handle with `GetObjectInfo`, WPD returns only an object that wasn't in the
+  destination before, and the CLI's `cp` checks before `--replace` deletes. The virtual device models AOSP's answer.
+- **His workaround** (copy into a hidden sibling folder, check the new handle, move in under the new name) is what the
+  `copy_object` docs now suggest for a renamed copy next to the original.
+- **Not yet hardware-verified** after the fix. Upstream AOSP bug report drafted for David.
+
 ## Device quirks reference
 
 Cross-cutting summary of every quirk currently handled or known. Sorted by device family.
@@ -579,6 +598,7 @@ Cross-cutting summary of every quirk currently handled or known. Sorted by devic
 | Android (general)            | `parent=0` returns all objects on storage                                                                                                      | `parent=0xFFFFFFFF` for root listing                                                 | Pre-public                           |
 | Android (general)            | `ObjectHandle::ALL` recursive listing broken                                                                                                   | Manual traversal in `Storage::list_objects_recursive` (on every device)              | Pre-public                           |
 | Android, Switch responders   | Reject `SendObjectInfo` with parent `0` for the storage root (`0` isn't the root there, per MTP 1.1 D.2.12)                                    | Send `0xFFFFFFFF` (`PtpHandle::SEND_ROOT`); was our bug, long mistaken for Android's | #21 / #24 (fixed 2026-08-09)         |
+| Android (general, AOSP)      | `CopyObject` into a folder that holds the name answers OK with handle 0xFFFF and writes over the existing file without truncating it | `Storage::copy_object` refuses with `Error::AlreadyExists` first; backends verify the answered handle | #59 (@IoSonoPiero, 2026-11-03) |
 | Samsung Galaxy               | `InvalidObjectHandle` on root listing with handle 0                                                                                            | Recursive traversal with filtering                                                   | Pre-public                           |
 | Kindle Paperwhite (12th gen) | `parent=0` returns all objects (same as Android, no `android.com` ID)                                                                          | Universal fast path with fallback (post v0.13.2)                                     | #8 / #9                              |
 | Kindle (11th gen)            | Vendor-class USB interface, missed by class-code match                                                                                         | Permissive interface scan + custom VID/PID list                                      | #1, generalized in #4                |

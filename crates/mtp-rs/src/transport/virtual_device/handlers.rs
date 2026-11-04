@@ -959,7 +959,7 @@ fn handle_copy_object(state: &mut VirtualDeviceState, tx_id: u32, params: &[u32]
         }
     };
 
-    let new_rel = dest_parent_rel.join(filename);
+    let new_rel = dest_parent_rel.join(&filename);
     let dest_path = dest_storage_state.config.backing_dir.join(&new_rel);
 
     if validate_path_within(&dest_storage_state.config.backing_dir, &dest_path).is_err() {
@@ -969,10 +969,41 @@ fn handle_copy_object(state: &mut VirtualDeviceState, tx_id: u32, params: &[u32]
         return;
     }
 
+    // A destination that already holds this exact name gets AOSP's answer (#59).
+    // `MtpStorageManager.beginCopyObject` refuses with -1, the JNI glue returns it as a 16-bit
+    // `MtpResponseCode` (0xFFFF), `MtpServer::doCopyObject` compares that against the 32-bit
+    // `kInvalidObjectHandle` and misses, so the copy runs anyway: over the existing file without
+    // truncating it, or merged into the existing folder (whose failed `mkdir` makes the answer
+    // `GeneralError`). No object is added, and the response carries handle 0xFFFF.
+    let dest_parent_norm = if dest_parent.0 == 0 || dest_parent == ObjectHandle::ROOT {
+        ObjectHandle::ROOT
+    } else {
+        dest_parent
+    };
+    let clashes = state.objects.values().any(|o| {
+        o.storage_id == dest_storage
+            && o.parent == dest_parent_norm
+            && o.rel_path.file_name() == Some(filename.as_os_str())
+    });
+    if clashes {
+        let (code, result) = if src_path.is_dir() {
+            (GENERAL_ERROR, copy_dir_all(&src_path, &dest_path))
+        } else {
+            (OK, copy_file_in_place(&src_path, &dest_path))
+        };
+        let code = if result.is_ok() { code } else { GENERAL_ERROR };
+        state.response_queue.push_back(build_response(
+            code,
+            tx_id,
+            &[AOSP_TRUNCATED_INVALID_HANDLE],
+        ));
+        return;
+    }
+
     let copy_result = if src_path.is_dir() {
         copy_dir_all(&src_path, &dest_path)
     } else {
-        std::fs::copy(&src_path, &dest_path).map(|_| ())
+        copy_file_in_place(&src_path, &dest_path)
     };
 
     match copy_result {
@@ -1204,7 +1235,12 @@ fn validate_path_within(base_dir: &Path, path: &Path) -> Result<PathBuf, ()> {
     Err(())
 }
 
-/// Recursively copy a directory.
+/// The handle AOSP's `CopyObject` sends back when it refused the copy: -1 squeezed through a
+/// 16-bit `MtpResponseCode` on its way out of the JNI glue (#59).
+const AOSP_TRUNCATED_INVALID_HANDLE: u32 = 0x0000_FFFF;
+
+/// Recursively copy a directory, merging into an existing one the way AOSP's `copyRecursive`
+/// does.
 fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -1214,8 +1250,49 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result
         if ft.is_dir() {
             copy_dir_all(&entry.path(), &dest_path)?;
         } else {
-            std::fs::copy(entry.path(), &dest_path)?;
+            copy_file_in_place(&entry.path(), &dest_path)?;
         }
     }
     Ok(())
+}
+
+/// Copy a file the way AOSP's `copyFile` (`MtpUtils.cpp`) does: open the destination with
+/// `O_CREAT | O_WRONLY` and no `O_TRUNC`, so an existing longer file keeps its tail.
+///
+/// Copying a file onto itself is a no-op. `std::fs::copy` would truncate it to zero bytes
+/// first, which on a real device's same-folder copy is where the data would go.
+fn copy_file_in_place(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if is_same_file(src, dst) {
+        return Ok(());
+    }
+    let mut from = std::fs::File::open(src)?;
+    let mut to = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dst)?;
+    std::io::copy(&mut from, &mut to)?;
+    Ok(())
+}
+
+/// Whether two paths name the same file, including through a case-insensitive filesystem.
+fn is_same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ma.dev() == mb.dev() && ma.ino() == mb.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (ma, mb);
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(ca), Ok(cb)) => {
+                ca.to_string_lossy().to_lowercase() == cb.to_string_lossy().to_lowercase()
+            }
+            _ => false,
+        }
+    }
 }

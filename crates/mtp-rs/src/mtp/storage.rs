@@ -295,7 +295,18 @@ impl Storage {
         parent: Option<ObjectHandle>,
         cancel: Option<&CancelToken>,
     ) -> Result<ObjectCollection, Error> {
-        let mut listing = self.list_objects_stream_with_cancel(parent, cancel).await?;
+        self.collect_in(self.id, parent, cancel).await
+    }
+
+    /// [`collect_objects_with_cancel`](Self::collect_objects_with_cancel) on any storage of this
+    /// device, for operations whose destination may be on another one.
+    async fn collect_in(
+        &self,
+        storage: StorageId,
+        parent: Option<ObjectHandle>,
+        cancel: Option<&CancelToken>,
+    ) -> Result<ObjectCollection, Error> {
+        let mut listing = ObjectListing::new(self.backend.list(storage, parent, cancel).await?);
         let mut objects = Vec::with_capacity(listing.total());
         let mut skipped = Vec::new();
         while let Some(result) = listing.next_classified().await {
@@ -305,7 +316,7 @@ impl Storage {
                     diag_debug!(
                         "list_objects: skipping handle {} on storage {} after a completed per-object metadata error: {}",
                         error.handle.0,
-                        self.id.0,
+                        storage.0,
                         error.source
                     );
                     skipped.push(SkippedObject {
@@ -329,7 +340,7 @@ impl Storage {
                 "list_objects: every one of {} handles on storage {} failed its metadata lookup; \
                  reporting the failure rather than an empty folder",
                 skipped.len() + 1,
-                self.id.0
+                storage.0
             );
             return Err(first.error);
         }
@@ -636,6 +647,24 @@ impl Storage {
         self.backend.move_object(handle, new_parent, storage).await
     }
 
+    /// Copy an object (file or folder) into a folder, optionally on another storage, and return
+    /// the copy's handle. Pass [`ObjectHandle::ROOT`] for the storage root.
+    ///
+    /// The copy keeps the source's name, so copying into the folder it's already in, or into a
+    /// folder that already holds that name, fails with [`Error::AlreadyExists`] before anything
+    /// is sent. The match ignores letter case. To make a renamed copy next to the original,
+    /// copy into another folder, rename the copy there, then move it.
+    ///
+    /// Why the library refuses rather than letting the device decide: Android answers such a copy
+    /// with OK and a handle that names nothing, and writes the source over the existing file
+    /// without truncating it, or merges it into the existing folder (#59). So this costs one
+    /// listing of the destination per copy. Objects in the destination the device couldn't
+    /// describe (see [`collect_objects`](Self::collect_objects)) have no known name and don't
+    /// block the copy.
+    ///
+    /// The returned handle is checked against the device too: a handle that names no object, or
+    /// one outside the destination, is an [`Error::InvalidData`], so a caller never renames or
+    /// deletes some other object thinking it's the copy.
     pub async fn copy_object(
         &self,
         handle: ObjectHandle,
@@ -643,6 +672,12 @@ impl Storage {
         new_storage: Option<StorageId>,
     ) -> Result<ObjectHandle, Error> {
         let storage = new_storage.unwrap_or(self.id);
+        let name = self.backend.object_info(handle).await?.filename;
+        let dest = (new_parent != ObjectHandle::ROOT).then_some(new_parent);
+        let siblings = self.collect_in(storage, dest, None).await?.objects;
+        if siblings.iter().any(|o| same_name(&o.filename, &name)) {
+            return Err(Error::AlreadyExists);
+        }
         self.backend.copy_object(handle, new_parent, storage).await
     }
 
@@ -652,5 +687,28 @@ impl Storage {
     pub async fn rename(&self, handle: ObjectHandle, new_name: &str) -> Result<(), Error> {
         check_name_length(new_name)?;
         self.backend.rename(handle, new_name).await
+    }
+}
+
+/// Whether two object names collide on the device, ignoring letter case.
+///
+/// Android's shared storage is case-insensitive, but `MtpStorageManager` matches a copy's
+/// destination name exactly, so a copy of `a.jpg` into a folder holding `A.JPG` passes its check
+/// and then writes over `A.JPG` in place (#59). Refusing case variants costs a case-sensitive
+/// device nothing worse than a clear error.
+fn same_name(a: &str, b: &str) -> bool {
+    a == b || a.to_lowercase() == b.to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_name;
+
+    #[test]
+    fn same_name_ignores_case_only() {
+        assert!(same_name("a.jpg", "a.jpg"));
+        assert!(same_name("IMG_1.JPG", "img_1.jpg"));
+        assert!(same_name("Ärger.txt", "ärger.TXT"));
+        assert!(!same_name("a.jpg", "a (2).jpg"));
     }
 }

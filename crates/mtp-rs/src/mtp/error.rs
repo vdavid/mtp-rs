@@ -101,6 +101,19 @@ pub enum Error {
         units: usize,
     },
 
+    /// The destination folder already holds an object with this name.
+    ///
+    /// Raised by [`Storage::copy_object`](crate::mtp::Storage::copy_object) before anything is
+    /// sent, so nothing on the device changed. The name match ignores letter case, because
+    /// Android's shared storage does. Copy into a different folder, or delete or rename the
+    /// existing object first.
+    ///
+    /// Why the library refuses rather than letting the device decide: Android answers such a copy
+    /// with OK and a bogus handle, and writes the source over the existing file without truncating
+    /// it (issue #59, `AGENTS.md` § Known device quirks).
+    #[error("an object with that name already exists in the destination folder")]
+    AlreadyExists,
+
     /// Data received from the device couldn't be interpreted.
     #[error("invalid data: {message}")]
     InvalidData {

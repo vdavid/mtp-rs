@@ -701,7 +701,12 @@ impl WpdDevice {
     /// Copy an object into a new parent folder, returning the copy's handle.
     ///
     /// WPD's `Copy` reports results as a prop-variant collection that not all drivers populate, so we
-    /// resolve the copy by re-listing the destination and matching the source filename.
+    /// resolve the copy by listing the destination before and after, and taking an object that
+    /// wasn't there before (the one with the source's name, when several appeared).
+    ///
+    /// Never match on the name alone: an Android phone answers a copy into a folder that already
+    /// holds the name with OK and makes no copy (#59), and a name match then finds the original,
+    /// so a caller renaming "the copy" renames the original. No new object is an error.
     ///
     /// # Safety
     /// COM thread only.
@@ -720,6 +725,12 @@ impl WpdDevice {
             .to_string();
         let filename = self.object_info(obj)?.filename;
         let dest = self.dest_wpd_id(new_storage, new_parent)?;
+        let dest_parent = (new_parent != ObjectHandle::ROOT).then_some(new_parent);
+        let before: std::collections::HashSet<ObjectHandle> = self
+            .list(new_storage, dest_parent, None)?
+            .into_iter()
+            .map(|o| o.handle)
+            .collect();
         let ids = objid_collection(&wpd_id)?;
         let dest_w = wide(&dest);
         let mut results: Option<IPortableDevicePropVariantCollection> = None;
@@ -727,13 +738,22 @@ impl WpdDevice {
             .Copy(&ids, PCWSTR(dest_w.as_ptr()), &mut results)
             .map_err(map_hresult)?;
 
-        let dest_parent = (new_parent != ObjectHandle::ROOT).then_some(new_parent);
-        self.list(new_storage, dest_parent, None)?
+        let new: Vec<_> = self
+            .list(new_storage, dest_parent, None)?
             .into_iter()
+            .filter(|o| o.handle != obj && !before.contains(&o.handle))
+            .collect();
+        // A sole newcomer under another name is a device that renamed the copy; several newcomers
+        // and none with the name is something else writing to the folder, so don't guess.
+        new.iter()
             .find(|o| o.filename == filename)
+            .or_else(|| (new.len() == 1).then(|| &new[0]))
             .map(|o| o.handle)
-            .ok_or_else(|| Error::Other {
-                detail: "WPD copy succeeded but the copy was not found in the destination".into(),
+            .ok_or_else(|| {
+                Error::invalid_data(
+                    "the device reported a copy it didn't make: no new object appeared in the \
+                     destination",
+                )
             })
     }
 }

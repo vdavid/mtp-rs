@@ -130,6 +130,58 @@ fn file_lifecycle_through_cli_binary_emits_json() {
 }
 
 #[test]
+fn cp_into_another_folder_makes_a_copy() {
+    let fixture = CliFixture::new();
+    std::fs::write(fixture.backing_dir.join("a.jpg"), b"photo").unwrap();
+    std::fs::create_dir(fixture.backing_dir.join("Archive")).unwrap();
+
+    let row = fixture.run_json(&["--json", "--device", SERIAL, "cp", "/a.jpg", "/Archive/"]);
+    assert_eq!(row["operation"], "cp");
+    assert_ne!(row["handle"], row["source_handle"]);
+    assert_eq!(
+        std::fs::read(fixture.backing_dir.join("Archive/a.jpg")).unwrap(),
+        b"photo"
+    );
+}
+
+/// #59: Android answers a copy into the source's own folder with OK and makes nothing, so the
+/// old rename-the-copy step renamed the original on Windows.
+#[test]
+fn cp_within_one_folder_refuses_and_leaves_the_original_alone() {
+    let fixture = CliFixture::new();
+    std::fs::write(fixture.backing_dir.join("a.jpg"), b"photo").unwrap();
+
+    let output = fixture.output(&["--device", SERIAL, "cp", "/a.jpg", "/b.jpg"]);
+    assert!(!output.status.success(), "cp within one folder must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("already"), "stderr: {stderr}");
+    assert_eq!(
+        std::fs::read(fixture.backing_dir.join("a.jpg")).unwrap(),
+        b"photo"
+    );
+    assert!(!fixture.backing_dir.join("b.jpg").exists());
+}
+
+#[test]
+fn cp_replace_keeps_the_destination_when_the_copy_cannot_happen() {
+    let fixture = CliFixture::new();
+    std::fs::write(fixture.backing_dir.join("a.jpg"), b"photo").unwrap();
+    std::fs::write(fixture.backing_dir.join("b.jpg"), b"keep me").unwrap();
+
+    let output = fixture.output(&["--device", SERIAL, "cp", "/a.jpg", "/b.jpg", "--replace"]);
+    assert!(!output.status.success(), "cp within one folder must fail");
+    assert_eq!(
+        std::fs::read(fixture.backing_dir.join("a.jpg")).unwrap(),
+        b"photo"
+    );
+    assert_eq!(
+        std::fs::read(fixture.backing_dir.join("b.jpg")).unwrap(),
+        b"keep me",
+        "--replace must not delete the destination before a copy that can't happen"
+    );
+}
+
+#[test]
 fn get_downloads_a_folder_tree() {
     let fixture = CliFixture::new();
     let dcim = fixture.backing_dir.join("DCIM");
