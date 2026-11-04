@@ -14,6 +14,10 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.37.3] - 2026-11-04
+
+Library `0.37.3` and CLI `0.11.7`. A copy onto an existing name can't corrupt a file or hand back the original anymore, and cancelling a download no longer kills MTP on Android until a replug.
+
 ### Fixed
 
 - **[lib] Copying a file into a folder that already holds its name no longer reports a copy that never happened, or overwrites the existing file.** Android answers such a copy with OK and a handle that names nothing, and writes the source over the existing file without truncating it, so a longer file keeps its old tail. On Windows the library then found the copy by name and returned the original, so an app renaming "the copy" renamed the original. `Storage::copy_object` now lists the destination first and refuses with the new `Error::AlreadyExists` (letter case ignored, since Android's shared storage ignores it). Over USB it also checks the handle the device answered with, and on Windows it returns only an object that wasn't there before. A same-folder copy now fails cleanly: copy into another folder, rename, and move it back. [#59](https://github.com/vdavid/mtp-rs/issues/59)
