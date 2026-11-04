@@ -276,12 +276,13 @@ mtp-rs cp /Upload/file.bin /Archive/file-copy.bin
 If the destination changes the filename, the device must support rename.
 If the destination file exists, pass `--replace`.
 
-The device makes the copy under the source's name and `cp` renames it after,
-so the destination folder can't already hold the source's name (letter case
-ignored). That rules out a renamed copy in the source's own folder: copy into
-another folder, then rename and `mv` it back. `cp` checks this before
-`--replace` deletes anything. Android answers such a copy as if it worked and
-writes over the existing file (#59).
+The device makes the copy under the source's name and `cp` renames it after.
+When the destination folder already holds the source's name (letter case
+ignored), for example a renamed copy next to the original, `cp` copies into a
+hidden `.mtp-rs-cp-…` folder there instead, renames the copy, moves it in, and
+removes the folder. If a step fails, `cp` removes the folder too, or names it
+so you can. A copy straight into such a folder is unsafe: Android answers it as
+if it worked and writes over the existing file (#59).
 
 ### `doctor`
 

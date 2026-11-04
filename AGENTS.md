@@ -180,6 +180,11 @@ of it. It reads the version in `Cargo.toml`: a deliberate break passes once the 
   ignored) with `Error::AlreadyExists`; `UsbBackend::verify_copy` checks the answered handle with `GetObjectInfo`;
   WPD's `copy_object` returns only an object that wasn't in the destination before (it used to match the name and
   return the original, which an app then renamed). The virtual device models AOSP's answer.
+  **Hardware-verified on a Pixel 9 Pro XL** (macOS/nusb, 2026-11-04, raw `ptp::` `CopyObject`): a same-folder copy
+  answered OK + 0xFFFF and made nothing, and a copy of a 6-byte `a.txt` onto a 25-byte `a.txt` in another folder
+  answered the same and left `SHORT\n` followed by the old file's last 19 bytes. So it's stock Android, not only the
+  POCO. Reported upstream as https://issuetracker.google.com/issues/581487246. The CLI's `cp` makes a renamed copy
+  next to the original through a hidden staging folder (copy, rename, move back, remove the folder).
 - **Xiaomi POCO X7 Pro (HyperOS 3)** declines `GetObjectPropList` for "all properties" (`0xFFFFFFFF`) with
   `InvalidObjectPropCode` (0xA801) in most folders but answers each property alone, and sends a property it has no
   value for (`DateCreated`) with data type 0 and no value. We never ask "all"; see § Folder listings via

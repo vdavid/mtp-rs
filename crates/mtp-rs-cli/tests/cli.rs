@@ -144,40 +144,120 @@ fn cp_into_another_folder_makes_a_copy() {
     );
 }
 
-/// #59: Android answers a copy into the source's own folder with OK and makes nothing, so the
-/// old rename-the-copy step renamed the original on Windows.
+/// Names left in `dir` that look like `cp`'s staging folder.
+fn staging_leftovers(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(".mtp-rs-cp-"))
+        .collect()
+}
+
+/// #59: a device copies under the source's name, and Android answers a copy into the source's
+/// own folder with OK and makes nothing. So a renamed copy next to the original goes through a
+/// staging folder: copy there, rename, move back.
 #[test]
-fn cp_within_one_folder_refuses_and_leaves_the_original_alone() {
+fn cp_within_one_folder_makes_a_renamed_copy_through_a_staging_folder() {
+    let fixture = CliFixture::new();
+    std::fs::create_dir(fixture.backing_dir.join("Pics")).unwrap();
+    std::fs::write(fixture.backing_dir.join("Pics/a.jpg"), b"photo").unwrap();
+
+    let row = fixture.run_json(&[
+        "--json",
+        "--device",
+        SERIAL,
+        "cp",
+        "/Pics/a.jpg",
+        "/Pics/b.jpg",
+    ]);
+    assert_eq!(row["renamed"], true);
+    assert_eq!(row["filename"], "b.jpg");
+    assert_ne!(row["handle"], row["source_handle"]);
+    assert_eq!(
+        std::fs::read(fixture.backing_dir.join("Pics/a.jpg")).unwrap(),
+        b"photo"
+    );
+    assert_eq!(
+        std::fs::read(fixture.backing_dir.join("Pics/b.jpg")).unwrap(),
+        b"photo"
+    );
+    assert_eq!(
+        staging_leftovers(&fixture.backing_dir.join("Pics")),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn cp_within_the_root_makes_a_renamed_copy() {
     let fixture = CliFixture::new();
     std::fs::write(fixture.backing_dir.join("a.jpg"), b"photo").unwrap();
 
-    let output = fixture.output(&["--device", SERIAL, "cp", "/a.jpg", "/b.jpg"]);
-    assert!(!output.status.success(), "cp within one folder must fail");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("already"), "stderr: {stderr}");
+    fixture.run_json(&["--json", "--device", SERIAL, "cp", "/a.jpg", "/b.jpg"]);
+    assert_eq!(
+        std::fs::read(fixture.backing_dir.join("b.jpg")).unwrap(),
+        b"photo"
+    );
     assert_eq!(
         std::fs::read(fixture.backing_dir.join("a.jpg")).unwrap(),
         b"photo"
     );
-    assert!(!fixture.backing_dir.join("b.jpg").exists());
+    assert_eq!(
+        staging_leftovers(&fixture.backing_dir),
+        Vec::<String>::new()
+    );
 }
 
 #[test]
-fn cp_replace_keeps_the_destination_when_the_copy_cannot_happen() {
+fn cp_replace_within_one_folder_replaces_the_destination() {
     let fixture = CliFixture::new();
     std::fs::write(fixture.backing_dir.join("a.jpg"), b"photo").unwrap();
-    std::fs::write(fixture.backing_dir.join("b.jpg"), b"keep me").unwrap();
+    std::fs::write(
+        fixture.backing_dir.join("b.jpg"),
+        b"old one, longer than the photo",
+    )
+    .unwrap();
 
-    let output = fixture.output(&["--device", SERIAL, "cp", "/a.jpg", "/b.jpg", "--replace"]);
-    assert!(!output.status.success(), "cp within one folder must fail");
+    fixture.run_json(&[
+        "--json",
+        "--device",
+        SERIAL,
+        "cp",
+        "/a.jpg",
+        "/b.jpg",
+        "--replace",
+    ]);
     assert_eq!(
         std::fs::read(fixture.backing_dir.join("a.jpg")).unwrap(),
         b"photo"
     );
     assert_eq!(
         std::fs::read(fixture.backing_dir.join("b.jpg")).unwrap(),
-        b"keep me",
-        "--replace must not delete the destination before a copy that can't happen"
+        b"photo"
+    );
+    assert_eq!(
+        staging_leftovers(&fixture.backing_dir),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn cp_without_replace_keeps_an_existing_destination() {
+    let fixture = CliFixture::new();
+    std::fs::write(fixture.backing_dir.join("a.jpg"), b"photo").unwrap();
+    std::fs::write(fixture.backing_dir.join("b.jpg"), b"keep me").unwrap();
+
+    let output = fixture.output(&["--device", SERIAL, "cp", "/a.jpg", "/b.jpg"]);
+    assert!(
+        !output.status.success(),
+        "cp onto an existing name needs --replace"
+    );
+    assert_eq!(
+        std::fs::read(fixture.backing_dir.join("b.jpg")).unwrap(),
+        b"keep me"
+    );
+    assert_eq!(
+        staging_leftovers(&fixture.backing_dir),
+        Vec::<String>::new()
     );
 }
 

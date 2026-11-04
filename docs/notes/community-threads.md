@@ -586,8 +586,10 @@ copy lookup matched on the name), and his app's rename of "the copy" renamed the
   `UsbBackend` checks the answered handle with `GetObjectInfo`, WPD returns only an object that wasn't in the
   destination before, and the CLI's `cp` checks before `--replace` deletes. The virtual device models AOSP's answer.
 - **His workaround** (copy into a hidden sibling folder, check the new handle, move in under the new name) is what the
-  `copy_object` docs now suggest for a renamed copy next to the original.
-- **Not yet hardware-verified** after the fix. Upstream AOSP bug report drafted for David.
+  `copy_object` docs now suggest for a renamed copy next to the original, and what the CLI's `cp` does by itself.
+- **Hardware-verified on a Pixel 9 Pro XL** (2026-11-04): the raw `CopyObject` answered OK + 0xFFFF in both cases, and
+  the in-place overwrite of a longer file is real. The fixed library refuses before sending, and the CLI's staged `cp`
+  worked there too. David replied on the thread and filed https://issuetracker.google.com/issues/581487246.
 
 ## Device quirks reference
 
