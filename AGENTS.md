@@ -138,7 +138,9 @@ of it. It reads the version in `Cargo.toml`: a deliberate break passes once the 
 
 ## Known device quirks
 
-- **Android**: `ObjectHandle::ALL` recursive listing broken; library auto-detects via `"android.com"` in vendor extension
+- **Android**: `ObjectHandle::ALL` recursive listing broken. Listings don't detect Android; every root listing takes
+  the path below. The one Android check is for cancels, `DeviceInfo::runs_android_mtp_server` (§ Transfer
+  cancellation), and it can't rely on `android.com` in the vendor extension: Samsung leaves it out.
 - **Android/Kindle root listings** ask `parent=0xFFFFFFFF` first (it returns root-level handles, where `parent=0`
   returns every object on the storage) and fall back to `parent=0` only when the device **declines**: `Protocol`, or
   `Io`, which is how a camera's bulk STALL arrives (`is_all_handle_rejection` in `mtp::backend::usb`). Don't widen that
@@ -386,6 +388,17 @@ mechanism: a CLASS_CANCEL control request (bRequest=0x64) followed by draining
 the bulk IN and interrupt pipes. This approach was validated against libmtp's
 `ptp_read_cancel_func` (Florent Viard, 2017). Key implementation notes:
 
+- **Android gets no CLASS_CANCEL at all** (#54): `cancel_transfer` drains the
+  rest of the object instead, the same path a refused cancel takes. A
+  CLASS_CANCEL races `MtpServer`'s own `io_cancel`, and losing that race ends the
+  server until a replug, about one cancel in ten on a Pixel 9 Pro XL and a Galaxy
+  S23 Ultra; the reset didn't revive the S23 either. Draining: no wedge in 150+
+  runs on each phone, explicit cancels and dropped futures alike. Cost: the rest
+  of the transfer (~2.5 s per 700 MB on the Pixel). `GetDeviceInfo` decides, in
+  `DeviceInfo::runs_android_mtp_server`, through `Transport::set_drain_on_cancel`.
+  **Samsung's vendor extension has no `android.com`**, so the check also accepts
+  AOSP's edit operations (0x95C3–0x95C5). Cameras keep CLASS_CANCEL (#12).
+  Evidence: [docs/notes/android-wedges-and-the-reset-kill-switch.md](docs/notes/android-wedges-and-the-reset-kill-switch.md).
 - The drain must start **immediately** after CLASS_CANCEL: any delay (like
   polling GET_DEVICE_STATUS, which Android doesn't support) allows the device
   to enter an unrecoverable state.
@@ -601,9 +614,7 @@ demonstrates it with no hardware. Real-device coverage:
   file), dead with or without the reset, so the reset costs nothing there. A Galaxy S23
   Ultra recovered 4 of 4 with it and 0 of 2 without. Evidence:
   [docs/notes/android-wedges-and-the-reset-kill-switch.md](docs/notes/android-wedges-and-the-reset-kill-switch.md).
-- **Skipping CLASS_CANCEL and draining stopped the Pixel's wedge in an experiment** (no wedge in 153 runs, stock
-  wedged on its 15th, 2026-11-02). Not shipped: no Samsung run yet, and a cancel then takes the rest of the transfer.
-  Same note, and #54.
+  On Android it's now a backstop: there's no CLASS_CANCEL to lose a race (§ Transfer cancellation).
 - **The neutral reset is a free-standing selector, not a method on an open
   `MtpDevice`, and that's deliberate.** It claims the USB interface and stops;
   the regular opens run `OpenSession` + `GetDeviceInfo`, which a wedged device

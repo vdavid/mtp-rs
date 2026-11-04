@@ -19,7 +19,11 @@ impl PtpSession {
             .execute_with_receive(OperationCode::GetDeviceInfo, &[])
             .await?;
         Self::check_response(&response, OperationCode::GetDeviceInfo)?;
-        DeviceInfo::from_bytes(&data)
+        let info = DeviceInfo::from_bytes(&data)?;
+        // How to cancel depends on who answers; see `Transport::set_drain_on_cancel`.
+        self.transport
+            .set_drain_on_cancel(info.runs_android_mtp_server());
+        Ok(info)
     }
 
     /// Returns a list of storage IDs available on the device.
@@ -528,6 +532,39 @@ mod tests {
         buf.extend_from_slice(&pack_u32(params[1]));
         buf.extend_from_slice(&pack_u32(params[2]));
         buf
+    }
+
+    /// A DeviceInfo dataset with only the vendor extension description filled in.
+    fn device_info_with_vendor_extension(desc: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&pack_u16(100)); // StandardVersion
+        buf.extend_from_slice(&pack_u32(6)); // VendorExtensionID
+        buf.extend_from_slice(&pack_u16(100)); // VendorExtensionVersion
+        buf.extend_from_slice(&pack_string(desc).unwrap());
+        buf.extend_from_slice(&pack_u16(0)); // FunctionalMode
+        for _ in 0..5 {
+            buf.extend_from_slice(&pack_u32(0)); // five empty u16 arrays
+        }
+        buf.extend_from_slice(&[0; 4]); // empty Manufacturer, Model, DeviceVersion, SerialNumber
+        buf
+    }
+
+    #[tokio::test]
+    async fn device_info_tells_the_transport_to_drain_on_android() {
+        for (desc, drains) in [
+            ("microsoft.com: 1.0; android.com: 1.0; ", true),
+            ("microsoft.com: 1.0", false),
+        ] {
+            let (transport, mock) = mock_transport();
+            mock.queue_response(ok_response(0)); // OpenSession
+            let payload = device_info_with_vendor_extension(desc);
+            mock.queue_response(data_container(1, OperationCode::GetDeviceInfo, &payload));
+            mock.queue_response(ok_response(1));
+
+            let session = PtpSession::open(transport, 1).await.unwrap();
+            session.get_device_info().await.unwrap();
+            assert_eq!(mock.drain_on_cancel(), drains, "{desc}");
+        }
     }
 
     #[tokio::test]

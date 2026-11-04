@@ -34,9 +34,16 @@ pub struct MockTransport {
     /// future is dropped). Models a transaction abandoned mid-receive: the
     /// command went out, but the host never reads the device's response.
     block_receive: AtomicBool,
+    /// The last value passed to `set_drain_on_cancel`.
+    drain_on_cancel: AtomicBool,
 }
 
 impl MockTransport {
+    /// Whether the session last told this transport to drain instead of sending CLASS_CANCEL.
+    pub fn drain_on_cancel(&self) -> bool {
+        self.drain_on_cancel.load(Ordering::SeqCst)
+    }
+
     /// Create a new mock transport with no expectations or queued responses.
     #[must_use]
     pub fn new() -> Self {
@@ -50,6 +57,7 @@ impl MockTransport {
             responses_after_drain: Mutex::new(VecDeque::new()),
             drain_calls: Mutex::new(0),
             block_receive: AtomicBool::new(false),
+            drain_on_cancel: AtomicBool::new(false),
         }
     }
 
@@ -236,6 +244,10 @@ impl Transport for MockTransport {
         queued.clear();
         queued.extend(self.responses_after_drain.lock().drain(..));
         Ok(drained)
+    }
+
+    fn set_drain_on_cancel(&self, enabled: bool) {
+        self.drain_on_cancel.store(enabled, Ordering::SeqCst);
     }
 }
 

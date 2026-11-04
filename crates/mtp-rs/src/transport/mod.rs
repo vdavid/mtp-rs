@@ -77,6 +77,16 @@ pub trait Transport: Send + Sync {
         idle_timeout: Duration,
     ) -> Result<(), crate::PtpError>;
 
+    /// Make [`cancel_transfer`](Self::cancel_transfer) skip the CLASS_CANCEL request and read
+    /// the rest of the transfer instead, up to the closing Response.
+    ///
+    /// The session turns this on when `GetDeviceInfo` shows Android's `MtpServer`: there a
+    /// CLASS_CANCEL races the server's own cancel and, about one time in ten, ends `MtpServer`
+    /// until a replug (#54). The cost is that a cancel waits for the rest of the object.
+    ///
+    /// The default implementation ignores it, for transports with no USB pipe.
+    fn set_drain_on_cancel(&self, _enabled: bool) {}
+
     /// Read and discard whatever the device has queued on the bulk IN pipe, until it stays
     /// quiet for `idle_timeout` or `max_duration` passes. Returns the bytes discarded.
     ///

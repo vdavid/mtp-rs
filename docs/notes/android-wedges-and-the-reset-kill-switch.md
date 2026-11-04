@@ -19,7 +19,10 @@ Hardware: Pixel 9 Pro XL (Android), Galaxy S23 Ultra SM-S918B, both on macOS/nus
    are the whole recovery for that kind.
 5. A **cancel** wedge is different, and the two families split (see the control run below). On a
    Pixel `MtpServer` exits, so only a replug helps. On a Galaxy S23 Ultra the server is alive but stuck,
-   and the reset is what frees it. So `cancel_transfer` keeps its automatic reset.
+   and the reset freed it in 2026-10, though in 2026-11 it mostly didn't. So `cancel_transfer` keeps its
+   automatic reset.
+6. **Android no longer gets a CLASS_CANCEL** (#54): draining the rest of the object stopped the cancel
+   wedge on both phones (see the experiment below).
 
 ## Two wedge signatures
 
@@ -143,7 +146,26 @@ run, with the same 697 KB file as the control run. The S23 wasn't available, so 
   chunk in, a run from open through the cancel and a listing took ~3 s draining and ~1 s stock, so about 2.5 s per
   700 MB on this USB link. A slower link pays proportionally.
 
-Not shipped: it would change every Android device on the strength of one phone. Open questions are on #54.
+### The S23, and shipping it (2026-11-04)
+
+Galaxy S23 Ultra SM-S918B (firmware S918BXXSAFZI1), macOS/nusb 0.2.9, USB debugging off, so no phone logs.
+
+- **Draining, no wedge in 153 runs**, the same mix as on the Pixel: 100 explicit cancels on a 681 KB file, 3 on a
+  213 MB one, 25 dropped window futures, 25 dropped streams.
+- **Stock: two wedges in 47 cancels, and the reset recovered neither.** That's unlike the 4 of 4 of the control run.
+  The first came with the screen off, so a lock may have stopped the reopen. The second came with the screen on, and
+  10 spaced reopens and three more over two minutes all failed; both needed a replug. A third stock cancel, through
+  `doctor --probe-cancel`, wedged too and that one recovered. The S23 wedges on stock about as often as the Pixel.
+- **Cost**: 213 MB from one chunk in took 1.2–2.4 s to drain against 1.0 s stock, a slower link than the Pixel's.
+- **Samsung doesn't advertise `android.com`**: its vendor extension is `microsoft.com: 1.0; samsung.com/kies: 6.0;
+  samsung.com/devicestatus: 0;`, so the first version of the check sent the S23 a CLASS_CANCEL (the probe above). It
+  lists AOSP's edit operations (0x95C2–0x95C5) like any Android `MtpServer`, and the shipped check accepts those.
+- **The shipped build** (not the experiment flag): 60 explicit cancels, 15 dropped windows, and 15 dropped streams on
+  the S23, all clean, with the trace showing step 1 skipped. Not rerun on the Pixel, where it takes the
+  `android.com` branch of the same check.
+
+Shipped for every responder that `DeviceInfo::runs_android_mtp_server` recognizes. No cap on the drain: a capped
+drain would end in the CLASS_CANCEL this avoids, and a slow cancel beats a phone that needs a replug.
 
 ## Guidance that follows
 

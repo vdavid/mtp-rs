@@ -14,6 +14,10 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Fixed
+
+- **[lib] Cancelling a download no longer kills MTP on Android phones until a replug.** A cancel sent the USB CLASS_CANCEL request, which races Android's MTP server as it cancels its own transfers. About one time in ten the server lost and exited, and only unplugging the phone brought it back (Pixel 9 Pro XL and Galaxy S23 Ultra; the automatic reset didn't help). On Android the library now skips that request and reads the rest of the file instead, which never starts the server's cancel. No wedge in 150+ cancels on each phone. The cost: a cancel takes as long as the rest of the transfer, about 2.5 s per 700 MB on the Pixel, so prefer `download_windowed` for big files. It covers explicit `cancel()` and dropped downloads alike. Cameras keep the CLASS_CANCEL they need. [#54](https://github.com/vdavid/mtp-rs/issues/54)
+
 ## [0.37.2] - 2026-11-04
 
 Library `0.37.2` and CLI `0.11.6`. A malformed response from a device can no longer abort the process.

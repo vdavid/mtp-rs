@@ -124,6 +124,13 @@ impl FileDownload {
     /// drain remaining data, leaving the session clean for the next operation. The `idle_timeout`
     /// controls how long to wait during the pipe drain. If the download is already complete, this
     /// is a no-op.
+    ///
+    /// **On Android this reads the rest of the file**, so it takes as long as finishing the
+    /// download would (about 2.5 s per 700 MB on a Pixel 9 Pro XL). Android's MTP server can die
+    /// until a replug when it gets the Still Image Class cancel request mid-transfer, so it never
+    /// gets one. To stop a big Android read quickly, use
+    /// [`Storage::download_windowed`](crate::mtp::Storage::download_windowed) and stop between
+    /// windows, which sends nothing.
     pub async fn cancel(&mut self, idle_timeout: std::time::Duration) -> Result<(), Error> {
         self.body.cancel(idle_timeout).await
     }

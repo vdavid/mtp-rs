@@ -47,6 +47,26 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
+    /// Whether the responder is Android's `MtpServer`.
+    ///
+    /// AOSP lists `android.com` among its vendor extensions, but Samsung's build replaces
+    /// that with its own (`samsung.com/kies`, Galaxy S23 Ultra, 2026-11-04). Both list the
+    /// Android-only edit operations AOSP added (`TruncateObject`, `BeginEditObject`,
+    /// `EndEditObject`, 0x95C3–0x95C5), so either sign counts. `GetPartialObject64` (0x95C1)
+    /// alone doesn't: other responders implement it too.
+    pub(crate) fn runs_android_mtp_server(&self) -> bool {
+        const ANDROID_EDIT_OPERATIONS: [u16; 3] = [0x95C3, 0x95C4, 0x95C5];
+        let lists = |code: u16| {
+            self.operations_supported
+                .iter()
+                .any(|&op| u16::from(op) == code)
+        };
+        self.vendor_extension_desc
+            .to_ascii_lowercase()
+            .contains("android.com")
+            || ANDROID_EDIT_OPERATIONS.into_iter().all(lists)
+    }
+
     /// Parse DeviceInfo from a byte buffer.
     ///
     /// The buffer should contain the DeviceInfo dataset as returned by GetDeviceInfo.
@@ -270,6 +290,39 @@ mod tests {
     use crate::ptp::pack::{pack_string, pack_u16, pack_u16_array, pack_u32};
 
     // --- DeviceInfo Tests ---
+
+    #[test]
+    fn android_mtp_server_is_recognized_by_its_vendor_extension() {
+        let with = |desc: &str| DeviceInfo {
+            vendor_extension_desc: desc.to_string(),
+            ..DeviceInfo::default()
+        };
+        // What AOSP's `MtpServer` sends (Pixel and Galaxy alike).
+        assert!(with("microsoft.com: 1.0; android.com: 1.0; ").runs_android_mtp_server());
+        assert!(with("Android.com: 1.0").runs_android_mtp_server());
+        // Cameras and other responders keep the SIC cancel they rely on (#12).
+        assert!(!with("microsoft.com: 1.0").runs_android_mtp_server());
+        assert!(!with("").runs_android_mtp_server());
+        assert!(!with("fujifilm.co.jp: 1.0").runs_android_mtp_server());
+    }
+
+    #[test]
+    fn samsungs_android_mtp_server_is_recognized_by_its_edit_operations() {
+        // A Galaxy S23 Ultra (One UI, 2026-11-04) names only Microsoft and Samsung in its
+        // vendor extension, but lists AOSP's edit operations.
+        let samsung = |ops: &[u16]| DeviceInfo {
+            vendor_extension_desc:
+                "microsoft.com: 1.0; samsung.com/kies: 6.0; samsung.com/devicestatus: 0;"
+                    .to_string(),
+            operations_supported: ops.iter().map(|&op| OperationCode::from(op)).collect(),
+            ..DeviceInfo::default()
+        };
+        assert!(
+            samsung(&[0x1001, 0x95C1, 0x95C2, 0x95C3, 0x95C4, 0x95C5]).runs_android_mtp_server()
+        );
+        // `GetPartialObject64` alone isn't enough: other responders implement it.
+        assert!(!samsung(&[0x1001, 0x95C1]).runs_android_mtp_server());
+    }
 
     fn build_minimal_device_info_bytes() -> Vec<u8> {
         let mut buf = Vec::new();

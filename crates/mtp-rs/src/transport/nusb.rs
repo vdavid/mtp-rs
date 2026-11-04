@@ -9,6 +9,7 @@ use nusb::transfer::{
     Buffer, Bulk, ControlOut, ControlType, Direction, In, Interrupt, Out, Recipient, TransferError,
 };
 use nusb::MaybeFuture;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Run a nusb operation that is backed by a blocking syscall to completion.
@@ -266,6 +267,9 @@ pub struct NusbTransport {
     interrupt_in: Mutex<nusb::Endpoint<Interrupt, In>>,
     /// Timeout for bulk transfers (sending commands, receiving data).
     timeout: Duration,
+    /// Cancel by reading the rest of the transfer instead of sending CLASS_CANCEL.
+    /// Set from `GetDeviceInfo`; see `Transport::set_drain_on_cancel`.
+    drain_on_cancel: AtomicBool,
 }
 
 impl NusbTransport {
@@ -550,6 +554,7 @@ impl NusbTransport {
             bulk_out: Mutex::new(bulk_out),
             interrupt_in: Mutex::new(interrupt_in),
             timeout,
+            drain_on_cancel: AtomicBool::new(false),
         })
     }
 
@@ -886,7 +891,9 @@ impl Transport for NusbTransport {
     ///
     /// The sequence is:
     /// 1. Send CLASS_CANCEL control request (bRequest=0x64, 300ms timeout). A device
-    ///    that STALLs it keeps sending, so the drain then reads the rest of the object
+    ///    that STALLs it keeps sending, so the drain then reads the rest of the object.
+    ///    On Android (`set_drain_on_cancel`) the request isn't sent at all, and the
+    ///    drain reads the rest of the object the same way (#54)
     /// 2. Drain bulk IN pipe (read + discard until the response or idle_timeout,
     ///    maxpacket chunks, 64 KiB ones after a refused cancel)
     /// 3. Drain interrupt pipe (consume CancelTransaction event if present)
@@ -917,23 +924,36 @@ impl Transport for NusbTransport {
         payload[0..2].copy_from_slice(&SIC_CANCEL_EVENT_CODE.to_le_bytes());
         payload[2..6].copy_from_slice(&transaction_id.to_le_bytes());
 
-        let cancel_result = self
-            .interface
-            .control_out(
-                ControlOut {
-                    control_type: ControlType::Class,
-                    recipient: Recipient::Interface,
-                    request: SIC_CANCEL_REQUEST,
-                    value: 0,
-                    index: self.interface_number as u16,
-                    data: &payload,
-                },
-                Duration::from_millis(300),
-            )
-            .await;
-        let refused = cancel_was_not_acted_on(cancel_result.map(|_| ()))?;
+        // On Android, CLASS_CANCEL races `MtpServer`'s own cancel of its in-flight USB
+        // requests. When one of those has already finished, the server reads the failure
+        // as an I/O error and exits until a replug: about one cancel in ten on a Pixel 9
+        // Pro XL and a Galaxy S23 Ultra, and the reset below didn't bring the S23 back
+        // either. Reading the rest of the object instead never starts the server's cancel
+        // path: no wedge in 150+ runs on each phone (#54, docs/notes/android-wedges-and-
+        // the-reset-kill-switch.md). It costs the rest of the transfer, ~2.5 s per 700 MB
+        // on the Pixel.
+        let refused = if self.drain_on_cancel.load(Ordering::Relaxed) {
+            diag_debug!("cancel_transfer: step 1 skipped on Android, draining the transfer");
+            true
+        } else {
+            let cancel_result = self
+                .interface
+                .control_out(
+                    ControlOut {
+                        control_type: ControlType::Class,
+                        recipient: Recipient::Interface,
+                        request: SIC_CANCEL_REQUEST,
+                        value: 0,
+                        index: self.interface_number as u16,
+                        data: &payload,
+                    },
+                    Duration::from_millis(300),
+                )
+                .await;
+            cancel_was_not_acted_on(cancel_result.map(|_| ()))?
+        };
         diag_debug!(
-            "cancel_transfer: step 1 CLASS_CANCEL sent (refused={})",
+            "cancel_transfer: step 1 done (drain the whole transfer={})",
             refused
         );
 
@@ -1175,6 +1195,10 @@ impl Transport for NusbTransport {
         }
 
         Ok(())
+    }
+
+    fn set_drain_on_cancel(&self, enabled: bool) {
+        self.drain_on_cancel.store(enabled, Ordering::Relaxed);
     }
 
     async fn drain_bulk_in(

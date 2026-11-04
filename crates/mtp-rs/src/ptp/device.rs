@@ -181,7 +181,11 @@ impl PtpDevice {
             }
         }
 
-        DeviceInfo::from_bytes(&data_payload)
+        let info = DeviceInfo::from_bytes(&data_payload)?;
+        // A session opened from this device shares the transport, so it cancels the same way.
+        self.transport
+            .set_drain_on_cancel(info.runs_android_mtp_server());
+        Ok(info)
     }
 
     /// Open a PTP session.
