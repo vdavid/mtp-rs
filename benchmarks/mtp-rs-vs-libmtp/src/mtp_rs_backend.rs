@@ -89,6 +89,37 @@ impl MtpRsBackend {
         Ok(data)
     }
 
+    /// Held-open streaming download of the whole file, discarding chunks. Returns the byte count.
+    pub async fn download_stream(
+        &self,
+        handle: ObjectHandle,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
+        let storage = self.storage().await?;
+        let mut download = storage.download(handle, mtp_rs::ByteRange::Full).await?;
+        let mut total = 0u64;
+        while let Some(chunk) = download.next_chunk().await {
+            total += chunk?.len() as u64;
+        }
+        Ok(total)
+    }
+
+    /// Windowed download of the whole file, discarding windows. Returns the byte count.
+    pub async fn download_windowed(
+        &self,
+        handle: ObjectHandle,
+        window_size: u32,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
+        let storage = self.storage().await?;
+        let mut download = storage
+            .download_windowed(handle, mtp_rs::ByteRange::Full, window_size)
+            .await?;
+        let mut total = 0u64;
+        while let Some(window) = download.next_window().await {
+            total += window?.len() as u64;
+        }
+        Ok(total)
+    }
+
     /// List objects in the root of the first storage. Returns the count.
     pub async fn list_objects(&self) -> Result<usize, Box<dyn std::error::Error>> {
         let storage = self.storage().await?;

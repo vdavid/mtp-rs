@@ -25,16 +25,37 @@ impl fmt::Display for BackendName {
 pub enum Operation {
     /// Download a file from the device to the host.
     Download,
+    /// mtp-rs only: held-open `Storage::download(Full)`, chunks discarded (no buffering).
+    DownloadStream,
+    /// mtp-rs only: `Storage::download_windowed` with this window size, windows discarded.
+    DownloadWindowed {
+        /// Window size in MiB.
+        window_mib: u32,
+    },
     /// Upload a file from the host to the device.
     Upload,
     /// List all objects in a storage folder.
     ListFiles,
 }
 
+impl Operation {
+    /// Whether only the mtp-rs backend can run this operation.
+    pub fn is_mtp_rs_only(self) -> bool {
+        matches!(
+            self,
+            Operation::DownloadStream | Operation::DownloadWindowed { .. }
+        )
+    }
+}
+
 impl fmt::Display for Operation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Operation::Download => write!(f, "download"),
+            Operation::DownloadStream => write!(f, "download_stream"),
+            Operation::DownloadWindowed { window_mib } => {
+                write!(f, "download_windowed_{window_mib:03}MiB")
+            }
             Operation::Upload => write!(f, "upload"),
             Operation::ListFiles => write!(f, "list_files"),
         }

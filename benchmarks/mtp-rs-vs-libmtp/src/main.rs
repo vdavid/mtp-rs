@@ -22,9 +22,14 @@ struct Cli {
     #[arg(long, default_value = "1MB,10MB,100MB")]
     sizes: String,
 
-    /// Comma-separated operations: download,upload,list.
+    /// Comma-separated operations: download,upload,list, plus the mtp-rs-only `stream`
+    /// (held-open `download`) and `windowed` (`download_windowed`, one run per `--windows` size).
     #[arg(long, default_value = "download,upload,list")]
     operations: String,
+
+    /// Comma-separated window sizes in MiB for the `windowed` operation.
+    #[arg(long, default_value = "8")]
+    windows: String,
 
     /// Comma-separated backends: mtp-rs,libmtp.
     #[arg(long, default_value = "mtp-rs,libmtp")]
@@ -63,17 +68,37 @@ fn parse_sizes(input: &str) -> Result<Vec<u64>, String> {
         .collect()
 }
 
-fn parse_operations(input: &str) -> Result<Vec<Operation>, String> {
+/// `windowed` expands to one operation per entry in `windows_mib`.
+fn parse_operations(input: &str, windows_mib: &[u32]) -> Result<Vec<Operation>, String> {
+    let mut ops = Vec::new();
+    for s in input.split(',') {
+        match s.trim().to_lowercase().as_str() {
+            "download" => ops.push(Operation::Download),
+            "stream" | "download_stream" => ops.push(Operation::DownloadStream),
+            "windowed" | "download_windowed" => ops.extend(
+                windows_mib
+                    .iter()
+                    .map(|&window_mib| Operation::DownloadWindowed { window_mib }),
+            ),
+            "upload" => ops.push(Operation::Upload),
+            "list" | "list_files" | "listfiles" => ops.push(Operation::ListFiles),
+            other => {
+                return Err(format!(
+                    "Unknown operation '{}'. Expected: download, stream, windowed, upload, list",
+                    other
+                ))
+            }
+        }
+    }
+    Ok(ops)
+}
+
+fn parse_windows(input: &str) -> Result<Vec<u32>, String> {
     input
         .split(',')
-        .map(|s| match s.trim().to_lowercase().as_str() {
-            "download" => Ok(Operation::Download),
-            "upload" => Ok(Operation::Upload),
-            "list" | "list_files" | "listfiles" => Ok(Operation::ListFiles),
-            other => Err(format!(
-                "Unknown operation '{}'. Expected: download, upload, list",
-                other
-            )),
+        .map(|s| match s.trim().parse::<u32>() {
+            Ok(n) if (1..=4095).contains(&n) => Ok(n),
+            _ => Err(format!("Invalid window '{s}': expected 1–4095 (MiB)")),
         })
         .collect()
 }
@@ -104,7 +129,15 @@ async fn main() {
         }
     };
 
-    let operations = match parse_operations(&cli.operations) {
+    let windows = match parse_windows(&cli.windows) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("Error parsing --windows: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let operations = match parse_operations(&cli.operations, &windows) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("Error parsing --operations: {}", e);

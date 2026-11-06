@@ -28,7 +28,8 @@ This runs all operations (download, upload, list) at all default sizes (1 MB, 10
 | `--runs` | `5` | Number of measured runs per scenario |
 | `--warmup` | `1` | Number of warmup runs (excluded from results) |
 | `--sizes` | `1MB,10MB,100MB` | Comma-separated file sizes (supports KB, MB, GB) |
-| `--operations` | `download,upload,list` | Comma-separated operations to benchmark |
+| `--operations` | `download,upload,list` | Comma-separated operations to benchmark. mtp-rs only: `stream` (held-open `download(Full)`) and `windowed` (`download_windowed`, one run per `--windows` size); both discard the bytes |
+| `--windows` | `8` | Comma-separated window sizes in MiB for `windowed` |
 | `--backends` | `mtp-rs,libmtp` | Comma-separated backends to test |
 | `--output` | `table` | Output format: `table`, `markdown`, `csv`, or `json` |
 

@@ -23,6 +23,9 @@ pub async fn run_benchmarks(
 
         for &file_size in &sizes {
             for &backend in &config.backends {
+                if operation.is_mtp_rs_only() && backend != BackendName::MtpRs {
+                    continue;
+                }
                 let size_label = if file_size == 0 {
                     "N/A".to_string()
                 } else {
@@ -97,6 +100,26 @@ async fn run_mtp_rs_scenario(
                 backend.delete(handle).await?;
                 elapsed
             }
+            Operation::DownloadStream | Operation::DownloadWindowed { .. } => {
+                let handle = backend
+                    .upload("bench-download-file.bin", &test_data)
+                    .await?;
+                let start = Instant::now();
+                let bytes = match operation {
+                    Operation::DownloadWindowed { window_mib } => {
+                        backend
+                            .download_windowed(handle, window_mib * 1024 * 1024)
+                            .await?
+                    }
+                    _ => backend.download_stream(handle).await?,
+                };
+                let elapsed = start.elapsed();
+                if bytes != file_size {
+                    return Err(format!("read {bytes} bytes, expected {file_size}").into());
+                }
+                backend.delete(handle).await?;
+                elapsed
+            }
             Operation::Upload => {
                 let filename = format!("bench-upload-{}.bin", i);
                 let start = Instant::now();
@@ -154,6 +177,9 @@ fn run_libmtp_scenario(
         };
 
         let elapsed = match operation {
+            Operation::DownloadStream | Operation::DownloadWindowed { .. } => {
+                return Err(format!("{operation} is mtp-rs only").into());
+            }
             Operation::Download => {
                 // Setup: upload a test file (not timed).
                 let file_id = backend
