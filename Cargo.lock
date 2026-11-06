@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "mtp-rs"
-version = "0.37.3"
+version = "0.38.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "mtp-rs-cli"
-version = "0.11.7"
+version = "0.11.8"
 dependencies = [
  "bytes",
  "clap",

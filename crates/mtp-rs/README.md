@@ -116,7 +116,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mtp-rs = "0.37"
+mtp-rs = "0.38"
 ```
 
 You'll also need an async runtime. The library is runtime-agnostic, but [tokio](https://github.com/tokio-rs/tokio) is
@@ -366,7 +366,7 @@ device. Enable it in your `Cargo.toml`:
 
 ```toml
 [dev-dependencies]
-mtp-rs = { version = "0.37", features = ["virtual-device"] }
+mtp-rs = { version = "0.38", features = ["virtual-device"] }
 ```
 
 ### Direct usage

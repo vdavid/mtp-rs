@@ -14,6 +14,10 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-11-06
+
+Library `0.38.0` and CLI `0.11.8`. Downloads read in windows of about two seconds, so a cancel on Android stops within one window instead of reading the rest of the file, and the device stays usable during a big download. Breaking for library users: `download_windowed` is gone; see the first bullet for how to migrate.
+
 ### Changed
 
 - **[lib] Breaking: one download API, paced by how long a cancel may take.** `Storage::download` now reads a file in windows that each take about two seconds, sized from the measured speed, and frees the device between them. So a cancel on Android costs at most the current window instead of the rest of the file (a 5 GB file cancelled at 1% over a 2 MB/s link used to hold the device for ~41 minutes), and a folder listing during a big download waits at most about two seconds. Each window costs ~15–20 ms on top of its data on a Pixel 9 Pro XL, about 1% at that size. `Storage::download_with_pacing` takes a `DownloadPacing`: `HeldOpen` (one transfer, the old `download`), `MaxCancelDelay(duration)` (the default, at `DEFAULT_MAX_CANCEL_DELAY`), or `FixedWindow(bytes)`. Windows stream their chunks, so memory stays at one 64 KiB read however big a window gets. Devices without a partial-read operation get one held-open transfer automatically. `FileDownload` gains `offset()`, `modified()`, `created()`, and `holds_session()` (for consumers with their own device lock), and `progress()` now counts from the start of the file, so a resumed download picks up where it left off. **Removed**: `Storage::download_windowed`, `Storage::download_windowed_default`, `WindowedDownload`, and `DEFAULT_DOWNLOAD_WINDOW`. To migrate, use `download_with_pacing(handle, range, DownloadPacing::FixedWindow(size))` and read chunks with `next_chunk()`; the session is free whenever `holds_session()` is `false`. [#60](https://github.com/vdavid/mtp-rs/issues/60)
