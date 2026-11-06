@@ -128,7 +128,7 @@ impl PtpSession {
         Ok(ReceiveStream {
             transport: Arc::clone(&self.transport),
             recovery: Arc::clone(&self.recovery),
-            _guard: guard,
+            guard: Some(guard),
             transaction_id: tx_id,
             operation,
             buffer: BytesMut::new(),
@@ -294,8 +294,10 @@ pub struct ReceiveStream {
     /// Shared session recovery state. On a mid-transfer drop, flags the pipe
     /// for draining before the next operation.
     recovery: Arc<RecoveryState>,
-    /// Guard that holds the operation lock for the duration of streaming.
-    _guard: OwnedMutexGuard<()>,
+    /// Holds the operation lock until the transfer is over (end of data, an error, or a cancel),
+    /// not until the stream is dropped: a finished stream still in scope used to block every
+    /// later call on the session forever (#60).
+    guard: Option<OwnedMutexGuard<()>>,
     /// Transaction ID for this operation.
     transaction_id: u32,
     /// Operation code for this operation.
@@ -353,11 +355,14 @@ impl ReceiveStream {
                 match self.consume_container_header() {
                     Ok(Header::Data | Header::SkippedStaleReply) => {}
                     Ok(Header::Done) => {
-                        self.done = true;
+                        self.finish(false);
                         return None;
                     }
                     Err(e) => {
-                        self.done = true;
+                        // An error response closes the transaction; anything else (a
+                        // mismatched or malformed container) leaves the pipe in doubt.
+                        let pipe_in_doubt = !matches!(e, Error::Protocol { .. });
+                        self.finish(pipe_in_doubt);
                         return Some(Err(e));
                     }
                 }
@@ -421,11 +426,24 @@ impl ReceiveStream {
                     self.buffer.extend_from_slice(&bytes);
                 }
                 Err(e) => {
-                    self.done = true;
+                    // The rest of the object may still be on its way, so the next
+                    // operation drains first. Not after `DeviceReset`: that session is gone.
+                    let pipe_in_doubt = !matches!(e, Error::DeviceReset);
+                    self.finish(pipe_in_doubt);
                     return Some(Err(e));
                 }
             }
         }
+    }
+
+    /// End the transfer: flag the pipe for a drain if it may still hold data, then give the
+    /// session back. Flagging first, so the next operation to take the lock sees it.
+    fn finish(&mut self, pipe_in_doubt: bool) {
+        self.done = true;
+        if pipe_in_doubt {
+            self.recovery.flag(self.transaction_id);
+        }
+        self.guard = None;
     }
 
     /// Consume the container header sitting at the front of the buffer.
@@ -510,7 +528,6 @@ impl ReceiveStream {
         if self.done {
             return Ok(());
         }
-        self.done = true;
         let result = self
             .transport
             .cancel_transfer(self.transaction_id, idle_timeout)
@@ -518,9 +535,7 @@ impl ReceiveStream {
         // A failed cancel may have left the rest of the object and its response in the
         // pipe, so the next operation drains first (#43). Not after `DeviceReset`: that
         // session is gone, and the caller's reopen needs a quiet device.
-        if matches!(&result, Err(e) if !matches!(e, Error::DeviceReset)) {
-            self.recovery.flag(self.transaction_id);
-        }
+        self.finish(matches!(&result, Err(e) if !matches!(e, Error::DeviceReset)));
         result
     }
 
@@ -961,6 +976,51 @@ mod tests {
         // Verify cancel_transfer was called with the correct transaction ID
         let cancel_calls = mock.get_cancel_calls();
         assert_eq!(cancel_calls, vec![1]); // tx_id=1 (first operation after OpenSession)
+    }
+
+    /// A finished stream that's still in scope must not keep the session: the next call used to
+    /// wait on the operation lock forever, with no error and no timeout (#60).
+    #[tokio::test]
+    async fn finished_stream_releases_the_session_before_it_is_dropped() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+        mock.queue_response(data_container(1, OperationCode::GetObject, &[1, 2, 3]));
+        mock.queue_response(ok_response(1));
+        mock.queue_response(ok_response(2)); // the follow-up call
+        let session = Arc::new(PtpSession::open(transport, 1).await.unwrap());
+
+        let mut stream = session.get_object_stream(ObjectHandle(1)).await.unwrap();
+        while let Some(chunk) = stream.next_chunk().await {
+            chunk.unwrap();
+        }
+
+        let follow_up = session.execute(OperationCode::GetDeviceInfo, &[]);
+        let timeout = tokio::time::timeout(Duration::from_secs(2), follow_up);
+        assert!(
+            timeout.await.is_ok(),
+            "the follow-up call waited on the finished stream"
+        );
+        drop(stream);
+    }
+
+    /// A transport error mid-transfer leaves the rest of the object in the pipe, so once the stream
+    /// lets go of the session, the next operation has to drain first, like `execute_with_receive`.
+    #[tokio::test]
+    async fn transport_error_mid_stream_flags_the_session_for_recovery() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+                                             // A data container that promises more than arrives; the next read then fails.
+        let mut partial = data_container(1, OperationCode::GetObject, &[7u8; 100]);
+        partial.truncate(HEADER_SIZE + 10);
+        mock.queue_response(partial);
+        let session = Arc::new(PtpSession::open(transport, 1).await.unwrap());
+
+        let mut stream = session.get_object_stream(ObjectHandle(1)).await.unwrap();
+        assert_eq!(stream.next_chunk().await.unwrap().unwrap().len(), 10);
+        assert!(stream.next_chunk().await.unwrap().is_err());
+
+        assert!(session.needs_recovery());
+        drop(stream);
     }
 
     #[tokio::test]
