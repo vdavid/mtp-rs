@@ -3,7 +3,7 @@
 //! Run with: cargo run --example list_and_download
 
 use mtp_rs::mtp::MtpDevice;
-use mtp_rs::ObjectInfo;
+use mtp_rs::{ByteRange, ObjectInfo};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -47,17 +47,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(img) = first_image {
         println!("=== Downloading: {} ({} bytes) ===", img.filename, img.size);
 
-        // `download_windowed` is the recommended way to read a file: it fetches
-        // bounded windows and frees the device's single PTP session between each,
-        // so other operations (listings, navigation) stay responsive during a
-        // long download. (For raw throughput when nothing else needs the device,
-        // `download(handle, ByteRange::Full)` reads in one continuous transfer instead.)
+        // `download` reads in windows of about two seconds each and frees the device's
+        // single PTP session between them, so other operations (listings, navigation)
+        // stay responsive and a cancel stops quickly. `download_with_pacing` picks another
+        // pacing, like one held-open transfer.
         let start = std::time::Instant::now();
-        let mut download = storage.download_windowed_default(img.handle).await?;
+        let mut download = storage.download(img.handle, ByteRange::Full).await?;
         let total_size = download.size();
         let mut data = Vec::with_capacity(total_size as usize);
-        while let Some(window) = download.next_window().await {
-            data.extend_from_slice(&window?);
+        while let Some(chunk) = download.next_chunk().await {
+            data.extend_from_slice(&chunk?);
         }
         let elapsed = start.elapsed();
 

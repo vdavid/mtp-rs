@@ -80,11 +80,11 @@ pub use mtp::{Error, UploadError};
 // SemVer promise; the nested `mtp::` paths work too but aren't what the promise is about.
 pub use mtp::{
     watch_devices, Backend, ByteRange, Capabilities, DateTime, DeviceEvent, DeviceInfo,
-    DeviceWatch, DeviceWatchBuilder, FileDownload, FilesystemType, HotplugEvent, ListingItem,
-    MtpDevice, MtpDeviceBuilder, MtpDeviceInfo, NewObjectInfo, ObjectCollection, ObjectFormat,
-    ObjectHandle, ObjectInfo, ObjectListing, Progress, SkippedObject, Storage, StorageId,
-    StorageInfo, StorageType, UtcOffset, WindowedDownload, DEFAULT_CANCEL_TIMEOUT,
-    DEFAULT_DOWNLOAD_WINDOW, DEFAULT_SETTLE_DELAY, MAX_NAME_UNITS,
+    DeviceWatch, DeviceWatchBuilder, DownloadPacing, FileDownload, FilesystemType, HotplugEvent,
+    ListingItem, MtpDevice, MtpDeviceBuilder, MtpDeviceInfo, NewObjectInfo, ObjectCollection,
+    ObjectFormat, ObjectHandle, ObjectInfo, ObjectListing, Progress, SkippedObject, Storage,
+    StorageId, StorageInfo, StorageType, UtcOffset, DEFAULT_CANCEL_TIMEOUT,
+    DEFAULT_MAX_CANCEL_DELAY, DEFAULT_SETTLE_DELAY, MAX_NAME_UNITS,
 };
 
 // The two USB-flavored facts `MtpDeviceInfo` carries: link speed (for example to warn about a slow

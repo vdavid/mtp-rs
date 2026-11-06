@@ -21,7 +21,7 @@ mod props;
 
 use crate::cancel::CancelToken;
 use crate::mtp::backend::{
-    BackendDownload, BackendListing, ByteRange, DownloadBody, MtpBackend, ProgressFn, UploadStream,
+    BackendListing, ByteRange, DownloadBody, MtpBackend, ProgressFn, UploadStream,
 };
 use crate::mtp::object::NewObjectInfo;
 use crate::mtp::stream::Progress;
@@ -158,15 +158,41 @@ impl MtpBackend for WpdBackend {
         &self,
         obj: ObjectHandle,
         range: ByteRange,
-    ) -> Result<BackendDownload, Error> {
-        let start = self
+        size: u64,
+    ) -> Result<Box<dyn DownloadBody>, Error> {
+        let data = self
             .handle
-            .call(|reply| actor::Request::Download { obj, range, reply })
+            .call(|reply| actor::Request::Download {
+                obj,
+                range,
+                size,
+                reply,
+            })
             .await?;
-        Ok(BackendDownload {
-            size: start.size,
-            body: Box::new(WpdDownloadBody { data: start.data }),
-        })
+        Ok(Box::new(WpdDownloadBody { data }))
+    }
+
+    async fn download_window(
+        &self,
+        obj: ObjectHandle,
+        offset: u64,
+        len: u32,
+    ) -> Result<Box<dyn DownloadBody>, Error> {
+        let data = self
+            .handle
+            .call(|reply| actor::Request::DownloadWindow {
+                obj,
+                offset,
+                len,
+                reply,
+            })
+            .await?;
+        Ok(Box::new(WpdDownloadBody { data }))
+    }
+
+    fn can_read_partially_at(&self, _offset: u64) -> bool {
+        // Any offset: the worker seeks, or reads and discards up to it on forward-only streams.
+        true
     }
 
     async fn read_range(

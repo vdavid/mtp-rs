@@ -9,8 +9,8 @@
 
 use crate::cancel::{bail_if_cancelled, CancelToken};
 use crate::mtp::backend::{
-    BackendDownload, BackendListing, BackendListingError, ByteRange, DownloadBody, MtpBackend,
-    ProgressFn, UploadStream,
+    BackendListing, BackendListingError, ByteRange, DownloadBody, MtpBackend, ProgressFn,
+    UploadStream,
 };
 use crate::mtp::object::NewObjectInfo;
 use crate::mtp::stream::Progress;
@@ -181,6 +181,39 @@ impl UsbBackend {
     /// Decide how to issue a ranged/offset read for this device and offset.
     fn partial_read(&self, offset: u64) -> Result<PartialReadOp, Error> {
         plan_partial_read(self.has_partial_object_64, self.has_partial_object, offset)
+    }
+
+    /// Start a streamed partial read of up to `max_bytes` from `offset`. Prefers
+    /// `GetPartialObject64` (its 64-bit offset reaches past 4 GiB) and falls back to the 32-bit
+    /// `GetPartialObject` when that's all the device has (cameras).
+    async fn partial_read_stream(
+        &self,
+        obj: ObjectHandle,
+        offset: u64,
+        max_bytes: u32,
+    ) -> Result<ReceiveStream, Error> {
+        let stream = match self.partial_read(offset)? {
+            PartialReadOp::Wide => {
+                let offset_lo = offset as u32;
+                let offset_hi = (offset >> 32) as u32;
+                self.session
+                    .execute_with_receive_stream(
+                        OperationCode::GetPartialObject64,
+                        &[obj.to_ptp().0, offset_lo, offset_hi, max_bytes],
+                    )
+                    .await?
+            }
+            PartialReadOp::Narrow => {
+                // partial_read() guarantees offset <= u32::MAX here.
+                self.session
+                    .execute_with_receive_stream(
+                        OperationCode::GetPartialObject,
+                        &[obj.to_ptp().0, offset as u32, max_bytes],
+                    )
+                    .await?
+            }
+        };
+        Ok(stream)
     }
 
     /// Resolve the object-handle list for a listing, applying the root-listing quirks.
@@ -806,11 +839,9 @@ impl MtpBackend for UsbBackend {
         &self,
         obj: ObjectHandle,
         range: ByteRange,
-    ) -> Result<BackendDownload, Error> {
-        let info = self.session.get_object_info_full(obj.to_ptp()).await?;
-        let size = info.size;
+        size: u64,
+    ) -> Result<Box<dyn DownloadBody>, Error> {
         let offset = range.offset();
-
         if offset > size {
             return Err(Error::invalid_data(format!(
                 "download offset {offset} is past the object size {size}"
@@ -840,46 +871,32 @@ impl MtpBackend for UsbBackend {
                 }
             }
             ByteRange::From(_) | ByteRange::Range { .. } => {
-                // Offset/range read. `max_bytes` is a u32, so a single call requests at most
-                // u32::MAX bytes from the offset; a larger tail is fetched across multiple resumes.
-                // Prefer GetPartialObject64 (its 64-bit offset lets a resume start past 4 GB); fall
-                // back to the 32-bit GetPartialObject when that's all the device has (cameras).
+                // `max_bytes` is a u32, so one partial read covers at most u32::MAX bytes from the
+                // offset; the façade fetches a larger tail across several reads.
                 let remaining = size - offset;
                 let want = match range {
                     ByteRange::Range { len, .. } => remaining.min(len),
                     _ => remaining,
                 };
                 let max_bytes = u32::try_from(want).unwrap_or(u32::MAX);
-                match self.partial_read(offset)? {
-                    PartialReadOp::Wide => {
-                        let offset_lo = offset as u32;
-                        let offset_hi = (offset >> 32) as u32;
-                        self.session
-                            .execute_with_receive_stream(
-                                OperationCode::GetPartialObject64,
-                                &[obj.to_ptp().0, offset_lo, offset_hi, max_bytes],
-                            )
-                            .await?
-                    }
-                    PartialReadOp::Narrow => {
-                        // partial_read() guarantees offset <= u32::MAX here.
-                        self.session
-                            .execute_with_receive_stream(
-                                OperationCode::GetPartialObject,
-                                &[obj.to_ptp().0, offset as u32, max_bytes],
-                            )
-                            .await?
-                    }
-                }
+                self.partial_read_stream(obj, offset, max_bytes).await?
             }
         };
+        Ok(Box::new(UsbDownloadBody { stream }))
+    }
 
-        Ok(BackendDownload {
-            // Report the full object size so a resumed/ranged download's progress/ETA stays
-            // anchored to the whole file, not just this segment.
-            size,
-            body: Box::new(UsbDownloadBody { stream }),
-        })
+    async fn download_window(
+        &self,
+        obj: ObjectHandle,
+        offset: u64,
+        len: u32,
+    ) -> Result<Box<dyn DownloadBody>, Error> {
+        let stream = self.partial_read_stream(obj, offset, len).await?;
+        Ok(Box::new(UsbDownloadBody { stream }))
+    }
+
+    fn can_read_partially_at(&self, offset: u64) -> bool {
+        self.partial_read(offset).is_ok()
     }
 
     async fn read_range(

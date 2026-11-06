@@ -106,7 +106,7 @@ src/
 │   ├── object.rs          # NewObjectInfo, ObjectFormat
 │   ├── event.rs           # DeviceEvent
 │   ├── hotplug.rs         # watch_devices, DeviceWatch, HotplugEvent
-│   ├── stream.rs          # FileDownload, WindowedDownload, Progress
+│   ├── stream.rs          # FileDownload, DownloadPacing (windows), Progress
 │   └── backend/           # The MtpBackend seam
 │       ├── mod.rs         # MtpBackend trait, Backend selector, ByteRange
 │       ├── usb.rs         # UsbBackend (PTP over Transport)

@@ -25,9 +25,11 @@ impl fmt::Display for BackendName {
 pub enum Operation {
     /// Download a file from the device to the host.
     Download,
-    /// mtp-rs only: held-open `Storage::download(Full)`, chunks discarded (no buffering).
+    /// mtp-rs only: `DownloadPacing::HeldOpen`, chunks discarded (no buffering).
     DownloadStream,
-    /// mtp-rs only: `Storage::download_windowed` with this window size, windows discarded.
+    /// mtp-rs only: the default `DownloadPacing` (adaptive windows of ~2 s), chunks discarded.
+    DownloadPaced,
+    /// mtp-rs only: `DownloadPacing::FixedWindow` with this window size, chunks discarded.
     DownloadWindowed {
         /// Window size in MiB.
         window_mib: u32,
@@ -43,7 +45,9 @@ impl Operation {
     pub fn is_mtp_rs_only(self) -> bool {
         matches!(
             self,
-            Operation::DownloadStream | Operation::DownloadWindowed { .. }
+            Operation::DownloadStream
+                | Operation::DownloadPaced
+                | Operation::DownloadWindowed { .. }
         )
     }
 }
@@ -53,6 +57,7 @@ impl fmt::Display for Operation {
         match self {
             Operation::Download => write!(f, "download"),
             Operation::DownloadStream => write!(f, "download_stream"),
+            Operation::DownloadPaced => write!(f, "download_paced"),
             Operation::DownloadWindowed { window_mib } => {
                 write!(f, "download_windowed_{window_mib:03}MiB")
             }

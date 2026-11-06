@@ -1,4 +1,4 @@
-use mtp_rs::{ByteRange, MtpDevice, ObjectHandle, Storage};
+use mtp_rs::{ByteRange, DownloadPacing, MtpDevice, ObjectHandle, Storage};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -420,7 +420,11 @@ async fn cancel_health_probe(
         }
     };
 
-    let mut download = match storage.download(target.handle, ByteRange::Full).await {
+    // Held open on purpose: the probe needs a transfer in flight to cancel.
+    let download = storage
+        .download_with_pacing(target.handle, ByteRange::Full, DownloadPacing::HeldOpen)
+        .await;
+    let mut download = match download {
         Ok(download) => download,
         Err(e) => {
             return CancelProbeRow {
@@ -444,7 +448,7 @@ async fn cancel_health_probe(
             outcome: "wedged_recovered",
             detail: format!(
                 "cancel wedged the device on '{}' ({} bytes); the library reset it to recover (#18). \
-                 Reopen quietly to continue, and prefer download_windowed for interruptible reads",
+                 Reopen quietly to continue, and use the default paced download for interruptible reads",
                 target.path, target.size
             ),
         },

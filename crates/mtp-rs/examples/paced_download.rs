@@ -1,23 +1,19 @@
-//! Read a large file window-by-window without monopolizing the MTP session.
+//! Read a file in windows, using the device for something else in between.
 //!
-//! Demonstrates `Storage::download_windowed`: read a file as a sequence of small
-//! bounded windows, and BETWEEN windows run another device operation (a folder
-//! listing) to prove the one-per-device PTP session is free the whole time.
-//! A plain `download(handle, ByteRange::Full)` would hold that session open for the
-//! entire file, so the listing couldn't run until the read finished or was cancelled.
-//!
-//! Finally it reassembles the windows and verifies they're byte-exact against a
-//! plain full download.
+//! `Storage::download` reads a file as a series of windows (by default, each one takes about
+//! two seconds) and frees the device's one PTP session between them. This demo uses small fixed
+//! windows so the loop visibly iterates, runs a folder listing whenever no window is in flight
+//! (`FileDownload::holds_session()` is `false`), and checks the result against a full read.
 //!
 //! This runs against the in-process virtual device, so it needs no hardware:
 //!
 //! ```text
-//! cargo run --example windowed_download --features virtual-device
+//! cargo run --example paced_download --features virtual-device
 //! ```
 
 #[cfg(not(feature = "virtual-device"))]
 fn main() {
-    eprintln!("Run with: cargo run --example windowed_download --features virtual-device");
+    eprintln!("Run with: cargo run --example paced_download --features virtual-device");
 }
 
 #[cfg(feature = "virtual-device")]
@@ -25,6 +21,7 @@ fn main() {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use mtp_rs::mtp::MtpDevice;
     use mtp_rs::virtual_device::{VirtualDeviceConfig, VirtualStorageConfig};
+    use mtp_rs::{ByteRange, DownloadPacing};
     use std::time::Duration;
 
     // Back the virtual device with a temp dir holding one ~256 KiB file with a
@@ -37,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let device = MtpDevice::builder()
         .open_virtual(VirtualDeviceConfig {
-            serial: "windowed-demo".into(),
+            serial: "paced-demo".into(),
             storages: vec![VirtualStorageConfig {
                 description: "Internal Storage".into(),
                 capacity: 1024 * 1024 * 1024,
@@ -61,58 +58,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("movie.bin should be listed");
     println!("Source file: {} ({} bytes)\n", obj.filename, obj.size);
 
-    // Read in 32 KiB windows. Each next_window() is one bounded transaction that
-    // releases the session on return; pick a window size to taste (the
-    // DEFAULT_DOWNLOAD_WINDOW of 8 MiB is the documented suggestion for real
-    // hardware; here a small window just makes the loop visibly iterate).
-    let window_size = 32 * 1024;
+    // 32 KiB windows, so the loop visibly iterates. On real hardware, `storage.download(..)`
+    // with the default pacing is the usual choice.
     let mut download = storage
-        .download_windowed(obj.handle, mtp_rs::ByteRange::Full, window_size)
+        .download_with_pacing(
+            obj.handle,
+            ByteRange::Full,
+            DownloadPacing::FixedWindow(32 * 1024),
+        )
         .await?;
     // size() reports the FULL object size, so progress stays anchored.
     assert_eq!(download.size(), obj.size);
 
     let mut assembled = Vec::with_capacity(obj.size as usize);
-    let mut window_index = 0;
     let mut listings_between = 0;
-    while let Some(window) = download.next_window().await {
-        let bytes = window?;
-        assembled.extend_from_slice(&bytes);
-        window_index += 1;
-        println!(
-            "Window {window_index}: +{} bytes ({}/{} total)",
-            bytes.len(),
-            assembled.len(),
-            obj.size
-        );
-
-        // The session is FREE right here. Run a real device op BETWEEN windows.
-        // A held-open `download(..., ByteRange::Full)` couldn't do this. The consumer interposes
-        // whatever policy it wants here; the library holds no session lock.
+    while let Some(chunk) = download.next_chunk().await {
+        assembled.extend_from_slice(&chunk?);
+        if download.holds_session() {
+            continue;
+        }
+        // No window in flight: the session is free, so run a real device op right here.
         let listed = storage.list_objects(None).await?;
         listings_between += 1;
         println!(
-            "  ...listed {} object(s) on the device between windows. Session is free.",
+            "{}/{} bytes; listed {} object(s) between windows.",
+            assembled.len(),
+            obj.size,
             listed.len()
         );
     }
     println!(
-        "\nRead {} bytes across {} windows, with {} listings interleaved.",
+        "\nRead {} bytes, with {} listings interleaved.",
         assembled.len(),
-        window_index,
         listings_between
     );
 
     // Verify the reassembled file matches a plain full download (and the source).
     let full = storage.download_to_vec(obj.handle).await?;
-    assert_eq!(
-        assembled, full,
-        "windowed reassembly must equal a full download"
-    );
+    assert_eq!(assembled, full, "paced download must equal a full download");
     assert_eq!(assembled, content, "assembled bytes must equal source");
-    println!("\n✓ Windowed reassembly matches the full download exactly.");
-
-    // No cancel() needed: WindowedDownload holds nothing between windows, so
-    // dropping it (here, at end of scope) is a clean no-op.
+    println!("\n✓ Paced download matches the full download exactly.");
     Ok(())
 }

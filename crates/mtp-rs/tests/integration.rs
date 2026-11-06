@@ -76,7 +76,7 @@
 //! ```
 
 use mtp_rs::mtp::Storage;
-use mtp_rs::{ByteRange, ListingItem, ObjectHandle};
+use mtp_rs::{ByteRange, DownloadPacing, ListingItem, ObjectHandle};
 
 /// Whether an opt-in env flag is enabled. True only for truthy values
 /// (`1`/`true`/`yes`/`on`, case-insensitive), so `VAR=0` means off, not "defined
@@ -1227,21 +1227,15 @@ mod readonly {
         assert_eq!(total_received, file_size);
     }
 
-    /// Windowed download against a real device: read a large file via
-    /// `download_windowed`, checksum it against a full `download_stream` of the
-    /// same file, AND prove the PTP session is free between windows by running a
-    /// folder listing in the middle of the windowed read.
-    ///
-    /// This is the headline property the windowed API exists for: a held-open
-    /// `download_stream` would block any other op until it finished or was
-    /// cancelled (and cancelling a multi-GB read costs ~35s to drain); the
-    /// windowed read frees the session between every window, so the listing here
-    /// just works.
+    /// Paced download against a real device: read a large file with the default pacing (windows of
+    /// about two seconds), checksum it against a held-open download of the same file, and prove
+    /// the PTP session is free between windows by listing the root whenever no window is in
+    /// flight. Logs both speeds, so a run also shows what the windows cost on this device.
     ///
     /// Run it (with the phone connected and unlocked):
     ///
     /// ```sh
-    /// cargo test -p mtp-rs --test integration -- --ignored windowed
+    /// cargo test -p mtp-rs --test integration -- --ignored paced
     /// ```
     ///
     /// Set `MTP_TEST_READFILE=/DCIM/.../big.mp4` to pin a specific large file;
@@ -1249,13 +1243,11 @@ mod readonly {
     #[tokio::test]
     #[ignore]
     #[serial]
-    async fn test_windowed_download_matches_stream_and_frees_session() {
+    async fn test_paced_download_matches_held_open_and_frees_session() {
         let device = try_device!(crate::open_test_mtp().await, "open device");
         let storages = try_device!(device.storages().await, "get storages");
         let storage = first_storage!(storages);
 
-        // A larger file than the streaming test, so the multi-window path and the
-        // ~80ms/window cadence are meaningfully exercised on real hardware.
         tlog!("Searching for file (5MB-200MB)...");
         let Some((handle, file_size, file_name)) =
             find_suitable_file(storage, 5_000_000, 200_000_000).await
@@ -1263,88 +1255,89 @@ mod readonly {
             tlog!("No suitable file found, skipping");
             return;
         };
-        tlog!("Windowed-reading {} ({} bytes)", file_name, file_size);
+        tlog!("Reading {} ({} bytes)", file_name, file_size);
 
-        // Reference: a plain full streaming download, reduced to a 64-bit FNV-1a
-        // checksum so we don't hold the whole file in RAM twice.
+        // Reference: one held-open transfer, reduced to a 64-bit FNV-1a checksum so we don't
+        // hold the whole file in RAM twice.
+        let started = Instant::now();
         let mut reference = try_device!(
-            storage.download(handle, ByteRange::Full).await,
-            "start stream"
+            storage
+                .download_with_pacing(handle, ByteRange::Full, DownloadPacing::HeldOpen)
+                .await,
+            "start held-open download"
         );
         assert_eq!(reference.size(), file_size);
         let mut ref_hash = FNV_OFFSET;
         let mut ref_len = 0u64;
         while let Some(result) = reference.next_chunk().await {
-            let bytes = result.expect("stream chunk error");
+            let bytes = result.expect("held-open chunk error");
             ref_len += bytes.len() as u64;
             ref_hash = fnv1a_update(ref_hash, &bytes);
         }
-        assert_eq!(ref_len, file_size, "full stream length mismatch");
+        let held_open_time = started.elapsed();
+        assert_eq!(ref_len, file_size, "held-open length mismatch");
         drop(reference);
 
-        // Windowed read with the default 8 MiB window, listing the storage root
-        // between windows to prove the session is free.
-        let mut windowed = try_device!(
-            storage.download_windowed_default(handle).await,
-            "start windowed"
+        // The default pacing, listing the storage root between windows.
+        let started = Instant::now();
+        let mut paced = try_device!(
+            storage.download(handle, ByteRange::Full).await,
+            "start paced download"
         );
         assert_eq!(
-            windowed.size(),
+            paced.size(),
             file_size,
-            "windowed size() must report the full object size"
+            "size() must report the full object size"
         );
         let mut win_hash = FNV_OFFSET;
         let mut win_len = 0u64;
-        let mut window_count = 0u64;
+        let mut windows = 0u64;
         let mut listings_between = 0u64;
-        while let Some(window) = windowed.next_window().await {
-            let bytes = match window {
-                Ok(bytes) => bytes,
-                // Device advertises neither GetPartialObject64 nor the 32-bit
-                // GetPartialObject: windowed reads can't work here. Skip cleanly
-                // rather than fail. (A 32-bit-only camera like the Lumix DMC-TZ61
-                // uses the fallback and does NOT hit this.)
-                Err(mtp_rs::Error::Unsupported) => {
-                    tlog!("SKIPPING: device supports no partial-object read op");
-                    return;
-                }
-                Err(e) => panic!("window error: {e:?}"),
-            };
+        let mut listing_time = std::time::Duration::ZERO;
+        while let Some(result) = paced.next_chunk().await {
+            let bytes = result.expect("paced chunk error");
             win_len += bytes.len() as u64;
             win_hash = fnv1a_update(win_hash, &bytes);
-            window_count += 1;
-
-            // BETWEEN windows: the session is free. Run a real listing on the
-            // same session. (Do it after the first window so there's a read in
-            // flight conceptually, but only a few times to keep the test quick.)
-            if listings_between < 3 {
-                let listed = try_device!(
-                    storage.list_objects(None).await,
-                    "list root between windows"
-                );
-                listings_between += 1;
-                tlog!(
-                    "Between windows: listed {} root object(s). Session is free.",
-                    listed.len()
-                );
+            if !paced.holds_session() && win_len < file_size {
+                windows += 1;
+                if listings_between < 3 {
+                    let listed_at = Instant::now();
+                    let listed = try_device!(
+                        storage.list_objects(None).await,
+                        "list root between windows"
+                    );
+                    listing_time += listed_at.elapsed();
+                    listings_between += 1;
+                    tlog!(
+                        "Between windows at {} bytes: listed {} root object(s).",
+                        win_len,
+                        listed.len()
+                    );
+                }
             }
         }
+        let paced_time = started.elapsed() - listing_time;
 
+        let mb_per_s = |t: std::time::Duration| file_size as f64 / 1e6 / t.as_secs_f64();
         tlog!(
-            "Windowed: {} bytes in {} windows, {} listings interleaved.",
-            win_len,
-            window_count,
+            "Held-open: {:.0} MB/s. Paced: {:.0} MB/s over {} window(s), {} listing(s) between.",
+            mb_per_s(held_open_time),
+            mb_per_s(paced_time),
+            windows + 1,
             listings_between
         );
-        assert_eq!(win_len, file_size, "windowed length mismatch");
+        assert_eq!(win_len, file_size, "paced length mismatch");
         assert_eq!(
             win_hash, ref_hash,
-            "windowed download checksum must equal the full stream's"
+            "paced download checksum must equal the held-open one"
         );
-        assert!(
-            listings_between > 0,
-            "at least one listing must have run between windows"
-        );
+        // A file that fits the first 8 MiB window has no "between".
+        if file_size > 8 * 1024 * 1024 {
+            assert!(
+                listings_between > 0,
+                "at least one listing must have run between windows"
+            );
+        }
     }
 }
 

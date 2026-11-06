@@ -85,13 +85,14 @@ The virtual device truncates like AOSP instead. Why and how: `docs/protocol.md` 
 values), `ObjectFormat` (raw MTP format code + category helpers), `Capabilities` (replaces the old
 `is_android`/`supports_*` accessors; `MtpDevice::capabilities()`, plus convenience
 `supports_rename()`/`supports_upload()`), `ByteRange { Full, From(off), Range { offset, len } }`
-(drives `download`/`download_windowed`), `UsbSpeed` (negotiated USB link speed on
+(drives `download`/`download_with_pacing`), `DownloadPacing`, `UsbSpeed` (negotiated USB link speed on
 `MtpDeviceInfo::speed` / `UsbDeviceInfo::speed`; both info structs are `#[non_exhaustive]`).
 
-**Download API:** three patterns over `ByteRange` — streaming `Storage::download(handle, range)`
-(holds the session, returns `FileDownload`), session-releasing `Storage::download_windowed(handle,
-range, window_size)` (returns `WindowedDownload`), and buffered `Storage::download_to_vec(handle)` /
-`Storage::read_range(handle, offset, len)` / `Storage::thumbnail(handle)`.
+**Download API:** streaming `Storage::download(handle, range)` returns a `FileDownload` that reads in
+windows of about two seconds and frees the session between them; `download_with_pacing` takes a
+`DownloadPacing` (`HeldOpen`, `MaxCancelDelay`, `FixedWindow`). See § Paced downloads. Buffered:
+`Storage::download_to_vec(handle)` / `Storage::read_range(handle, offset, len)` /
+`Storage::thumbnail(handle)`.
 
 ## Public surface and stability
 
@@ -481,10 +482,10 @@ the bulk IN and interrupt pipes. This approach was validated against libmtp's
   `SessionAlreadyOpen`; *hammer* close/open at it (a tight retry loop) and it
   stays busy and re-wedges into a hard `Timeout`. So on `DeviceReset`: drop the
   device, wait a few seconds quiet, then open again (retry with idle-spaced
-  backoff, not a tight loop). `download_windowed` removes the *need* to cancel
-  (no held-open transfer to abort), but it does **not** remove the wedge: a
-  window future dropped mid-flight still wedges the device through the recovery
-  drain. It's the recoverable flavor, though, so prefer it on Android anyway.
+  backoff, not a tight loop). Paced downloads (the default) shrink what a cancel
+  has to abort to one window, but they do **not** remove the wedge: a window
+  future dropped mid-flight still wedges the device through the recovery
+  drain. It's the recoverable flavor, though, so keep `HeldOpen` off Android.
   See `docs/debugging.md`.
 - See `NusbTransport::cancel_transfer()` for the full implementation with
   detailed comments.
@@ -538,59 +539,67 @@ Tested against the virtual device in `transport/virtual_device/mod.rs`
 `examples/resume_download.rs` demonstrates the full half-download → pause → list →
 resume → verify cycle with no hardware.
 
-## Reading large files without monopolizing the session
+## Paced downloads (windows that free the session)
 
-`Storage::download_windowed(handle, window_size)` reads a file as a SEQUENCE of
-bounded `GetPartialObject64` transactions instead of one held-open stream. It
-returns a `WindowedDownload` whose `next_window()` reads the next window and
-RELEASES the one-per-device PTP session on return. Companions:
-`download_windowed_from_offset` (resumable), `download_windowed_default`, the
-`DEFAULT_DOWNLOAD_WINDOW` const (8 MiB). `modified()` / `created()` hand back the
-dates from the `ObjectInfo` it already fetched to learn the size, so keeping a
-copy's date costs no extra `GetObjectInfo`.
+`Storage::download(handle, range)` reads a file as a series of streamed partial reads (windows), each
+a bounded `GetPartialObject64` transaction, and frees the one-per-device PTP session between them.
+`Storage::download_with_pacing(handle, range, pacing)` picks the `DownloadPacing`:
 
-The motivation is the session monopoly: `download` owns the single PTP session
-for the WHOLE file, whatever the range, so
-no other op (a folder listing, navigation) can touch the device until the read
-finishes or is aborted. The spike numbers that drove this (validated on a Pixel
-9 Pro XL): an 8 MiB window is ≈80ms and frees the session between windows, so a
-concurrent listing slips in at its natural cost, versus ~35s to abort a
-held-open multi-GB read (the USB cancel must drain the whole backlog), which
-times out a concurrent listing. A downstream consumer (Cmdr) hit exactly this
-and hand-rolled the window loop before it moved here.
+- `MaxCancelDelay(d)`, the default at `DEFAULT_MAX_CANCEL_DELAY` (2 s): windows sized from the measured
+  speed to take about `d`. First window 8 MiB, then smoothed speed (device time only, half weight on
+  the newest window) × `d`, rounded down to whole MiB, at least 1 MiB, at most `u32::MAX` (the
+  partial read's `max_bytes`).
+- `FixedWindow(bytes)`: windows of that size (0 counts as 1).
+- `HeldOpen`: one transfer for the whole range (`GetObject` for `Full`), the old `download`.
 
-Design boundary (important): `WindowedDownload` owns the BOOKKEEPING (cached
-total size, current offset, window sizing, EOF detection) but NO policy: no
-pause, debounce, or gate. The consumer interposes its own logic BETWEEN
-`next_window()` calls. `window_size` is a real, open parameter; the 8 MiB default
-is a documented suggestion, not baked in.
+The policy lives in `FileDownload` (`mtp/stream.rs`, the `Pacer`); backends only provide
+`download` (held-open, size passed in), `download_window` (one streamed partial read, no
+`GetObjectInfo`), and `can_read_partially_at(offset)`.
 
-Edge-case contract (mirrors `download` with a `From` range): empty file /
-`offset == size` ⇒ first `next_window()` returns `None` and issues no read;
-`offset > size` ⇒ `Error::InvalidData` before any USB I/O; a 0-byte read while
-`offset < size` ⇒ `Error::InvalidData` (a device STALL, not a silent EOF and not
-a spin); a short non-zero mid-file read advances by the bytes ACTUALLY returned;
-`window_size` is clamped to u32 (the `GetPartialObject64` `max_bytes`) and to ≥1.
-`size()` reports the FULL object size so progress/ETA stays anchored.
+Why (#60, Pixel 9 Pro XL, macOS/nusb, 2026-11-06, `mtp-bench` and a per-window probe):
 
-Drop safety: unlike `FileDownload` (holds the session open, MUST be consumed or
-`cancel()`led before drop), `WindowedDownload` holds NOTHING between windows, so
-stopping early is just dropping it: no `cancel()`, `Drop` is a no-op. A
-`next_window()` future dropped mid-call self-heals via `TransactionScope` (the
-next op drains). **On WPD the worker does keep the read stream between windows**
-(§ Windows WPD backend), but any other request releases it first and so does
-one second of quiet, so a listing between windows still runs, and a paused copy
-doesn't keep the phone busy for other apps.
+- A held-open read owns the session for the whole file, and since #54 a cancel on Android drains the
+  rest of it, with no cap: a 5 GB file cancelled at 1% over 2 MB/s held the device ~41 minutes.
+- **Each window costs ~15–20 ms on top of its data, flat across the file.** A 4 KiB partial read takes
+  ~5 ms (round trip plus Android opening the file), a 1 MiB one ~12 ms against ~3.5 ms of stream time,
+  so each read also restarts the phone's send pipeline slowly. Cutting host-side copies changed
+  nothing, so it's the phone. Hence 8 MiB windows ran at ~139 MB/s and 32 MiB at ~229, against
+  268 MB/s held open, and a window sized to take ~2 s costs ~1% at any link speed.
 
-Tested against the virtual device in `transport/virtual_device/mod.rs`
-(`windowed_download_*`), including the headline `..._session_free_between_windows`
-(a `list_objects` succeeds between two `next_window()` calls) and the
-`..._zero_bytes_before_eof_errors` stall path. The stall and short-read paths use
-the `force_partial_read_caps(serial, caps)` virtual-device hook (caps the next
-reads' returned length; 0 = empty/stall, n = short read). `examples/windowed_download.rs`
-demonstrates it with no hardware. Real-device coverage:
-`test_windowed_download_matches_stream_and_frees_session` in
-`tests/integration.rs` (`#[ignore]`).
+Contract:
+
+- **Windows start lazily** (first `next_chunk`); a held-open read starts at the call, and so does the
+  fallback below, so a refusal surfaces from `download`, not the first chunk.
+- **Fallback**: where `can_read_partially_at(offset)` is false (no partial-read op, like libhaze; or
+  32-bit-only and past 4 GiB), the rest of the range is one held-open read.
+- **A window closes in the call that returns its last bytes**: `FileDownload` reads the closing
+  response right away, so `holds_session()` is `false` between calls at a window boundary and a
+  listing runs at once. A short window (fewer bytes than asked) closes on the next call, which then
+  starts the next window from where the bytes stopped. A window that sends more than asked is
+  `InvalidData`.
+- **The download yields once before each window after the first**, so a call queued during the last
+  window gets the lock first. Runtime-agnostic (`YieldNow`), best effort.
+- `holds_session()` is for consumers with their own device lock (Cmdr): hold it while `true`, let
+  other work in while `false`. Never block the download on a lock while waiting on the device.
+- Edge cases: empty file or `offset == size` ⇒ `None`, no read issued; `offset > size` ⇒
+  `InvalidData` before any I/O; a 0-byte read while bytes remain ⇒ `InvalidData` (a stall, not EOF);
+  a short read advances by what arrived; `Range` past the end stops at the end. `size()` is the whole
+  object, `offset()` the next byte (resume from there), `progress()` counts from the start of the
+  file. `modified()`/`created()` come from the `ObjectInfo` fetched to start, at no extra cost.
+- Stopping: `cancel()` between windows sends nothing; mid-window it cancels that window (on Android:
+  drains it, ≤ the pacing target). Dropping is safe: between windows nothing is held; mid-window the
+  `ReceiveStream` flags recovery and the next op drains.
+- **WPD**: windows go through the worker's `DownloadWindow` request, which continues on the kept read
+  stream like `read_range` (§ Windows WPD backend), so other requests run between windows.
+
+Tested against the virtual device in `transport/virtual_device/mod.rs` (the "Paced downloads"
+block: reassembly, every pacing, ranges, 32-bit-only, no-partial fallback, short/stall reads via
+`force_partial_read_caps`, the session free between windows, a queued listing getting in, cancel and
+drop mid-window), plus `Pacer` unit tests in `mtp/stream.rs`. Note the virtual device hands a whole
+window over as one chunk, so a test needs a forced short read to be mid-window.
+`examples/paced_download.rs` demonstrates it with no hardware. Real-device coverage:
+`test_paced_download_matches_held_open_and_frees_session` in `tests/integration.rs` (`#[ignore]`),
+and `mtp-bench --operations stream,paced,windowed`.
 
 ## Stall recovery and device reset
 
@@ -820,9 +829,12 @@ semantics that differ from the USB/PTP backend, all hardware-verified on a Pixel
   device re-streams every byte before the offset on each resume. Resuming near the *end* of a large
   file re-reads almost the whole file. Prefer a single in-order pass (`ByteRange::Full` or windowed
   download) over many small offset resumes when the device's `Seek` is `E_NOTIMPL`.
-- **Windowed downloads continue on one stream**: the worker keeps the stream of the last `read_range`
-  that stopped before EOF, with its position, and a `read_range` of the same object starting exactly
-  there reads on from it. Without this every window reopened the stream and, on forward-only devices,
+- **Windowed reads continue on one stream**: the worker keeps the stream of the last `read_range` or
+  `DownloadWindow` that stopped before EOF, with its position, and either request for the same object
+  starting exactly there reads on from it. `DownloadWindow` (a window of a paced download) streams its
+  chunks over a channel and keeps the stream only when it sent the whole window; EOF, an error, or a
+  consumer that stopped reading releases it. A held-open `Download` keeps the worker for the whole
+  transfer, which is why paced downloads use windows here too. Without this every window reopened the stream and, on forward-only devices,
   re-read the whole prefix: a 194 MB video on a Xiaomi POCO X7 Pro (Windows 11) fell below 1 MB/s by
   128 MB. **An open stream keeps the device busy** (any other request fails with "device busy"), so
   the worker releases it before serving any other request, and after `IDLE_READ_STREAM_RELEASE` (1 s)

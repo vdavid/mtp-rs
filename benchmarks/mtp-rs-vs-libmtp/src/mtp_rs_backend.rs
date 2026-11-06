@@ -2,6 +2,7 @@
 
 use mtp_rs::mtp::MtpDevice;
 use mtp_rs::mtp::NewObjectInfo;
+use mtp_rs::DownloadPacing;
 use mtp_rs::ObjectHandle;
 use mtp_rs::StorageId;
 
@@ -95,7 +96,9 @@ impl MtpRsBackend {
         handle: ObjectHandle,
     ) -> Result<u64, Box<dyn std::error::Error>> {
         let storage = self.storage().await?;
-        let mut download = storage.download(handle, mtp_rs::ByteRange::Full).await?;
+        let mut download = storage
+            .download_with_pacing(handle, mtp_rs::ByteRange::Full, DownloadPacing::HeldOpen)
+            .await?;
         let mut total = 0u64;
         while let Some(chunk) = download.next_chunk().await {
             total += chunk?.len() as u64;
@@ -103,19 +106,19 @@ impl MtpRsBackend {
         Ok(total)
     }
 
-    /// Windowed download of the whole file, discarding windows. Returns the byte count.
-    pub async fn download_windowed(
+    /// Paced download of the whole file, discarding chunks. Returns the byte count.
+    pub async fn download_paced(
         &self,
         handle: ObjectHandle,
-        window_size: u32,
+        pacing: DownloadPacing,
     ) -> Result<u64, Box<dyn std::error::Error>> {
         let storage = self.storage().await?;
         let mut download = storage
-            .download_windowed(handle, mtp_rs::ByteRange::Full, window_size)
+            .download_with_pacing(handle, mtp_rs::ByteRange::Full, pacing)
             .await?;
         let mut total = 0u64;
-        while let Some(window) = download.next_window().await {
-            total += window?.len() as u64;
+        while let Some(chunk) = download.next_chunk().await {
+            total += chunk?.len() as u64;
         }
         Ok(total)
     }

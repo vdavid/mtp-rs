@@ -53,11 +53,8 @@ pub(crate) enum OpenSpec {
     },
 }
 
-/// The streaming-download reply: full object size plus the channel the chunks arrive on.
-pub(crate) struct DownloadStart {
-    pub(crate) size: u64,
-    pub(crate) data: mpsc::Receiver<Result<Bytes, Error>>,
-}
+/// The channel a streaming download's chunks arrive on. It closes at the end of the read.
+pub(crate) type ChunkReceiver = mpsc::Receiver<Result<Bytes, Error>>;
 
 /// The streaming-upload verdict the worker sends back once the data channel closes.
 ///
@@ -88,7 +85,17 @@ pub(crate) enum Request {
     Download {
         obj: ObjectHandle,
         range: ByteRange,
-        reply: oneshot::Sender<Result<DownloadStart, Error>>,
+        /// The object's full size, already looked up by the caller.
+        size: u64,
+        reply: oneshot::Sender<Result<ChunkReceiver, Error>>,
+    },
+    /// One window of a paced download: like `ReadRange`, it continues on the kept read stream
+    /// when it starts where the last read stopped, but it streams its chunks.
+    DownloadWindow {
+        obj: ObjectHandle,
+        offset: u64,
+        len: u32,
+        reply: oneshot::Sender<Result<ChunkReceiver, Error>>,
     },
     ReadRange {
         obj: ObjectHandle,
@@ -283,7 +290,10 @@ fn worker_main(
         };
         // An open read stream keeps the device busy (any other request fails with "device busy"),
         // so it is released before anything but the next read.
-        if !matches!(req, Request::ReadRange { .. }) {
+        if !matches!(
+            req,
+            Request::ReadRange { .. } | Request::DownloadWindow { .. }
+        ) {
             last_read = None;
         }
         match req {
@@ -305,7 +315,18 @@ fn worker_main(
             Request::ObjectInfo(obj, reply) => {
                 let _ = reply.send(unsafe { dev.object_info(obj) });
             }
-            Request::Download { obj, range, reply } => handle_download(&mut dev, obj, range, reply),
+            Request::Download {
+                obj,
+                range,
+                size,
+                reply,
+            } => handle_download(&mut dev, obj, range, size, reply),
+            Request::DownloadWindow {
+                obj,
+                offset,
+                len,
+                reply,
+            } => handle_download_window(&mut dev, obj, offset, len, &mut last_read, reply),
             Request::ReadRange {
                 obj,
                 offset,
@@ -444,15 +465,9 @@ fn handle_download(
     dev: &mut WpdDevice,
     obj: ObjectHandle,
     range: ByteRange,
-    reply: oneshot::Sender<Result<DownloadStart, Error>>,
+    size: u64,
+    reply: oneshot::Sender<Result<ChunkReceiver, Error>>,
 ) {
-    let size = match unsafe { dev.object_size(obj) } {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = reply.send(Err(e));
-            return;
-        }
-    };
     let offset = range.offset();
     if offset > size {
         let _ = reply.send(Err(Error::invalid_data(format!(
@@ -473,16 +488,86 @@ fn handle_download(
         return;
     }
 
-    let (mut tx, rx) = mpsc::channel::<Result<Bytes, Error>>(DATA_BOUND);
-    if reply.send(Ok(DownloadStart { size, data: rx })).is_err() {
+    let (tx, rx) = mpsc::channel::<Result<Bytes, Error>>(DATA_BOUND);
+    if reply.send(Ok(rx)).is_err() {
         return; // consumer already gave up
     }
-
     // Cap total bytes for a bounded `Range`; `Full`/`From` read to EOF.
-    let mut remaining: Option<u64> = match range {
+    let limit = match range {
         ByteRange::Range { len, .. } => Some(len),
         _ => None,
     };
+    pump_chunks(&stream, limit, tx);
+    // `tx` dropped inside → channel closes → consumer sees `None` (clean EOF).
+}
+
+/// Stream one window of a paced download, continuing on the kept read stream when the window
+/// starts where the last read stopped (see [`OpenRead`]). The worker serves nothing else while a
+/// window streams, so windows are what let other requests in during a long download.
+fn handle_download_window(
+    dev: &mut WpdDevice,
+    obj: ObjectHandle,
+    offset: u64,
+    len: u32,
+    last: &mut Option<OpenRead>,
+    reply: oneshot::Sender<Result<ChunkReceiver, Error>>,
+) {
+    // `take` releases a stream that does not continue here before another one is opened.
+    let stream = match last
+        .take()
+        .filter(|open| open.obj == obj && open.at == offset)
+    {
+        Some(open) => open.stream,
+        None => {
+            let opened = unsafe { dev.open_stream(obj) }.and_then(|stream| {
+                unsafe { com::stream_seek(&stream, offset) }?;
+                Ok(stream)
+            });
+            match opened {
+                Ok(stream) => stream,
+                Err(e) => {
+                    let _ = reply.send(Err(e));
+                    return;
+                }
+            }
+        }
+    };
+
+    let (tx, rx) = mpsc::channel::<Result<Bytes, Error>>(DATA_BOUND);
+    if reply.send(Ok(rx)).is_err() {
+        return; // consumer already gave up; the stream is released here
+    }
+    let outcome = pump_chunks(&stream, Some(u64::from(len)), tx);
+    // Keep the stream only when the whole window went out and the file goes on: the next window
+    // then continues on it. EOF, an error, or a consumer that stopped reading releases it.
+    if outcome == PumpOutcome::Complete {
+        *last = Some(OpenRead {
+            obj,
+            at: offset + u64::from(len),
+            stream,
+        });
+    }
+}
+
+/// How [`pump_chunks`] ended.
+#[derive(Debug, PartialEq, Eq)]
+enum PumpOutcome {
+    /// Sent exactly the requested number of bytes.
+    Complete,
+    /// The stream ended first.
+    Eof,
+    /// A read failed (and the error went to the consumer), or the consumer stopped reading.
+    Stopped,
+}
+
+/// Read `stream` in `CHUNK`s and send them to the consumer, up to `limit` bytes (or to EOF).
+/// Dropping `tx` on return closes the channel, which the consumer sees as the end of the read.
+fn pump_chunks(
+    stream: &IStream,
+    limit: Option<u64>,
+    mut tx: mpsc::Sender<Result<Bytes, Error>>,
+) -> PumpOutcome {
+    let mut remaining = limit;
     let mut buf = vec![0u8; CHUNK];
     loop {
         let want = match remaining {
@@ -490,24 +575,23 @@ fn handle_download(
             None => buf.len(),
         };
         if want == 0 {
-            break;
+            return PumpOutcome::Complete;
         }
-        let n = match unsafe { com::stream_read(&stream, &mut buf[..want]) } {
-            Ok(0) => break, // EOF
+        let n = match unsafe { com::stream_read(stream, &mut buf[..want]) } {
+            Ok(0) => return PumpOutcome::Eof,
             Ok(n) => n,
             Err(e) => {
                 let _ = block_on(tx.send(Err(e)));
-                break;
+                return PumpOutcome::Stopped;
             }
         };
         if block_on(tx.send(Ok(Bytes::copy_from_slice(&buf[..n])))).is_err() {
-            break; // consumer dropped → cancel
+            return PumpOutcome::Stopped; // consumer dropped → cancel
         }
         if let Some(r) = remaining.as_mut() {
             *r -= n as u64;
         }
     }
-    // `tx` drops here → channel closes → consumer sees `None` (clean EOF).
 }
 
 /// The stream of the last [`handle_read_range`] that stopped before EOF, and where it stopped.

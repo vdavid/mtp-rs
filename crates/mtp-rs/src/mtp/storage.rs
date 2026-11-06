@@ -6,7 +6,7 @@ use crate::mtp::backend::{
 };
 use crate::mtp::error::check_name_length;
 use crate::mtp::object::NewObjectInfo;
-use crate::mtp::stream::{FileDownload, Progress, WindowedDownload, DEFAULT_DOWNLOAD_WINDOW};
+use crate::mtp::stream::{DownloadPacing, FileDownload, Progress};
 use crate::mtp::{Error, ObjectHandle, ObjectInfo, StorageId, StorageInfo, UploadError};
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
@@ -473,12 +473,18 @@ impl Storage {
         self.backend.thumbnail(handle).await
     }
 
-    /// Download a file as a stream (true streaming), holding the session for the whole file.
+    /// Download a file (or part of one) as a stream of chunks, with the default
+    /// [`DownloadPacing`]: windows that each take about two seconds, freeing the device between
+    /// them.
     ///
-    /// Yields data chunks as they arrive without buffering the entire file in memory. This is the
-    /// raw-speed path; it holds the device's one session open for the whole file (see [`download`]
-    /// docs). For a long read where the device must stay responsive to other work, use
-    /// [`download_windowed`](Self::download_windowed) instead.
+    /// Memory stays at about one 64 KiB read whatever the file's size. A cancel, or another call
+    /// on the device (a folder listing), waits at most about two seconds. Each window costs a
+    /// little on top of its data, about 1% at that size. Use
+    /// [`download_with_pacing`](Self::download_with_pacing) to pick another pacing.
+    ///
+    /// Devices without a partial-read operation (some Nintendo Switch responders) get one held-open
+    /// transfer instead, and so does the part of a file past 4 GiB on devices that only have the
+    /// 32-bit one (some cameras).
     ///
     /// # Resume on forward-only-seek devices
     ///
@@ -487,66 +493,25 @@ impl Storage {
     /// so the backend reaches the offset by reading and discarding the prefix: a resume is O(offset)
     /// and re-streams every byte before the offset. Resuming near the end of a large file re-reads
     /// almost the whole file, so prefer a single in-order pass over many small offset resumes there.
-    ///
-    /// [`download`]: Self::download
     pub async fn download(
         &self,
         handle: ObjectHandle,
         range: ByteRange,
     ) -> Result<FileDownload, Error> {
-        let dl = self.backend.download(handle, range).await?;
-        Ok(FileDownload::new(dl.size, dl.body))
+        self.download_with_pacing(handle, range, DownloadPacing::default())
+            .await
     }
 
-    /// Read a large file as a sequence of bounded windows, **freeing the session between every
-    /// window** so the device stays responsive.
-    ///
-    /// Each [`next_window()`](WindowedDownload::next_window) is a single bounded read that completes
-    /// and releases the device. Between two `next_window()` calls a consumer can interleave other
-    /// device work (service a pending folder listing, navigate, check a cancel flag) without
-    /// aborting the read.
-    ///
-    /// `window_size` is the maximum bytes per window. [`DEFAULT_DOWNLOAD_WINDOW`] (8 MiB) is a
-    /// documented suggestion; a `window_size` of 0 is clamped to 1.
-    ///
-    /// # Resume on forward-only-seek devices
-    ///
-    /// A windowed *resume* from an offset (`ByteRange::From`/`Range`) re-reads the skipped prefix on
-    /// devices whose `IStream::Seek` is `E_NOTIMPL` (the Windows WPD backend's Pixel-class devices),
-    /// making the first window after the offset O(offset). The session-freeing benefit between windows
-    /// still holds, but starting deep into a large file pays a full re-read of the prefix first;
-    /// prefer covering the file from the start (`ByteRange::Full`) where possible.
-    pub async fn download_windowed(
+    /// Download a file (or part of one) as a stream of chunks, spread over device transactions
+    /// as `pacing` says. See [`download`](Self::download) and [`DownloadPacing`].
+    pub async fn download_with_pacing(
         &self,
         handle: ObjectHandle,
         range: ByteRange,
-        window_size: u32,
-    ) -> Result<WindowedDownload, Error> {
+        pacing: DownloadPacing,
+    ) -> Result<FileDownload, Error> {
         let info = self.backend.object_info(handle).await?;
-        let offset = range.offset();
-        if offset > info.size {
-            return Err(Error::invalid_data(format!(
-                "windowed download offset {offset} is past the object size {}",
-                info.size
-            )));
-        }
-        Ok(WindowedDownload::new(
-            Arc::clone(&self.backend),
-            handle,
-            &info,
-            offset,
-            window_size,
-        ))
-    }
-
-    /// Read a large file in windows using the default window size
-    /// ([`DEFAULT_DOWNLOAD_WINDOW`], 8 MiB), covering the whole file.
-    pub async fn download_windowed_default(
-        &self,
-        handle: ObjectHandle,
-    ) -> Result<WindowedDownload, Error> {
-        self.download_windowed(handle, ByteRange::Full, DEFAULT_DOWNLOAD_WINDOW)
-            .await
+        FileDownload::start(Arc::clone(&self.backend), handle, &info, range, pacing).await
     }
 
     // =========================================================================

@@ -272,18 +272,37 @@ match storage.upload(None, info, Box::pin(stream)).await {
 
 ### Download with progress
 
-`download_windowed` is the recommended way to read a file: it fetches bounded windows and frees the device's single PTP session between each, so other operations (listings, navigation) stay responsive during a long download.
+`download` streams a file in chunks. Peak memory is one 64 KiB USB read, whatever the file's size.
 
 ```rust
-let mut download = storage.download_windowed_default(file.handle).await?;
+use mtp_rs::ByteRange;
+
+let mut download = storage.download(file.handle, ByteRange::Full).await?;
 println!("Downloading {} bytes...", download.size());
 
-while let Some(window) = download.next_window().await {
-let bytes = window ?;
-// Process bytes... (do other device work between windows if you like)
-println ! ("{:.1}%", download.offset() as f64 / download.size() as f64 * 100.0);
+while let Some(chunk) = download.next_chunk().await {
+    file_on_disk.write_all(&chunk?)?;
+    println!("{:.1}%", download.progress() * 100.0);
 }
 ```
+
+Under the hood it reads the file in windows of about two seconds each, sized from the measured speed, and frees the device between them. So a cancel stops within about two seconds (on Android a cancel can't cut a transfer short, it has to read it to the end), and a folder listing during a big download waits at most that long. The windows cost about 1% of the speed. Pass `ByteRange::From(download.offset())` to resume after a cancel, or `ByteRange::Range { offset, len }` for a bounded slice.
+
+To pick another pacing, use `download_with_pacing`:
+
+```rust
+use mtp_rs::DownloadPacing;
+use std::time::Duration;
+
+// Fastest, but the device is busy until the end, and a cancel on Android reads the whole rest.
+storage.download_with_pacing(file.handle, ByteRange::Full, DownloadPacing::HeldOpen).await?;
+// Stop within half a second instead.
+storage.download_with_pacing(file.handle, ByteRange::Full, DownloadPacing::MaxCancelDelay(Duration::from_millis(500))).await?;
+// Fixed 32 MiB windows.
+storage.download_with_pacing(file.handle, ByteRange::Full, DownloadPacing::FixedWindow(32 << 20)).await?;
+```
+
+If your app has its own lock around the device, `download.holds_session()` tells you when it's safe to let other work in: it's `false` between windows.
 
 `download.modified()` and `download.created()` return the file's dates at no extra cost. Most devices, Android included, write them without a time zone, in the device's local time, so `DateTime::offset` is usually `None`. The library doesn't guess the zone: `to_unix_seconds()` answers only when the device gave an offset, and `to_unix_seconds_with_fallback(zone)` lets you pick one, often the computer's own local offset:
 
@@ -295,19 +314,6 @@ if let Some(modified) = download.modified() {
     let unix_secs = modified.to_unix_seconds_with_fallback(local);
 }
 ```
-
-For raw throughput when nothing else needs the device during the read, `download(handle, ByteRange::Full)` reads the whole file in one continuous transfer instead. It holds the PTP session for the entire download, so the device can't service other operations meanwhile, and it yields chunks as they arrive:
-
-```rust
-use mtp_rs::mtp::ByteRange;
-
-let mut download = storage.download(file.handle, ByteRange::Full).await?;
-while let Some(chunk) = download.next_chunk().await {
-    file_on_disk.write_all( & chunk ?) ?;
-}
-```
-
-Peak memory per transfer is one 64 KiB USB read, whatever the file's size. Pass `ByteRange::From(offset)` to resume a download, or `ByteRange::Range { offset, len }` for a bounded slice.
 
 ### Partial reads (byte ranges)
 
@@ -326,7 +332,7 @@ let chunk = storage.read_range(file.handle, 6 * 1024 * 1024 * 1024, 65536).await
 ```
 
 `read_range` reads at most `u32::MAX` bytes per call. For a bigger span, stream it with
-`download(handle, ByteRange::Range { offset, len })` or walk it with `download_windowed`.
+`download(handle, ByteRange::Range { offset, len })`.
 
 ### Listen for events
 
@@ -427,7 +433,7 @@ This is what most people want. Friendly types, automatic session management, str
 
 - `MtpDevice` - Connect to devices, get info, list storages
 - `Storage` - File operations (list, download, upload, delete, move, copy)
-- `FileDownload`, `WindowedDownload` - Streaming downloads with progress
+- `FileDownload`, `DownloadPacing` - Streaming downloads with progress
 - `DeviceEvent` - Events from the device
 
 ### Low-level API (`ptp::`)

@@ -24,7 +24,7 @@
 #![allow(dead_code)]
 
 use bytes::Bytes;
-use mtp_rs::{ByteRange, Error, NewObjectInfo, ObjectHandle, Storage};
+use mtp_rs::{ByteRange, DownloadPacing, Error, NewObjectInfo, ObjectHandle, Storage};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -158,29 +158,24 @@ pub async fn run_windowed_download(storage: &Storage, parent: Option<ObjectHandl
     let content: Vec<u8> = (0..5000u32).map(|i| (i * 7) as u8).collect();
     let handle = upload(storage, parent, "windowed.bin", &content).await;
 
-    let mut dl = storage
-        .download_windowed(handle, ByteRange::Full, 512)
+    let dl = storage
+        .download_with_pacing(handle, ByteRange::Full, DownloadPacing::FixedWindow(512))
         .await
         .unwrap();
     assert_eq!(dl.size(), content.len() as u64);
-
-    let mut assembled = Vec::new();
-    while let Some(window) = dl.next_window().await {
-        assembled.extend_from_slice(&window.unwrap());
-    }
-    assert_eq!(assembled, content);
+    assert_eq!(dl.collect().await.unwrap(), content);
 
     // A windowed resume from an offset covers exactly the tail.
     let offset = 2048u64;
-    let mut resume = storage
-        .download_windowed(handle, ByteRange::From(offset), 256)
+    let resume = storage
+        .download_with_pacing(
+            handle,
+            ByteRange::From(offset),
+            DownloadPacing::FixedWindow(256),
+        )
         .await
         .unwrap();
-    let mut tail = Vec::new();
-    while let Some(window) = resume.next_window().await {
-        tail.extend_from_slice(&window.unwrap());
-    }
-    assert_eq!(tail, &content[offset as usize..]);
+    assert_eq!(resume.collect().await.unwrap(), &content[offset as usize..]);
 
     storage.delete(handle).await.unwrap();
 }

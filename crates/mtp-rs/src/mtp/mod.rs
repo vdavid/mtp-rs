@@ -53,7 +53,7 @@ pub use hotplug::{
 pub use object::NewObjectInfo;
 pub use storage::{ListingItem, ObjectCollection, ObjectListing, SkippedObject, Storage};
 pub use stream::{
-    FileDownload, Progress, WindowedDownload, DEFAULT_CANCEL_TIMEOUT, DEFAULT_DOWNLOAD_WINDOW,
+    DownloadPacing, FileDownload, Progress, DEFAULT_CANCEL_TIMEOUT, DEFAULT_MAX_CANCEL_DELAY,
 };
 pub use types::{
     Capabilities, DateTime, DeviceInfo, FilesystemType, ObjectFormat, ObjectHandle, ObjectInfo,

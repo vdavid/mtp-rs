@@ -74,9 +74,10 @@ Symptoms of a real wedge, on a device that worked moments ago:
 A host process that dies mid-download (crash, `kill`, `std::process::exit`) leaves the
 phone sending the rest of the transfer. The next open's `OpenSession` reads that data
 as its reply (`got N` with a different N every run). `PtpSession::open` handles this
-itself: it drains the pipe (up to 30 s) and asks once more, so a killed windowed
-download costs the next open under a second. A killed held-open `download` of a large
-file can leave more than the drain clears, and then the open still fails this way.
+itself: it drains the pipe (up to 30 s) and asks once more, so a killed paced
+download (the default) costs the next open at most one window, about two seconds. A
+killed `DownloadPacing::HeldOpen` download of a large file can leave more than the
+drain clears, and then the open still fails this way.
 
 The recovery order:
 
@@ -152,11 +153,12 @@ device). Healthy operations here finish well under a second, so 2s is safe.
   operations in a timeout too. Recovery for both: see step 2 above (quiet, spaced
   reopens; the reset last).
 - **One flavor doesn't recover in software**: a dropped **held-open streaming**
-  `GetObject` (`FileDownload`) future needed a physical replug on the S23 (plain
+  `GetObject` (`DownloadPacing::HeldOpen`) future needed a physical replug on the S23 (plain
   reopen and transport reset both failed), while a dropped **windowed**
   `GetPartialObject64` future recovered via the reset-plus-spaced-retries path
-  (both verified 2026-07-20). So `download_windowed` doesn't dodge the wedge, only
-  the need to cancel; prefer it because its wedge is the recoverable one.
+  (both verified 2026-07-20). So windows (the default pacing) don't dodge the wedge,
+  only shrink what a cancel has to abort; keep them because their wedge is the
+  recoverable one.
 
 ### 5. Capture diagnostics for a bug report
 

@@ -6,9 +6,9 @@
 
 use mtp_rs::ptp::{self, PtpDevice, PtpError};
 use mtp_rs::{
-    Backend, ByteRange, CancelToken, DateTime, DeviceEvent, Error, HotplugEvent, ListingItem,
-    MtpDevice, MtpDeviceInfo, MtpMatchReason, NewObjectInfo, ObjectFormat, ObjectHandle,
-    ObjectInfo, StorageId, UsbSpeed, UtcOffset,
+    Backend, ByteRange, CancelToken, DateTime, DeviceEvent, DownloadPacing, Error, HotplugEvent,
+    ListingItem, MtpDevice, MtpDeviceInfo, MtpMatchReason, NewObjectInfo, ObjectFormat,
+    ObjectHandle, ObjectInfo, StorageId, UsbSpeed, UtcOffset, DEFAULT_MAX_CANCEL_DELAY,
 };
 
 #[test]
@@ -56,6 +56,17 @@ fn id_newtypes_and_input_enums_are_buildable() {
         ByteRange::Range { offset: 1, len: 2 },
     ];
     assert_eq!(ranges.len(), 3);
+
+    let pacings = [
+        DownloadPacing::HeldOpen,
+        DownloadPacing::MaxCancelDelay(std::time::Duration::from_millis(500)),
+        DownloadPacing::FixedWindow(1 << 20),
+    ];
+    assert_eq!(pacings.len(), 3);
+    assert_eq!(
+        DownloadPacing::default(),
+        DownloadPacing::MaxCancelDelay(DEFAULT_MAX_CANCEL_DELAY)
+    );
 
     let _ = MtpDevice::builder().backend(Backend::Usb);
     assert!(!CancelToken::new().is_cancelled());

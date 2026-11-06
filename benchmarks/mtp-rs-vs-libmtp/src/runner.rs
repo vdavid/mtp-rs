@@ -1,6 +1,7 @@
 use crate::libmtp_backend::LibmtpBackend;
 use crate::mtp_rs_backend::MtpRsBackend;
 use crate::types::{format_bytes, BackendName, BenchmarkConfig, BenchmarkResult, Operation};
+use mtp_rs::DownloadPacing;
 use std::time::{Duration, Instant};
 /// Run all benchmarks described by `config` and return collected results.
 ///
@@ -100,15 +101,21 @@ async fn run_mtp_rs_scenario(
                 backend.delete(handle).await?;
                 elapsed
             }
-            Operation::DownloadStream | Operation::DownloadWindowed { .. } => {
+            Operation::DownloadStream
+            | Operation::DownloadPaced
+            | Operation::DownloadWindowed { .. } => {
                 let handle = backend
                     .upload("bench-download-file.bin", &test_data)
                     .await?;
                 let start = Instant::now();
                 let bytes = match operation {
                     Operation::DownloadWindowed { window_mib } => {
+                        let window = DownloadPacing::FixedWindow(window_mib * 1024 * 1024);
+                        backend.download_paced(handle, window).await?
+                    }
+                    Operation::DownloadPaced => {
                         backend
-                            .download_windowed(handle, window_mib * 1024 * 1024)
+                            .download_paced(handle, DownloadPacing::default())
                             .await?
                     }
                     _ => backend.download_stream(handle).await?,
@@ -177,7 +184,9 @@ fn run_libmtp_scenario(
         };
 
         let elapsed = match operation {
-            Operation::DownloadStream | Operation::DownloadWindowed { .. } => {
+            Operation::DownloadStream
+            | Operation::DownloadPaced
+            | Operation::DownloadWindowed { .. } => {
                 return Err(format!("{operation} is mtp-rs only").into());
             }
             Operation::Download => {

@@ -90,25 +90,18 @@ pub(crate) type ProgressFn<'a> = Box<dyn FnMut(Progress) -> ControlFlow<()> + Se
 pub(crate) type UploadStream<'a> =
     Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send + 'a>>;
 
-/// One in-progress streaming download, holding whatever resource the backend needs for the whole
-/// transfer (the USB backend holds the PTP session open). The façade's [`crate::mtp::FileDownload`]
-/// wraps this; consumers don't see it.
+/// One in-progress streamed read (a held-open download or one window of a paced one), holding
+/// whatever resource the backend needs until it ends (the USB backend holds the PTP session). The
+/// façade's [`crate::mtp::FileDownload`] wraps these; consumers don't see them.
 #[async_trait]
 pub(crate) trait DownloadBody: Send {
-    /// The next chunk of data, or `None` at end-of-file.
+    /// The next chunk of data, or `None` at the end of this read. The resource is released by the
+    /// time `None` (or an error) comes back.
     async fn next_chunk(&mut self) -> Option<Result<Bytes, Error>>;
 
-    /// Cancel the in-flight download, releasing the backend resource and leaving the device usable
+    /// Cancel the in-flight read, releasing the backend resource and leaving the device usable
     /// for the next operation. A no-op if already complete.
     async fn cancel(&mut self, idle_timeout: Duration) -> Result<(), Error>;
-}
-
-/// One streaming download returned by [`MtpBackend::download`]: the full object size plus the body.
-pub(crate) struct BackendDownload {
-    /// Full object size in bytes (always the whole file, even for an offset/range read).
-    pub(crate) size: u64,
-    /// The download body.
-    pub(crate) body: Box<dyn DownloadBody>,
 }
 
 /// Whether a per-handle metadata error invalidates the whole collection or can
@@ -186,9 +179,27 @@ pub(crate) trait MtpBackend: Send + Sync {
     /// Metadata for one object (with the full >4 GB size resolved).
     async fn object_info(&self, obj: ObjectHandle) -> Result<ObjectInfo, Error>;
 
-    /// A streaming download of `obj` over `range`. Holds the backend resource for the transfer.
-    async fn download(&self, obj: ObjectHandle, range: ByteRange)
-        -> Result<BackendDownload, Error>;
+    /// One held-open streaming download of `obj` over `range`, holding the backend resource for the
+    /// whole transfer. `size` is the object's full size, which the caller already looked up.
+    async fn download(
+        &self,
+        obj: ObjectHandle,
+        range: ByteRange,
+        size: u64,
+    ) -> Result<Box<dyn DownloadBody>, Error>;
+
+    /// One streamed partial read of `len` bytes from `offset`: a single window of a paced download.
+    /// The backend resource is held only until this body ends.
+    async fn download_window(
+        &self,
+        obj: ObjectHandle,
+        offset: u64,
+        len: u32,
+    ) -> Result<Box<dyn DownloadBody>, Error>;
+
+    /// Whether a partial read can start at `offset`. False when the device has no partial-read
+    /// operation, or only the 32-bit one and `offset` is past 4 GiB.
+    fn can_read_partially_at(&self, offset: u64) -> bool;
 
     /// A single-shot buffered read of `[offset, offset+len)` (or to EOF when `len` is `None`).
     async fn read_range(

@@ -70,8 +70,8 @@ pub enum Error {
     /// Distinct from [`Disconnected`](Self::Disconnected): the device is still
     /// present and reopenable with no physical replug. Cancelling or abandoning
     /// an in-flight read triggers it on Android devices (issue #18), at any
-    /// transfer size; prefer `download_windowed`, whose wedge is the recoverable
-    /// one. Recover with quiet, idle-spaced reopens; see
+    /// transfer size; prefer windowed pacing (the default for `Storage::download`),
+    /// whose wedge is the recoverable one. Recover with quiet, idle-spaced reopens; see
     /// [`MtpDevice::reset_by_serial`](crate::mtp::MtpDevice::reset_by_serial).
     ///
     /// **Don't treat this as the only wedge signature.** A Samsung reports it; a

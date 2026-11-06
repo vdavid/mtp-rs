@@ -375,28 +375,6 @@ impl WpdDevice {
         })
     }
 
-    /// The full byte size of an object.
-    ///
-    /// # Safety
-    /// COM thread only.
-    pub(crate) unsafe fn object_size(&mut self, obj: ObjectHandle) -> Result<u64, Error> {
-        let wpd_id = self
-            .ids
-            .lock()
-            .expect("idmap poisoned")
-            .object_id(obj)
-            .ok_or(Error::StaleHandle)?
-            .to_string();
-        let w = wide(&wpd_id);
-        let vals = self
-            .props
-            .GetValues(PCWSTR(w.as_ptr()), None)
-            .map_err(map_hresult)?;
-        Ok(vals
-            .GetUnsignedLargeIntegerValue(&WPD_OBJECT_SIZE)
-            .unwrap_or(0))
-    }
-
     /// Open the default-resource read stream for an object (the whole object).
     ///
     /// # Safety

@@ -23,7 +23,8 @@ struct Cli {
     sizes: String,
 
     /// Comma-separated operations: download,upload,list, plus the mtp-rs-only `stream`
-    /// (held-open `download`) and `windowed` (`download_windowed`, one run per `--windows` size).
+    /// (held-open), `paced` (the default adaptive pacing), and `windowed` (fixed windows, one run
+    /// per `--windows` size).
     #[arg(long, default_value = "download,upload,list")]
     operations: String,
 
@@ -75,6 +76,7 @@ fn parse_operations(input: &str, windows_mib: &[u32]) -> Result<Vec<Operation>, 
         match s.trim().to_lowercase().as_str() {
             "download" => ops.push(Operation::Download),
             "stream" | "download_stream" => ops.push(Operation::DownloadStream),
+            "paced" | "download_paced" => ops.push(Operation::DownloadPaced),
             "windowed" | "download_windowed" => ops.extend(
                 windows_mib
                     .iter()
@@ -84,9 +86,9 @@ fn parse_operations(input: &str, windows_mib: &[u32]) -> Result<Vec<Operation>, 
             "list" | "list_files" | "listfiles" => ops.push(Operation::ListFiles),
             other => {
                 return Err(format!(
-                    "Unknown operation '{}'. Expected: download, stream, windowed, upload, list",
-                    other
-                ))
+                "Unknown operation '{}'. Expected: download, stream, paced, windowed, upload, list",
+                other
+            ))
             }
         }
     }

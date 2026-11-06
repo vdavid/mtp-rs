@@ -14,6 +14,20 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Changed
+
+- **[lib] Breaking: one download API, paced by how long a cancel may take.** `Storage::download` now reads a file in windows that each take about two seconds, sized from the measured speed, and frees the device between them. So a cancel on Android costs at most the current window instead of the rest of the file (a 5 GB file cancelled at 1% over a 2 MB/s link used to hold the device for ~41 minutes), and a folder listing during a big download waits at most about two seconds. Each window costs ~15–20 ms on top of its data on a Pixel 9 Pro XL, about 1% at that size. `Storage::download_with_pacing` takes a `DownloadPacing`: `HeldOpen` (one transfer, the old `download`), `MaxCancelDelay(duration)` (the default, at `DEFAULT_MAX_CANCEL_DELAY`), or `FixedWindow(bytes)`. Windows stream their chunks, so memory stays at one 64 KiB read however big a window gets. Devices without a partial-read operation get one held-open transfer automatically. `FileDownload` gains `offset()`, `modified()`, `created()`, and `holds_session()` (for consumers with their own device lock), and `progress()` now counts from the start of the file, so a resumed download picks up where it left off. **Removed**: `Storage::download_windowed`, `Storage::download_windowed_default`, `WindowedDownload`, and `DEFAULT_DOWNLOAD_WINDOW`. To migrate, use `download_with_pacing(handle, range, DownloadPacing::FixedWindow(size))` and read chunks with `next_chunk()`; the session is free whenever `holds_session()` is `false`. [#60](https://github.com/vdavid/mtp-rs/issues/60)
+- **[lib]** On Windows, a download's windows continue on one read stream (like `read_range` already did) and other requests run between them.
+- **[cli] Stopping `get` (Ctrl+C) during a big file leaves at most one window behind for the next command to clear, not the rest of the file.** `get` uses the new paced download. The next command clears leftovers when it opens the device, for up to 30 s, so a big leftover could outlast that before.
+
+### Fixed
+
+- **[lib] A finished download no longer blocks every later call on the device until it's dropped.** A `FileDownload` that had returned its last chunk kept the device's session, so any call while it was still in scope waited forever, with no error and no timeout. The session now goes back as soon as the transfer ends. Related: a transfer error mid-download (a timeout, say) now makes the next operation clear what's left of the transfer first, instead of reading it as its reply. [#60](https://github.com/vdavid/mtp-rs/issues/60)
+
+### Added
+
+- **[workspace]** `mtp-bench` gained `stream`, `paced`, and `windowed` download modes (`--windows` sizes in MiB), to measure what windows cost on a device.
+
 ## [0.37.3] - 2026-11-04
 
 Library `0.37.3` and CLI `0.11.7`. A copy onto an existing name can't corrupt a file or hand back the original anymore, and cancelling a download no longer kills MTP on Android until a replug.
