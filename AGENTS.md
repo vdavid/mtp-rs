@@ -729,9 +729,16 @@ file in RAM. Key implementation notes:
   (12 bytes) is prepended to the first chunk so the device sees the PTP
   container header in the first transfer (matching libmtp behavior).
 - Data is batched into 256KB USB transfers using nusb's low-level
-  `allocate/submit/wait_next_complete` API. `EndpointWrite` would be
+  `allocate/submit/next_complete` API. `EndpointWrite` would be
   cleaner but requires ownership of the `Endpoint`, which lives behind
   a `Mutex` in `NusbTransport`.
+- **Every bulk OUT wait is async** (`complete_out` in `transport/nusb.rs`:
+  `next_complete` raced against a `futures_timer::Delay`, cancel-and-collect
+  on timeout). Don't go back to `wait_next_complete`/`transfer_blocking`:
+  they block the executor thread for the whole upload, so a consumer's
+  timeout or `select` couldn't stop an upload mid-transfer. Because the wait
+  is async, a dropped upload can leave one transfer in flight; `settle_out`
+  collects it before the next send, so nothing queues behind it unseen.
 - A ZLP must be sent after the final transfer if its size is a multiple
   of `max_packet_size`. Without this, Android devices hang waiting for
   more data (validated on Pixel 9 Pro XL).

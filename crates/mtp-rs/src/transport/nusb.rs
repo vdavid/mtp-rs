@@ -142,6 +142,64 @@ where
     NusbTransport::convert_transfer_error(err)
 }
 
+/// Wait up to `timeout` for the transfer in flight on the bulk OUT endpoint, without blocking
+/// the executor thread.
+///
+/// nusb's `wait_next_complete` and `transfer_blocking` block the calling thread, so an upload
+/// built on them held an executor thread for its whole length, and a timeout or `select` around
+/// it could only drop it between source chunks. `next_complete` is a plain future woken by
+/// nusb's own event thread, so it needs no runtime (unlike the `MaybeFuture`s in [`blocking`]).
+///
+/// On timeout this cancels the transfer and collects it, as `transfer_blocking` does: the
+/// status is `Cancelled` (mapped to `Timeout`) and nothing stays pending.
+async fn complete_out(
+    ep: &mut nusb::Endpoint<Bulk, Out>,
+    timeout: Duration,
+) -> nusb::transfer::Completion {
+    let completed = {
+        let complete = ep.next_complete();
+        let timer = Delay::new(timeout);
+        futures::pin_mut!(complete, timer);
+        match futures::future::select(complete, timer).await {
+            futures::future::Either::Left((completion, _)) => Some(completion),
+            futures::future::Either::Right(_) => None,
+        }
+    };
+    if let Some(completion) = completed {
+        return completion;
+    }
+    ep.cancel_all();
+    ep.next_complete().await
+}
+
+/// Submit one transfer on the bulk OUT endpoint and wait for it (see [`complete_out`]).
+async fn transfer_out(
+    ep: &mut nusb::Endpoint<Bulk, Out>,
+    buf: Buffer,
+    timeout: Duration,
+) -> Result<(), crate::PtpError> {
+    ep.submit(buf);
+    let completion = complete_out(ep, timeout).await;
+    completion.status.map_err(|e| clear_halt_if_stalled(ep, e))
+}
+
+/// Collect the transfers a dropped send left in flight, before anything new goes out.
+///
+/// Waiting is async, so a send dropped mid-transfer (a cancelled upload future) leaves its
+/// transfer pending on the endpoint. Its bytes belong to the abandoned data phase, which the
+/// session's recovery ends next (`end_send_phase`, then `cancel_transfer`); letting it finish
+/// keeps the bytes in order. Without this, the next submit would queue behind it unseen and
+/// the next wait would collect the old transfer's completion as its own.
+async fn settle_out(ep: &mut nusb::Endpoint<Bulk, Out>, timeout: Duration) {
+    while ep.pending() > 0 {
+        let completion = complete_out(ep, timeout).await;
+        if let Err(e) = completion.status {
+            diag_debug!("settle_out: abandoned bulk OUT transfer ended with {:?}", e);
+            let _ = clear_halt_if_stalled(ep, e);
+        }
+    }
+}
+
 /// Reads the outcome of the CLASS_CANCEL request: `true` means the device didn't act on it.
 ///
 /// A device that STALLs it (POCO X6 Pro on Linux, #43) keeps sending the object. Giving up here
@@ -577,8 +635,8 @@ impl NusbTransport {
             return crate::PtpError::Disconnected;
         }
         match err {
-            // send_bulk uses transfer_blocking, which cancels the transfer on
-            // timeout and returns Cancelled. Map to Timeout so that
+            // Bulk OUT sends (`complete_out`) cancel the transfer on timeout,
+            // which completes it as Cancelled. Map to Timeout so that
             // Error::is_retryable() treats it correctly.
             TransferError::Cancelled => crate::PtpError::Timeout,
             TransferError::Disconnected => crate::PtpError::Disconnected,
@@ -714,18 +772,15 @@ impl NusbTransport {
 impl Transport for NusbTransport {
     async fn send_bulk(&self, data: &[u8]) -> Result<(), crate::PtpError> {
         let mut ep = self.bulk_out.lock().await;
-        let buf: Buffer = data.to_vec().into();
-        let completion = ep.transfer_blocking(buf, self.timeout);
-        if let Err(e) = completion.status {
-            return Err(clear_halt_if_stalled(&mut ep, e));
-        }
-        Ok(())
+        settle_out(&mut ep, self.timeout).await;
+        transfer_out(&mut ep, data.to_vec().into(), self.timeout).await
     }
 
     async fn send_bulk_streaming(&self, chunks: BulkStream<'_>) -> Result<(), crate::PtpError> {
         use futures::StreamExt;
 
         let mut ep = self.bulk_out.lock().await;
+        settle_out(&mut ep, self.timeout).await;
         let max_packet_size = ep.max_packet_size();
         let transfer_size: usize = 256 * 1024; // 256KB per USB transfer
                                                // Round up to max_packet_size boundary.
@@ -746,13 +801,7 @@ impl Transport for NusbTransport {
                 remaining = &remaining[to_copy..];
 
                 if current_buf.remaining_capacity() == 0 {
-                    ep.submit(current_buf);
-                    let completion = ep
-                        .wait_next_complete(self.timeout)
-                        .ok_or(crate::PtpError::Timeout)?;
-                    if let Err(e) = completion.status {
-                        return Err(clear_halt_if_stalled(&mut ep, e));
-                    }
+                    transfer_out(&mut ep, current_buf, self.timeout).await?;
                     total_sent += transfer_size;
                     current_buf = ep.allocate(transfer_size);
                 }
@@ -762,34 +811,16 @@ impl Transport for NusbTransport {
         // Send remaining data.
         let final_len = current_buf.len();
         if final_len > 0 {
-            ep.submit(current_buf);
-            let completion = ep
-                .wait_next_complete(self.timeout)
-                .ok_or(crate::PtpError::Timeout)?;
-            if let Err(e) = completion.status {
-                return Err(clear_halt_if_stalled(&mut ep, e));
-            }
+            transfer_out(&mut ep, current_buf, self.timeout).await?;
 
             // If the final transfer was a multiple of max_packet_size, send ZLP
             // so the device sees a short packet delimiter.
             if final_len % max_packet_size == 0 {
-                ep.submit(Buffer::new(0));
-                let completion = ep
-                    .wait_next_complete(self.timeout)
-                    .ok_or(crate::PtpError::Timeout)?;
-                if let Err(e) = completion.status {
-                    return Err(clear_halt_if_stalled(&mut ep, e));
-                }
+                transfer_out(&mut ep, Buffer::new(0), self.timeout).await?;
             }
         } else if total_sent > 0 && total_sent.is_multiple_of(max_packet_size) {
             // All data fit in full transfers. Send ZLP to terminate.
-            ep.submit(Buffer::new(0));
-            let completion = ep
-                .wait_next_complete(self.timeout)
-                .ok_or(crate::PtpError::Timeout)?;
-            if let Err(e) = completion.status {
-                return Err(clear_halt_if_stalled(&mut ep, e));
-            }
+            transfer_out(&mut ep, Buffer::new(0), self.timeout).await?;
         }
 
         Ok(())

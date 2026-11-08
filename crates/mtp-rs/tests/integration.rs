@@ -1954,8 +1954,12 @@ mod destructive {
     /// alternating, then times the next operations: list the folder, read the partial object's
     /// info, delete it. `MTP_UPLOAD_STOP=break` (default) stops through the progress callback
     /// (`ControlFlow::Break`); `MTP_UPLOAD_STOP=drop` drops the upload future while it waits on
-    /// its source. `MTP_UPLOAD_STOP_RUNS` (default 10) and `MTP_UPLOAD_STOP_SIZE` (bytes, default
-    /// 256 MiB) tune it. Any file the test made that's still listed at the end is deleted.
+    /// its source. `MTP_UPLOAD_STOP=timeout` feeds a source that never waits and drops the upload
+    /// after `MTP_UPLOAD_STOP_AFTER_MS` (default 300), so the drop lands while a USB transfer is
+    /// in flight, which only works because bulk OUT waits are async (the 10%/50% stop point
+    /// doesn't apply there). `MTP_UPLOAD_STOP_RUNS` (default 10) and `MTP_UPLOAD_STOP_SIZE`
+    /// (bytes, default 256 MiB) tune it. Any file the test made that's still listed at the end is
+    /// deleted.
     ///
     /// ```sh
     /// MTP_UPLOAD_STOP=drop cargo test -p mtp-rs --test integration upload_stopped -- --ignored --nocapture
@@ -1966,7 +1970,15 @@ mod destructive {
     async fn test_upload_stopped_midway_then_session_works() {
         use std::ops::ControlFlow;
 
-        let drop_mode = std::env::var("MTP_UPLOAD_STOP").is_ok_and(|v| v.trim() == "drop");
+        let stop_mode = std::env::var("MTP_UPLOAD_STOP").unwrap_or_default();
+        let drop_mode = stop_mode.trim() == "drop";
+        let timeout_mode = stop_mode.trim() == "timeout";
+        let stop_after = std::time::Duration::from_millis(
+            std::env::var("MTP_UPLOAD_STOP_AFTER_MS")
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(300),
+        );
         let runs = std::env::var("MTP_UPLOAD_STOP_RUNS")
             .ok()
             .and_then(|v| v.trim().parse::<u32>().ok())
@@ -1987,6 +1999,8 @@ mod destructive {
             size / 1_000_000,
             if drop_mode {
                 "dropping the future"
+            } else if timeout_mode {
+                "dropping the future mid-transfer"
             } else {
                 "ControlFlow::Break"
             }
@@ -2012,6 +2026,19 @@ mod destructive {
                 match tokio::time::timeout(std::time::Duration::from_secs(3), upload).await {
                     Ok(result) => format!("finished on its own: {:?}", result.map(|_| ())),
                     Err(_) => "dropped".to_string(),
+                }
+            } else if timeout_mode {
+                let source = PatternStream {
+                    offset: 0,
+                    total: size,
+                    chunk_size: 1024 * 1024,
+                };
+                // The source is always ready, so the upload only yields while a USB transfer is
+                // in flight: that's where the timeout drops it.
+                let upload = storage.upload(Some(folder), info, source);
+                match tokio::time::timeout(stop_after, upload).await {
+                    Ok(result) => format!("finished on its own: {:?}", result.map(|_| ())),
+                    Err(_) => "dropped mid-transfer".to_string(),
                 }
             } else {
                 let source = PatternStream {
