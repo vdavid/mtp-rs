@@ -13,6 +13,7 @@ use crate::mtp::object::NewObjectInfo;
 use crate::mtp::{
     Capabilities, DeviceEvent, DeviceInfo, Error, ObjectHandle, ObjectInfo, StorageId, StorageInfo,
 };
+use crate::trace::DiagTimer;
 use bytes::Bytes;
 use futures::channel::mpsc::UnboundedSender;
 use futures::channel::{mpsc, oneshot};
@@ -147,9 +148,48 @@ pub(crate) enum Request {
     Shutdown,
 }
 
+impl Request {
+    /// The request's name for diagnostics.
+    fn kind(&self) -> &'static str {
+        match self {
+            Request::Storages(_) => "Storages",
+            Request::StorageInfo(..) => "StorageInfo",
+            Request::List { .. } => "List",
+            Request::ObjectInfo(..) => "ObjectInfo",
+            Request::Download { .. } => "Download",
+            Request::DownloadWindow { .. } => "DownloadWindow",
+            Request::ReadRange { .. } => "ReadRange",
+            Request::Thumbnail { .. } => "Thumbnail",
+            Request::CreateFolder { .. } => "CreateFolder",
+            Request::Upload { .. } => "Upload",
+            Request::Delete { .. } => "Delete",
+            Request::Rename { .. } => "Rename",
+            Request::MoveObject { .. } => "MoveObject",
+            Request::CopyObject { .. } => "CopyObject",
+            Request::Shutdown => "Shutdown",
+        }
+    }
+}
+
+/// A request on its way to the worker, with when it was sent (for the queue time in diagnostics;
+/// zero-sized without the `tracing` feature).
+struct Queued {
+    req: Request,
+    sent: DiagTimer,
+}
+
+impl Queued {
+    fn new(req: Request) -> Self {
+        Self {
+            req,
+            sent: DiagTimer::start(),
+        }
+    }
+}
+
 /// The backend's handle to a running worker. `Send + Sync`, holds only channel ends.
 pub(crate) struct WpdHandle {
-    req_tx: std_mpsc::Sender<Request>,
+    req_tx: std_mpsc::Sender<Queued>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -167,7 +207,7 @@ impl WpdHandle {
         ),
         Error,
     > {
-        let (req_tx, req_rx) = std_mpsc::channel::<Request>();
+        let (req_tx, req_rx) = std_mpsc::channel::<Queued>();
         let (startup_tx, startup_rx) =
             oneshot::channel::<Result<(DeviceInfo, Capabilities), Error>>();
         // The event channel is created here so the receiver can be returned to the backend; the
@@ -204,7 +244,7 @@ impl WpdHandle {
     {
         let (tx, rx) = oneshot::channel();
         self.req_tx
-            .send(make(tx))
+            .send(Queued::new(make(tx)))
             .map_err(|_| Error::Disconnected)?;
         rx.await.map_err(|_| Error::Disconnected)?
     }
@@ -215,19 +255,21 @@ impl WpdHandle {
     /// worker processes the request, then await the reply separately. Maps a dead worker to
     /// [`Error::Disconnected`].
     pub(crate) fn send(&self, req: Request) -> Result<(), Error> {
-        self.req_tx.send(req).map_err(|_| Error::Disconnected)
+        self.req_tx
+            .send(Queued::new(req))
+            .map_err(|_| Error::Disconnected)
     }
 
     /// Best-effort shutdown signal (used by `close()`; `Drop` also sends one).
     pub(crate) fn shutdown(&self) {
-        let _ = self.req_tx.send(Request::Shutdown);
+        let _ = self.req_tx.send(Queued::new(Request::Shutdown));
     }
 }
 
 impl Drop for WpdHandle {
     fn drop(&mut self) {
         // Ask the worker to stop and wait for it to release COM + CoUninitialize on its own thread.
-        let _ = self.req_tx.send(Request::Shutdown);
+        let _ = self.req_tx.send(Queued::new(Request::Shutdown));
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -238,7 +280,7 @@ impl Drop for WpdHandle {
 fn worker_main(
     spec: OpenSpec,
     startup: oneshot::Sender<Result<(DeviceInfo, Capabilities), Error>>,
-    req_rx: std_mpsc::Receiver<Request>,
+    req_rx: std_mpsc::Receiver<Queued>,
     event_tx: UnboundedSender<DeviceEvent>,
 ) {
     // SAFETY: this is the only thread that touches these COM objects; MTA matches the spike.
@@ -273,28 +315,31 @@ fn worker_main(
         // While a read stream is kept for the next window, wait only so long for that window. A
         // consumer that pauses between windows would otherwise keep the device busy for other
         // apps for as long as the pause lasts.
-        let req = if last_read.is_some() {
+        let Queued { req, sent } = if last_read.is_some() {
             match req_rx.recv_timeout(IDLE_READ_STREAM_RELEASE) {
-                Ok(req) => req,
+                Ok(queued) => queued,
                 Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                    last_read = None;
+                    release_read(&mut last_read, "idle for", "1 s");
                     continue;
                 }
                 Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
             }
         } else {
             match req_rx.recv() {
-                Ok(req) => req,
+                Ok(queued) => queued,
                 Err(_) => break,
             }
         };
+        let kind = req.kind();
+        let queued_for = sent.elapsed();
+        let serving = DiagTimer::start();
         // An open read stream keeps the device busy (any other request fails with "device busy"),
         // so it is released before anything but the next read.
         if !matches!(
             req,
             Request::ReadRange { .. } | Request::DownloadWindow { .. }
         ) {
-            last_read = None;
+            release_read(&mut last_read, "before", kind);
         }
         match req {
             Request::Shutdown => break,
@@ -382,11 +427,19 @@ fn worker_main(
                 let _ = reply.send(unsafe { dev.copy_object(obj, new_parent, new_storage) });
             }
         }
+        // For a streaming request (`Download`, `DownloadWindow`, `Upload`) this includes the
+        // whole transfer, which the worker serves before taking the next request.
+        diag_debug!(
+            "wpd: served {} in {:?} (queued {:?})",
+            kind,
+            serving.elapsed(),
+            queued_for
+        );
     }
 
     // Release every COM interface (the kept read stream, then the device) before uninitializing
     // COM on this thread. The loop also ends when the request channel closes without a `Shutdown`.
-    drop(last_read);
+    release_read(&mut last_read, "worker", "shutdown");
     drop(dev);
     unsafe { CoUninitialize() };
 }
@@ -476,17 +529,13 @@ fn handle_download(
         return;
     }
 
-    let stream = match unsafe { dev.open_stream(obj) } {
+    let stream = match unsafe { open_at(dev, obj, offset, "Download") } {
         Ok(s) => s,
         Err(e) => {
             let _ = reply.send(Err(e));
             return;
         }
     };
-    if let Err(e) = unsafe { com::stream_seek(&stream, offset) } {
-        let _ = reply.send(Err(e));
-        return;
-    }
 
     let (tx, rx) = mpsc::channel::<Result<Bytes, Error>>(DATA_BOUND);
     if reply.send(Ok(rx)).is_err() {
@@ -497,8 +546,104 @@ fn handle_download(
         ByteRange::Range { len, .. } => Some(len),
         _ => None,
     };
-    pump_chunks(&stream, limit, tx);
+    let timer = DiagTimer::start();
+    let (outcome, sent) = pump_chunks(&stream, limit, tx);
+    diag_debug!(
+        "wpd: Download of {:?} from {}: streamed {} bytes in {:?} ({:?})",
+        obj,
+        offset,
+        sent,
+        timer.elapsed(),
+        outcome
+    );
     // `tx` dropped inside → channel closes → consumer sees `None` (clean EOF).
+}
+
+/// Open `obj`'s data stream and position it at `offset`, logging how long each step took (the
+/// seek itself logs whether `Seek` worked or the prefix was read and discarded).
+unsafe fn open_at(
+    dev: &mut WpdDevice,
+    obj: ObjectHandle,
+    offset: u64,
+    kind: &'static str,
+) -> Result<IStream, Error> {
+    let timer = DiagTimer::start();
+    let stream = dev.open_stream(obj).inspect_err(|e| {
+        diag_debug!(
+            "wpd: {} opening a stream on {:?} failed in {:?}: {}",
+            kind,
+            obj,
+            timer.elapsed(),
+            e
+        );
+    })?;
+    let opened = timer.elapsed();
+    let timer = DiagTimer::start();
+    com::stream_seek(&stream, offset).inspect_err(|e| {
+        diag_debug!(
+            "wpd: {} positioning {:?} at {} failed in {:?}: {}",
+            kind,
+            obj,
+            offset,
+            timer.elapsed(),
+            e
+        );
+    })?;
+    diag_debug!(
+        "wpd: {} opened a stream on {:?} in {:?}, positioned at {} in {:?}",
+        kind,
+        obj,
+        opened,
+        offset,
+        timer.elapsed()
+    );
+    Ok(stream)
+}
+
+/// Release the kept read stream, if any, logging where it was, why, and how long the `Release`
+/// took. Dropping a forward-only stream mid-file may make the driver end the transfer it has in
+/// flight, so this is where a fixed per-release cost would show up (#61).
+fn release_read(last: &mut Option<OpenRead>, why: &'static str, next: &'static str) {
+    if let Some(open) = last.take() {
+        let (obj, at) = (open.obj, open.at);
+        let timer = DiagTimer::start();
+        drop(open);
+        diag_debug!(
+            "wpd: released the kept read stream of {:?} at offset {} ({} {}) in {:?}",
+            obj,
+            at,
+            why,
+            next,
+            timer.elapsed()
+        );
+    }
+}
+
+/// The kept read stream when it continues exactly at `offset` of `obj`; otherwise releases it
+/// (before another stream is opened) and returns `None`.
+fn take_continuing(
+    last: &mut Option<OpenRead>,
+    obj: ObjectHandle,
+    offset: u64,
+    kind: &'static str,
+) -> Option<IStream> {
+    match last.take() {
+        Some(open) if open.obj == obj && open.at == offset => Some(open.stream),
+        Some(open) => {
+            diag_debug!(
+                "wpd: {} of {:?} at {} doesn't continue the kept stream of {:?} at {}",
+                kind,
+                obj,
+                offset,
+                open.obj,
+                open.at
+            );
+            *last = Some(open);
+            release_read(last, "not continued by", kind);
+            None
+        }
+        None => None,
+    }
 }
 
 /// Stream one window of a paced download, continuing on the kept read stream when the window
@@ -512,32 +657,34 @@ fn handle_download_window(
     last: &mut Option<OpenRead>,
     reply: oneshot::Sender<Result<ChunkReceiver, Error>>,
 ) {
-    // `take` releases a stream that does not continue here before another one is opened.
-    let stream = match last
-        .take()
-        .filter(|open| open.obj == obj && open.at == offset)
-    {
-        Some(open) => open.stream,
-        None => {
-            let opened = unsafe { dev.open_stream(obj) }.and_then(|stream| {
-                unsafe { com::stream_seek(&stream, offset) }?;
-                Ok(stream)
-            });
-            match opened {
-                Ok(stream) => stream,
-                Err(e) => {
-                    let _ = reply.send(Err(e));
-                    return;
-                }
+    let (stream, reused) = match take_continuing(last, obj, offset, "DownloadWindow") {
+        Some(stream) => (stream, true),
+        None => match unsafe { open_at(dev, obj, offset, "DownloadWindow") } {
+            Ok(stream) => (stream, false),
+            Err(e) => {
+                let _ = reply.send(Err(e));
+                return;
             }
-        }
+        },
     };
 
     let (tx, rx) = mpsc::channel::<Result<Bytes, Error>>(DATA_BOUND);
     if reply.send(Ok(rx)).is_err() {
         return; // consumer already gave up; the stream is released here
     }
-    let outcome = pump_chunks(&stream, Some(u64::from(len)), tx);
+    let timer = DiagTimer::start();
+    let (outcome, sent) = pump_chunks(&stream, Some(u64::from(len)), tx);
+    // The time includes waiting for the consumer to take chunks off the bounded channel.
+    diag_debug!(
+        "wpd: DownloadWindow of {:?} at {} ({} bytes, {} stream): streamed {} bytes in {:?} ({:?})",
+        obj,
+        offset,
+        len,
+        if reused { "kept" } else { "reopened" },
+        sent,
+        timer.elapsed(),
+        outcome
+    );
     // Keep the stream only when the whole window went out and the file goes on: the next window
     // then continues on it. EOF, an error, or a consumer that stopped reading releases it.
     if outcome == PumpOutcome::Complete {
@@ -561,13 +708,15 @@ enum PumpOutcome {
 }
 
 /// Read `stream` in `CHUNK`s and send them to the consumer, up to `limit` bytes (or to EOF).
-/// Dropping `tx` on return closes the channel, which the consumer sees as the end of the read.
+/// Returns how it ended and how many bytes went out. Dropping `tx` on return closes the channel,
+/// which the consumer sees as the end of the read.
 fn pump_chunks(
     stream: &IStream,
     limit: Option<u64>,
     mut tx: mpsc::Sender<Result<Bytes, Error>>,
-) -> PumpOutcome {
+) -> (PumpOutcome, u64) {
     let mut remaining = limit;
+    let mut sent = 0u64;
     let mut buf = vec![0u8; CHUNK];
     loop {
         let want = match remaining {
@@ -575,19 +724,20 @@ fn pump_chunks(
             None => buf.len(),
         };
         if want == 0 {
-            return PumpOutcome::Complete;
+            return (PumpOutcome::Complete, sent);
         }
         let n = match unsafe { com::stream_read(stream, &mut buf[..want]) } {
-            Ok(0) => return PumpOutcome::Eof,
+            Ok(0) => return (PumpOutcome::Eof, sent),
             Ok(n) => n,
             Err(e) => {
                 let _ = block_on(tx.send(Err(e)));
-                return PumpOutcome::Stopped;
+                return (PumpOutcome::Stopped, sent);
             }
         };
         if block_on(tx.send(Ok(Bytes::copy_from_slice(&buf[..n])))).is_err() {
-            return PumpOutcome::Stopped; // consumer dropped → cancel
+            return (PumpOutcome::Stopped, sent); // consumer dropped → cancel
         }
+        sent += n as u64;
         if let Some(r) = remaining.as_mut() {
             *r -= n as u64;
         }
@@ -614,19 +764,12 @@ fn handle_read_range(
     len: Option<u32>,
     last: &mut Option<OpenRead>,
 ) -> Result<Vec<u8>, Error> {
-    // `take` releases a stream that does not continue here before another one is opened.
-    let stream = match last
-        .take()
-        .filter(|open| open.obj == obj && open.at == offset)
-    {
-        Some(open) => open.stream,
-        None => {
-            let stream = unsafe { dev.open_stream(obj) }?;
-            unsafe { com::stream_seek(&stream, offset) }?;
-            stream
-        }
+    let (stream, reused) = match take_continuing(last, obj, offset, "ReadRange") {
+        Some(stream) => (stream, true),
+        None => (unsafe { open_at(dev, obj, offset, "ReadRange") }?, false),
     };
 
+    let timer = DiagTimer::start();
     let cap = len.map(|l| l as usize);
     let mut out = Vec::with_capacity(cap.unwrap_or(0));
     let mut buf = vec![0u8; CHUNK];
@@ -639,13 +782,31 @@ fn handle_read_range(
         if want == 0 {
             break;
         }
-        let n = unsafe { com::stream_read(&stream, &mut buf[..want]) }?;
+        let n = unsafe { com::stream_read(&stream, &mut buf[..want]) }.inspect_err(|e| {
+            diag_debug!(
+                "wpd: ReadRange of {:?} failed after {} bytes in {:?}: {}",
+                obj,
+                out.len(),
+                timer.elapsed(),
+                e
+            );
+        })?;
         if n == 0 {
             eof = true;
             break;
         }
         out.extend_from_slice(&buf[..n]);
     }
+    diag_debug!(
+        "wpd: ReadRange of {:?} at {} ({:?} bytes, {} stream): read {} bytes in {:?}{}",
+        obj,
+        offset,
+        len,
+        if reused { "kept" } else { "reopened" },
+        out.len(),
+        timer.elapsed(),
+        if eof { " to EOF" } else { "" }
+    );
     if !eof {
         *last = Some(OpenRead {
             obj,
@@ -661,7 +822,17 @@ fn handle_read_range(
 /// Objects without a thumbnail resource fail at `GetStream`; the HRESULT maps to
 /// `Unsupported`/`NotFound`, which the caller surfaces as-is.
 fn handle_thumbnail(dev: &mut WpdDevice, obj: ObjectHandle) -> Result<Vec<u8>, Error> {
-    let stream = unsafe { dev.open_thumbnail_stream(obj) }?;
+    let timer = DiagTimer::start();
+    let stream = unsafe { dev.open_thumbnail_stream(obj) }.inspect_err(|e| {
+        diag_debug!(
+            "wpd: Thumbnail of {:?}: opening failed in {:?}: {}",
+            obj,
+            timer.elapsed(),
+            e
+        );
+    })?;
+    let opened = timer.elapsed();
+    let timer = DiagTimer::start();
     let mut out = Vec::new();
     let mut buf = vec![0u8; CHUNK];
     loop {
@@ -671,6 +842,13 @@ fn handle_thumbnail(dev: &mut WpdDevice, obj: ObjectHandle) -> Result<Vec<u8>, E
         }
         out.extend_from_slice(&buf[..n]);
     }
+    diag_debug!(
+        "wpd: Thumbnail of {:?}: opened in {:?}, read {} bytes in {:?}",
+        obj,
+        opened,
+        out.len(),
+        timer.elapsed()
+    );
     Ok(out)
 }
 

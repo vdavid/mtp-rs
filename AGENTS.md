@@ -856,6 +856,20 @@ semantics that differ from the USB/PTP backend, all hardware-verified on a Pixel
   future is safe (the worker ignores the unread reply), though later calls queue behind the stuck one and a
   `delete` can still finish after the app gave up. **Phone logcat can't tell you the driver sent nothing**:
   AOSP logs commands with `ALOGV` and responses only when they aren't OK.
+- **Diagnostics** (the `tracing` feature, `debug` level, targets under `mtp_rs::mtp::backend::wpd`): the worker
+  logs every request served (`served List in 412ms (queued 3.1s)`; for `Download`/`DownloadWindow`/`Upload`
+  that's the whole transfer), every release of the kept read stream with its object, offset, reason (`before
+  <request>`, `not continued by <request>`, `idle for 1 s`, `worker shutdown`) and how long the `Release`
+  took, and for `Download`/`DownloadWindow`/`ReadRange` whether the kept stream continued or a new one was
+  opened, the `GetStream` time, the positioning (`Seek` worked, or failed with its HRESULT and the prefix was
+  read and discarded, with bytes and time), and the bytes and time streamed (a window's time includes waiting
+  for the consumer). `Thumbnail` logs its open and read times. Timing goes through `trace::DiagTimer`,
+  zero-sized without the feature. Added for #61 (a paced download on a POCO X6 Pro under Windows 11 spent
+  ~8 s per window once other calls ran between windows). To capture: enable `mtp-rs/tracing`, install a
+  subscriber with the filter `mtp_rs::mtp::backend::wpd=debug` (`tracing-subscriber` with `env-filter`:
+  `tracing_subscriber::fmt().with_env_filter(EnvFilter::new("mtp_rs::mtp::backend::wpd=debug")).init()`). The
+  CLI has both built in: `RUST_LOG=mtp_rs::mtp::backend::wpd=debug mtp-rs get …` (`--trace` gives all of
+  `mtp_rs=debug`), though one CLI command can't put other calls between windows.
 - **`object_info` is strict; listing is lenient**: a single `object_info` lookup must *fail* for a
   deleted/missing object (it errors `NotFound` when no property resolves), whereas the per-child
   listing reader is lenient (an unreadable child degrades to a default record rather than failing the

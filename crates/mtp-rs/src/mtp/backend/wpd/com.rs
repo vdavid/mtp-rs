@@ -15,6 +15,7 @@ use crate::mtp::{
     Capabilities, DeviceEvent, DeviceInfo, Error, FilesystemType, ObjectFormat, ObjectHandle,
     ObjectInfo, StorageId, StorageInfo, StorageType,
 };
+use crate::trace::DiagTimer;
 use futures::channel::mpsc::UnboundedSender;
 use std::collections::HashSet;
 use std::ffi::c_void;
@@ -785,15 +786,29 @@ pub(crate) unsafe fn stream_seek(stream: &IStream, offset: u64) -> Result<(), Er
     if offset == 0 {
         return Ok(());
     }
-    if stream.Seek(offset as i64, STREAM_SEEK_SET, None).is_ok() {
-        return Ok(());
-    }
+    let timer = DiagTimer::start();
+    let seek_error = match stream.Seek(offset as i64, STREAM_SEEK_SET, None) {
+        Ok(()) => {
+            diag_debug!("wpd: Seek to {} succeeded in {:?}", offset, timer.elapsed());
+            return Ok(());
+        }
+        Err(e) => e,
+    };
     // Forward-only fallback: consume `offset` bytes.
+    let timer = DiagTimer::start();
     let mut discard = vec![0u8; SEEK_DISCARD_CHUNK];
     let mut remaining = offset;
     while remaining > 0 {
         let want = (remaining as usize).min(discard.len());
-        let n = stream_read(stream, &mut discard[..want])?;
+        let n = stream_read(stream, &mut discard[..want]).inspect_err(|e| {
+            diag_debug!(
+                "wpd: discard read failed after {} of {} bytes in {:?}: {}",
+                offset - remaining,
+                offset,
+                timer.elapsed(),
+                e
+            );
+        })?;
         if n == 0 {
             return Err(Error::invalid_data(
                 "WPD stream ended before reaching the seek offset",
@@ -801,6 +816,13 @@ pub(crate) unsafe fn stream_seek(stream: &IStream, offset: u64) -> Result<(), Er
         }
         remaining -= n as u64;
     }
+    diag_debug!(
+        "wpd: Seek to {} failed ({:?}), read and discarded {} bytes in {:?}",
+        offset,
+        seek_error.code(),
+        offset,
+        timer.elapsed()
+    );
     Ok(())
 }
 

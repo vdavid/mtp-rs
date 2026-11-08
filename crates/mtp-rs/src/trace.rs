@@ -39,3 +39,33 @@ macro_rules! diag_debug {
 macro_rules! diag_trace {
     ($($arg:tt)*) => {{ let _ = ::core::format_args!($($arg)*); }};
 }
+
+/// A stopwatch for diagnostics: reads the clock only with the `tracing` feature on, and is a
+/// zero-sized no-op otherwise (`elapsed` is then always zero), so timing a path for its log line
+/// costs nothing in the default build. Only the WPD backend uses it so far; drop the `cfg(windows)`
+/// when something else does.
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+pub(crate) struct DiagTimer {
+    #[cfg(feature = "tracing")]
+    started: std::time::Instant,
+}
+
+#[cfg(windows)]
+impl DiagTimer {
+    /// Start timing now.
+    pub(crate) fn start() -> Self {
+        Self {
+            #[cfg(feature = "tracing")]
+            started: std::time::Instant::now(),
+        }
+    }
+
+    /// Time since [`start`](Self::start); zero without the `tracing` feature.
+    pub(crate) fn elapsed(&self) -> std::time::Duration {
+        #[cfg(feature = "tracing")]
+        return self.started.elapsed();
+        #[cfg(not(feature = "tracing"))]
+        return std::time::Duration::ZERO;
+    }
+}
