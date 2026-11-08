@@ -1,6 +1,6 @@
 # WPD partial reads through the MTP passthrough (#61)
 
-Status: research plus a hardware probe (`crates/mtp-rs/examples/wpd_partial_probe.rs`), not yet run on hardware.
+Status: research plus a hardware probe (`crates/mtp-rs/examples/wpd_partial_probe.rs`), run on a Pixel 9 Pro XL on 2026-11-08 (§ Results): the passthrough works.
 Tags on claims: **[verified]** (we ran it), **[docs]** (Microsoft documentation or sample), **[code]** (someone
 else's working code), **[guess]** (reasoning, untested).
 
@@ -176,6 +176,23 @@ Keep the full output of every run. What each section means:
    mid-window. Anything else means cancel drains the window first.
 
 Later: ask the #61 reporter to run the same probe on the POCO X6 Pro (Windows 11).
+
+## Results (Pixel 9 Pro XL, Windows 10 Pro 22H2, 2026-11-08) [verified]
+
+Two probe runs on a 1 GiB random file in `Download/`, the second with `--early-end`. Both runs agreed.
+
+- **The driver lists the passthrough commands** (`EXECUTE_COMMAND_WITH_DATA_TO_READ`, `READ_DATA`, `END_DATA_TRANSFER`) and reports vendor opcodes 0x95C1–0x95C5. It doesn't list `OBJECT_RESOURCES_SEEK`.
+- **Handle mapping is right**: object id `oEF` parses to 0xEF, and a passthrough `GetObjectInfo` on 0xEF returns the same name, size, and parent.
+- **Seek is impossible on this stream**: `IStream::Seek` and the raw `WPD_COMMAND_OBJECT_RESOURCES_SEEK` both return `E_NOTIMPL` (0x80004001).
+- **A 4 MiB window costs the same at any offset through the passthrough**, with both 0x95C1 and 0x101B. Times per window:
+  - Offset 0: stream reopen 119–131 ms, passthrough 126–145 ms.
+  - Offset 512 MiB: stream reopen 14.6 s (it discards 512 MiB at 35 MiB/s), passthrough 129–140 ms.
+  - Offset 1020 MiB: stream reopen 28.6 s, passthrough 126–133 ms.
+- **Every window's bytes match the stream.**
+- **Throughput on the first 64 MiB**: one stream pass ran at 30 MiB/s. The passthrough in 8 MiB windows ran at 32.5–33.5 MiB/s, whatever the chunk size (driver-optimal 256 KiB, 1 MiB, or 4 MiB).
+- **A listing between two passthrough windows took 2.9 ms**, and the next window ran at full speed. There's no stream to release.
+- **An early `END_DATA_TRANSFER` after 256 KiB of a 16 MiB window failed with `ERROR_CANCELLED` (0x800704C7) after 313 ms**, but the session stayed healthy: the next `GetObjectInfo`, partial read, and stream read all worked. This is the driver cancelling the transfer itself, so on Android it may hit the same `io_cancel` race as our `CLASS_CANCEL` (#54). One run proves nothing about a race that wedged about one cancel in ten. Until a loop of early ENDs shows no wedge, cancel by reading the rest of the window (at most about one pacing target).
+- **Not covered yet**: the reporter's POCO X6 Pro, Samsung, a camera under WPD, and files over 4 GiB.
 
 ## If it works: the shape of the fix
 
