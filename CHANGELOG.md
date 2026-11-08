@@ -17,6 +17,8 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 ### Fixed
 
 - **[lib] On Windows, a big download no longer slows to a crawl when other calls run between its windows.** Each such call made the next window reopen the file on the phone, and on phones that can't seek, read everything before the window again. The download counted that as transfer time, so it shrank its windows, which let in more calls and caused more reopens: a 1 GB copy fell to under 1 MB/s while the app browsed the phone. Window sizes now come from the time spent receiving data only. [#61](https://github.com/vdavid/mtp-rs/issues/61)
+- **[lib] On Windows, calls between the windows of a download now cost the download nothing.** Each window is now its own partial read on the phone, sent through the Windows MTP driver, so there's no file stream to reopen after a call. A 1 GiB copy from a Pixel 9 Pro XL with a folder listing, a photo, and a thumbnail loaded between every few windows took 34 s, against 138 s before; with those calls between every window, 60–70 s, where before it fell to 2 MB/s and the phone stopped answering. Phones and drivers without that partial read keep the old path. [#61](https://github.com/vdavid/mtp-rs/issues/61)
+- **[lib] On Windows, windows of a download stay near their target length when the app takes time with each chunk.** The Windows backend reads ahead while the app handles earlier chunks, and that time wasn't counted as the phone's, so windows meant to take 500 ms grew to almost 6 s when the app wrote each chunk to disk, and a cancel waited that long. [#61](https://github.com/vdavid/mtp-rs/issues/61)
 
 ### Added
 

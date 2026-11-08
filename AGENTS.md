@@ -556,6 +556,12 @@ a bounded `GetPartialObject64` transaction, and frees the one-per-device PTP ses
   link, shrank the next window toward 1 MiB, let in more calls, and so caused more reopens: a 1 GB
   copy fell to 0.7 MB/s on a POCO X6 Pro under Windows 11 (#61). Keep the start out of the clock. On
   USB it leaves out the window's first round trip (a few ms), so a window runs slightly over `d`.
+  **A body that reads ahead reports the device time itself** (`DownloadBody::device_time`), and
+  `FileDownload` believes it over its own waits. WPD's worker reads into a bounded channel while the
+  consumer handles earlier chunks, so the consumer's waits leave out whatever the device did during
+  the consumer's work: with a consumer writing each chunk to disk, 500 ms windows grew to 5.7 s
+  (186 MiB) in seven windows (Pixel 9 Pro XL, Windows 10, 2026-11-08). USB reads on demand, so its
+  body reports nothing and the waits are right.
 - `FixedWindow(bytes)`: windows of that size (0 counts as 1).
 - `HeldOpen`: one transfer for the whole range (`GetObject` for `Full`), the old `download`.
 
@@ -596,8 +602,10 @@ Contract:
 - Stopping: `cancel()` between windows sends nothing; mid-window it cancels that window (on Android:
   drains it, ≤ the pacing target). Dropping is safe: between windows nothing is held; mid-window the
   `ReceiveStream` flags recovery and the next op drains.
-- **WPD**: windows go through the worker's `DownloadWindow` request, which continues on the kept read
-  stream like `read_range` (§ Windows WPD backend), so other requests run between windows.
+- **WPD**: windows go through the worker's `DownloadWindow` request: one MTP partial read through
+  the driver's passthrough where it can, else a continuation of the kept read stream like
+  `read_range` (§ Windows WPD backend). Either way other requests run between windows; only the
+  passthrough makes them free.
 
 Tested against the virtual device in `transport/virtual_device/mod.rs` (the "Paced downloads"
 block: reassembly, every pacing, ranges, 32-bit-only, no-partial fallback, short/stall reads via
@@ -836,7 +844,43 @@ semantics that differ from the USB/PTP backend, all hardware-verified on a Pixel
   device re-streams every byte before the offset on each resume. Resuming near the *end* of a large
   file re-reads almost the whole file. Prefer a single in-order pass (`ByteRange::Full` or windowed
   download) over many small offset resumes when the device's `Seek` is `E_NOTIMPL`.
-- **Windowed reads continue on one stream**: the worker keeps the stream of the last `read_range` or
+- **Windows and `read_range` are real MTP partial reads where the driver allows** (`passthrough.rs`,
+  research and probe numbers in `docs/specs/wpd-partial-reads.md`). WpdMtpDr runs raw MTP
+  operations through `SendCommand` (`WPD_COMMAND_MTP_EXT_*`), so a window is one
+  `GetPartialObject64` (0x95C1), or `GetPartialObject` (0x101B) for offsets that fit 32 bits on
+  devices without the 64-bit op: execute, `READ_DATA` until the data is in, `END_DATA_TRANSFER`.
+  No stream is kept, so a call between windows costs nothing.
+  - **When**: the driver lists the three `MTP_EXT` commands (checked at open), the device's
+    `DeviceInfo` has the op (one passthrough `GetDeviceInfo` on the first read, then cached), and the
+    WPD object id is `o<hex>`, an undocumented WpdMtpDr detail. The parsed handle is checked once
+    per object with a passthrough `GetObjectInfo` against WPD's name and size, since a wrong mapping
+    would read another file's bytes. Anything else, and `read_range` with no length, takes the kept
+    stream below. `can_read_partially_at` stays `true` at any offset either way: the stream path
+    serves any offset too.
+  - **Refusals**: a failed start (execute error, or no data and a non-OK response) sends that read to
+    the stream. `Unsupported` or `AccessDenied` also turn the passthrough off for the session;
+    `Disconnected` propagates.
+  - **Never end a data phase early.** A consumer that stops mid-window (a cancel, a dropped
+    download) gets no more chunks, but the worker reads the rest of the window and drops it, then
+    ends normally. The driver's early `END_DATA_TRANSFER` is its own cancel (the probe saw
+    `ERROR_CANCELLED` and a healthy session after one), and on Android that may hit the `io_cancel`
+    race #54 removed `CLASS_CANCEL` for. Costs the rest of one window. A loop of early ENDs with no
+    wedge is what it would take to change this.
+  - **Never send `OpenSession`/`CloseSession` or a write through it**: the driver owns the session and
+    caches object properties.
+  - **Hardware** (Pixel 9 Pro XL, Windows 10 22H2, 2026-11-08, `examples/paced_with_calls.rs`, 1 GiB
+    file, `MaxCancelDelay(500 ms)`): held open 28.9 s; paced with no calls 31.8 s; a folder listing, a
+    4 MB photo, and a thumbnail between every 8th window 33.8 s, against 138 s before (each window
+    after the calls re-read the prefix: 4.6 s at 128 MiB up to 27.5 s at 896 MiB); the same between
+    every window 60–70 s, of which the calls themselves took 20–35 s, against a download that fell to
+    2 MB/s and then failed with `ERROR_SEM_TIMEOUT` (0x80070079) before. Every result's SHA-256
+    matched. 20 cancels mid-window, each followed by a listing: no wedge, the listing waited
+    ~370 ms (the rest of the 8 MiB window, then the listing).
+  - **After that `ERROR_SEM_TIMEOUT`, the Pixel served no data** (`0x80070141`, device not available)
+    while listings still answered, until `pnputil /restart-device` on its USB composite device. Seen
+    twice, both on the old stream path. Worth knowing when a Windows report says reads fail but
+    browsing works.
+- **Otherwise, windowed reads continue on one stream**: the worker keeps the stream of the last `read_range` or
   `DownloadWindow` that stopped before EOF, with its position, and either request for the same object
   starting exactly there reads on from it. `DownloadWindow` (a window of a paced download) streams its
   chunks over a channel and keeps the stream only when it sent the whole window; EOF, an error, or a

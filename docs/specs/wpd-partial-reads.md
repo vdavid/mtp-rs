@@ -1,6 +1,6 @@
 # WPD partial reads through the MTP passthrough (#61)
 
-Status: research plus a hardware probe (`crates/mtp-rs/examples/wpd_partial_probe.rs`), run on a Pixel 9 Pro XL on 2026-11-08 (§ Results): the passthrough works.
+Status: implemented (`crates/mtp-rs/src/mtp/backend/wpd/passthrough.rs`; how it behaves now is in `AGENTS.md` § Windows WPD backend). This doc keeps the research and the probe (`crates/mtp-rs/examples/wpd_partial_probe.rs`, run on a Pixel 9 Pro XL on 2026-11-08, § Results). The shipped shape follows § If it works, with a cancel that reads the rest of the window, and the MTP handle checked once per object with a passthrough `GetObjectInfo`. End-to-end numbers through the public API: `crates/mtp-rs/examples/paced_with_calls.rs`, results in `AGENTS.md`.
 Tags on claims: **[verified]** (we ran it), **[docs]** (Microsoft documentation or sample), **[code]** (someone
 else's working code), **[guess]** (reasoning, untested).
 
