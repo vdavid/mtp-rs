@@ -24,6 +24,7 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 ### Added
 
 - **[lib] The `tracing` feature now covers the Windows backend too**, so you can see where a slow Windows call spends its time: how long each request waited and took, when a file read stream is reopened or released and what that cost, and whether the phone could seek or had to read from the start of the file. Filter on `mtp_rs::mtp::backend::wpd=debug`. [#61](https://github.com/vdavid/mtp-rs/issues/61)
+- **[lib] The virtual device can act like a camera as well as an Android phone.** `VirtualDeviceConfig::android` (default `true`) decides how the host stops transfers against it. `true` behaves like Android: it advertises `android.com`, a stopped upload leaves nothing behind, and `UploadError::partial` is `None`. `false` behaves like a PTP camera: the host cancels with CLASS_CANCEL, and a stopped upload keeps its half-written object and surfaces it in `UploadError::partial`. Set it to `false` to test your camera path or your partial-upload cleanup. [#62](https://github.com/vdavid/mtp-rs/issues/62)
 
 ## [0.38.0] - 2026-11-06
 

@@ -129,10 +129,11 @@ impl Transport for VirtualTransport {
     async fn send_bulk(&self, data: &[u8]) -> Result<(), crate::PtpError> {
         let mut state = self.state.lock().unwrap();
 
-        // While a data phase is open, the device reads the bulk OUT pipe as data, so anything
-        // that isn't a data container (a zero-length packet, or the next command) ends it short.
+        // While a data phase is open, Android's `MtpServer` reads the bulk OUT pipe as data, so
+        // anything that isn't a data container (a zero-length packet, or the next command) ends
+        // it short. A camera's data phase ends with CLASS_CANCEL instead (`cancel_transfer`).
         let is_data = data.len() >= 12 && unpack_u16(&data[4..6])? == CONTAINER_TYPE_DATA;
-        if state.pending_command.is_some() && !is_data {
+        if state.config.android && state.pending_command.is_some() && !is_data {
             handlers::end_data_phase_short(&mut state);
             return Ok(());
         }
@@ -633,15 +634,58 @@ mod tests {
         assert_eq!(storages[0].list_objects(None).await.unwrap().len(), 1);
     }
 
+    /// `test_config` with `android: false`: a PTP camera, which the host cancels with
+    /// CLASS_CANCEL instead of draining.
+    fn camera_config(dir: &std::path::Path) -> VirtualDeviceConfig {
+        VirtualDeviceConfig {
+            android: false,
+            ..test_config(dir)
+        }
+    }
+
+    #[tokio::test]
+    async fn the_android_setting_picks_how_the_host_cancels() {
+        use crate::ptp::PtpSession;
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+
+        for android in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let config = VirtualDeviceConfig {
+                android,
+                ..test_config_with_serial(dir.path(), &format!("cancel-mode-{android}"))
+            };
+            let transport = Arc::new(super::VirtualTransport::new(config));
+            let dyn_transport: Arc<dyn crate::transport::Transport> = transport.clone();
+            let session = PtpSession::open(dyn_transport, 1).await.unwrap();
+            let info = session.get_device_info().await.unwrap();
+            assert_eq!(info.runs_android_mtp_server(), android);
+            // Android gets a drain, a camera gets CLASS_CANCEL.
+            assert_eq!(transport.drain_on_cancel.load(Ordering::SeqCst), android);
+        }
+    }
+
     #[tokio::test]
     async fn cancel_mid_partial_stream_leaves_session_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        cancel_mid_partial_stream_then_resume(test_config(dir.path()), dir.path()).await;
+    }
+
+    #[tokio::test]
+    async fn cancel_mid_partial_stream_on_a_camera_leaves_session_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        cancel_mid_partial_stream_then_resume(camera_config(dir.path()), dir.path()).await;
+    }
+
+    async fn cancel_mid_partial_stream_then_resume(
+        config: VirtualDeviceConfig,
+        dir: &std::path::Path,
+    ) {
         use crate::mtp::DEFAULT_CANCEL_TIMEOUT;
 
-        let dir = tempfile::tempdir().unwrap();
         let content: Vec<u8> = (0..8000).map(|i| (i % 256) as u8).collect();
-        std::fs::write(dir.path().join("data.bin"), &content).unwrap();
+        std::fs::write(dir.join("data.bin"), &content).unwrap();
 
-        let config = test_config(dir.path());
         let device = MtpDevice::builder().open_virtual(config).await.unwrap();
         let storages = device.storages().await.unwrap();
         let obj = storages[0].list_objects(None).await.unwrap()[0].clone();
@@ -1781,6 +1825,99 @@ mod tests {
         assert!(partial.is_none(), "the device already removed it");
         assert_upload_left_nothing(&storages[0], download.handle, "cancelled.bin", dir.path())
             .await;
+    }
+
+    /// Opens a camera-mode device with a `Download` folder; returns it, its storage, and the
+    /// folder's handle.
+    async fn open_camera_with_download_folder(
+        dir: &std::path::Path,
+    ) -> (MtpDevice, crate::mtp::Storage, crate::mtp::ObjectHandle) {
+        std::fs::create_dir(dir.join("Download")).unwrap();
+        let device = MtpDevice::builder()
+            .open_virtual(camera_config(dir))
+            .await
+            .unwrap();
+        let storage = device.storages().await.unwrap().remove(0);
+        let items = storage.list_objects(None).await.unwrap();
+        let folder = items.iter().find(|i| i.filename == "Download").unwrap();
+        let handle = folder.handle;
+        (device, storage, handle)
+    }
+
+    /// Off Android, CLASS_CANCEL ends the data phase and the device keeps the half-written
+    /// object, so the caller gets its handle to delete or resume, and the library leaves it.
+    async fn assert_partial_kept_and_deletable(
+        storage: &crate::mtp::Storage,
+        partial: Option<crate::mtp::ObjectHandle>,
+        name: &str,
+    ) {
+        let handle = partial.expect("a camera keeps the object, so the handle must surface");
+        let info = storage
+            .get_object_info(handle)
+            .await
+            .expect("the half-written object stays at the surfaced handle");
+        assert_eq!(info.filename, name);
+        storage
+            .delete(handle)
+            .await
+            .expect("the surfaced handle is deletable");
+        assert!(storage.get_object_info(handle).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn upload_source_error_midway_surfaces_partial_on_a_camera() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_device, storage, folder) = open_camera_with_download_folder(dir.path()).await;
+
+        let info = crate::mtp::NewObjectInfo::file("partial.bin", 100);
+        let err = storage
+            .upload(Some(folder), info, failing_stream(b"abc"))
+            .await
+            .expect_err("upload should fail when the source stream errors mid-stream");
+        assert!(matches!(err.source, crate::mtp::Error::Io { .. }));
+        assert_partial_kept_and_deletable(&storage, err.partial, "partial.bin").await;
+    }
+
+    #[tokio::test]
+    async fn upload_cancelled_midway_surfaces_partial_on_a_camera() {
+        use std::ops::ControlFlow;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (_device, storage, folder) = open_camera_with_download_folder(dir.path()).await;
+
+        let info = crate::mtp::NewObjectInfo::file("cancelled.bin", 5);
+        let err = storage
+            .upload_with_progress(Some(folder), info, bytes_stream(b"hello"), |_| {
+                ControlFlow::Break(())
+            })
+            .await
+            .expect_err("cancelled upload should fail");
+        assert!(matches!(err.source, crate::mtp::Error::Cancelled));
+        assert_partial_kept_and_deletable(&storage, err.partial, "cancelled.bin").await;
+    }
+
+    #[tokio::test]
+    async fn upload_dropped_midway_on_a_camera_keeps_the_object_and_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_device, storage, folder) = open_camera_with_download_folder(dir.path()).await;
+
+        let source = futures::StreamExt::chain(bytes_stream(b"abc"), futures::stream::pending());
+        let info = crate::mtp::NewObjectInfo::file("dropped.bin", 100);
+        let mut upload = Box::pin(storage.upload(Some(folder), info, source));
+        assert!(futures::poll!(upload.as_mut()).is_pending());
+        drop(upload);
+
+        // The next operation's recovery sends CLASS_CANCEL, which ends the data phase; the
+        // object stays, as on a camera that keeps what it got.
+        let listed = storage
+            .list_objects(Some(folder))
+            .await
+            .expect("the session must answer right after a dropped upload");
+        assert!(
+            listed.iter().any(|o| o.filename == "dropped.bin"),
+            "{listed:?}"
+        );
+        assert!(dir.path().join("Download/dropped.bin").exists());
     }
 
     #[tokio::test]

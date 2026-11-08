@@ -39,11 +39,13 @@ pub(super) fn build_device_info(state: &VirtualDeviceState) -> Vec<u8> {
     buf.extend_from_slice(&pack_u32(6));
     // VendorExtensionVersion: 100
     buf.extend_from_slice(&pack_u16(100));
-    // VendorExtensionDesc: AOSP's, so the host treats it as Android's `MtpServer` (no
-    // CLASS_CANCEL, see `DeviceInfo::runs_android_mtp_server`), like the rest of this model.
-    buf.extend_from_slice(&pack_device_string(
-        "microsoft.com: 1.0; android.com: 1.0; ",
-    ));
+    // VendorExtensionDesc: AOSP's when modeling Android, so the host treats it as Android's
+    // `MtpServer` (no CLASS_CANCEL, see `DeviceInfo::runs_android_mtp_server`).
+    buf.extend_from_slice(&pack_device_string(if state.config.android {
+        "microsoft.com: 1.0; android.com: 1.0; "
+    } else {
+        "microsoft.com: 1.0"
+    }));
     // FunctionalMode: 0 (standard)
     buf.extend_from_slice(&pack_u16(0));
 

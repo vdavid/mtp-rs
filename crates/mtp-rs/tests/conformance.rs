@@ -6,7 +6,8 @@
 //! suite (`conformance_wpd.rs`) can point the exact same assertions at a real device. Each test
 //! here is a thin wrapper that opens the virtual device and calls the corresponding harness fn with
 //! `parent = None` (the virtual storage root is writable) and `expects_partial = false` (the
-//! virtual device models Android, which drops the object when an upload stops partway, #62).
+//! virtual device models Android, which drops the object when an upload stops partway, #62). The
+//! `_on_a_camera` tests open it with `android: false` to cover the CLASS_CANCEL path too.
 //!
 //! Run with: `cargo test -p mtp-rs --features virtual-device --test conformance`.
 
@@ -105,6 +106,21 @@ async fn upload_cancel_leaves_no_partial_on_android() {
     let storage = &device.storages().await.unwrap()[0];
     // Android drops the half-written object itself, so there's no partial handle (#62).
     common::run_upload_cancel(storage, None, false).await;
+}
+
+#[tokio::test]
+async fn upload_cancel_surfaces_partial_on_a_camera() {
+    let (device, _dir) = common::open_device_as("conf-upload-cancel-camera", false).await;
+    let storage = &device.storages().await.unwrap()[0];
+    // CLASS_CANCEL ends the data phase and a camera keeps what it got, so the caller cleans up.
+    common::run_upload_cancel(storage, None, true).await;
+}
+
+#[tokio::test]
+async fn download_cancel_on_a_camera_leaves_session_usable() {
+    let (device, _dir) = common::open_device_as("conf-download-cancel-camera", false).await;
+    let storage = &device.storages().await.unwrap()[0];
+    common::run_download_cancel(storage, None).await;
 }
 
 #[tokio::test]

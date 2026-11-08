@@ -36,6 +36,13 @@ use std::time::Duration;
 /// available with the `virtual-device` feature; the WPD suite opens the real device itself.
 #[cfg(feature = "virtual-device")]
 pub async fn open_device(serial: &str) -> (mtp_rs::MtpDevice, tempfile::TempDir) {
+    open_device_as(serial, true).await
+}
+
+/// [`open_device`] with the virtual device's `android` setting chosen: `false` models a PTP
+/// camera, which the host cancels with CLASS_CANCEL and which keeps a half-written upload.
+#[cfg(feature = "virtual-device")]
+pub async fn open_device_as(serial: &str, android: bool) -> (mtp_rs::MtpDevice, tempfile::TempDir) {
     use mtp_rs::virtual_device::{VirtualDeviceConfig, VirtualStorageConfig};
 
     let dir = tempfile::tempdir().unwrap();
@@ -51,6 +58,7 @@ pub async fn open_device(serial: &str) -> (mtp_rs::MtpDevice, tempfile::TempDir)
         }],
         event_poll_interval: Duration::ZERO,
         watch_backing_dirs: false,
+        android,
         ..Default::default()
     };
     let device = mtp_rs::MtpDevice::builder()

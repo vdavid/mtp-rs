@@ -146,6 +146,20 @@ pub struct VirtualDeviceConfig {
     /// so a consumer's handling of zoneless dates gets exercised. Defaults to
     /// `false`.
     pub dates_include_offset: bool,
+    /// Whether the device presents itself as Android's `MtpServer`, and behaves like it where
+    /// that changes how a host stops a transfer. Defaults to `true`, since most consumers are
+    /// phone apps.
+    ///
+    /// `true` advertises `android.com` in the vendor extension, so the host stops downloads by
+    /// draining instead of sending CLASS_CANCEL and ends a stopped upload with a zero-length
+    /// packet. The device models AOSP's answer to that short data phase: it drops the
+    /// half-written object and its file and answers `GeneralError`, so a stopped upload leaves
+    /// no partial handle (#62).
+    ///
+    /// `false` models a PTP camera: no `android.com`, so the host sends CLASS_CANCEL, which
+    /// ends an open data phase and keeps the half-written object. A stopped upload then
+    /// surfaces `UploadError::partial` for the caller to delete or resume.
+    pub android: bool,
 }
 
 /// A ready-to-extend starting point: an obviously-fake identity plus the
@@ -182,6 +196,7 @@ impl Default for VirtualDeviceConfig {
             undescribable_objects: Vec::new(),
             utc_offset: crate::mtp::UtcOffset::UTC,
             dates_include_offset: false,
+            android: true,
         }
     }
 }
@@ -226,5 +241,6 @@ mod tests {
         assert!(config.supports_object_prop_list);
         assert_eq!(config.event_poll_interval, Duration::from_millis(50));
         assert!(config.watch_backing_dirs);
+        assert!(config.android);
     }
 }
