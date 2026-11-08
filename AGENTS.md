@@ -549,6 +549,13 @@ a bounded `GetPartialObject64` transaction, and frees the one-per-device PTP ses
   speed to take about `d`. First window 8 MiB, then smoothed speed (device time only, half weight on
   the newest window) × `d`, rounded down to whole MiB, at least 1 MiB, at most `u32::MAX` (the
   partial read's `max_bytes`).
+  **The speed is measured from the moment `download_window` returns**, so it counts only the time
+  spent waiting for chunks: the yield before a window and the window's start aren't in it. On WPD
+  that start is a stream reopen and seek whenever another call ran in between, and on a forward-only
+  stream the seek re-reads the whole prefix, seconds deep into a big file. Counting it read as a slow
+  link, shrank the next window toward 1 MiB, let in more calls, and so caused more reopens: a 1 GB
+  copy fell to 0.7 MB/s on a POCO X6 Pro under Windows 11 (#61). Keep the start out of the clock. On
+  USB it leaves out the window's first round trip (a few ms), so a window runs slightly over `d`.
 - `FixedWindow(bytes)`: windows of that size (0 counts as 1).
 - `HeldOpen`: one transfer for the whole range (`GetObject` for `Full`), the old `download`.
 

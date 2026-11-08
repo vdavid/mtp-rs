@@ -141,8 +141,8 @@ struct ActiveRead {
     requested: u64,
     /// Bytes received so far.
     received: u64,
-    /// Time spent waiting on the device for this read, not counting the consumer's time between
-    /// chunks.
+    /// Time spent waiting on the device for this read's chunks, not counting the time to start
+    /// the read or the consumer's time between chunks.
     device_time: Duration,
 }
 
@@ -414,10 +414,13 @@ impl FileDownload {
 
     /// Start the next read: a window, or a held-open transfer for the rest of the range when the
     /// pacing asks for one or the device can't read partially from here.
+    ///
+    /// The read's `device_time` starts at zero: the time to start it (the yield, and on WPD a
+    /// stream reopen and seek, which re-reads the prefix on a forward-only stream) isn't the
+    /// transfer rate, and counting it shrank every window after an interleaved call (#61).
     async fn start_next_read(&mut self) -> Result<(), Error> {
         let remaining = self.end - self.offset;
         let windowed = !self.pacer.held_open() && self.backend.can_read_partially_at(self.offset);
-        let waited = Instant::now();
         let read = if windowed {
             if self.started {
                 // Let a call that queued for the device during the last window run first.
@@ -433,7 +436,7 @@ impl FileDownload {
                 held_open: false,
                 requested: u64::from(len),
                 received: 0,
-                device_time: waited.elapsed(),
+                device_time: Duration::ZERO,
             }
         } else {
             let range = if self.offset == 0 && self.end == self.size {
@@ -450,7 +453,7 @@ impl FileDownload {
                 held_open: true,
                 requested: remaining,
                 received: 0,
-                device_time: waited.elapsed(),
+                device_time: Duration::ZERO,
             }
         };
         self.current = Some(read);
@@ -576,6 +579,200 @@ mod tests {
         );
         assert!(Pacer::new(DownloadPacing::HeldOpen).held_open());
         assert!(!Pacer::new(DownloadPacing::default()).held_open());
+    }
+
+    /// A backend whose windows take `open_delay` to start (WPD reopening and seeking a stream
+    /// after another call ran) and `stream_delay` to stream their bytes. Only `download_window`
+    /// and `can_read_partially_at` are real.
+    struct SlowStartBackend {
+        open_delay: Duration,
+        stream_delay: Duration,
+        windows: std::sync::Mutex<Vec<u32>>,
+        device_info: crate::mtp::DeviceInfo,
+        capabilities: crate::mtp::Capabilities,
+    }
+
+    struct SlowBody {
+        left: u32,
+        stream_delay: Option<Duration>,
+    }
+
+    #[async_trait::async_trait]
+    impl DownloadBody for SlowBody {
+        async fn next_chunk(&mut self) -> Option<Result<Bytes, Error>> {
+            if self.left == 0 {
+                return None;
+            }
+            if let Some(delay) = self.stream_delay.take() {
+                std::thread::sleep(delay);
+            }
+            let n = self.left.min(MIB as u32);
+            self.left -= n;
+            Some(Ok(Bytes::from(vec![0u8; n as usize])))
+        }
+
+        async fn cancel(&mut self, _idle_timeout: Duration) -> Result<(), Error> {
+            self.left = 0;
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MtpBackend for SlowStartBackend {
+        fn device_info(&self) -> &crate::mtp::DeviceInfo {
+            &self.device_info
+        }
+        fn capabilities(&self) -> &crate::mtp::Capabilities {
+            &self.capabilities
+        }
+        async fn download_window(
+            &self,
+            _obj: ObjectHandle,
+            _offset: u64,
+            len: u32,
+        ) -> Result<Box<dyn DownloadBody>, Error> {
+            self.windows.lock().unwrap().push(len);
+            std::thread::sleep(self.open_delay);
+            Ok(Box::new(SlowBody {
+                left: len,
+                stream_delay: Some(self.stream_delay),
+            }))
+        }
+        fn can_read_partially_at(&self, _offset: u64) -> bool {
+            true
+        }
+        async fn storages(&self) -> Result<Vec<crate::mtp::StorageInfo>, Error> {
+            unimplemented!()
+        }
+        async fn storage_info(
+            &self,
+            _storage: crate::mtp::StorageId,
+        ) -> Result<crate::mtp::StorageInfo, Error> {
+            unimplemented!()
+        }
+        async fn list(
+            &self,
+            _storage: crate::mtp::StorageId,
+            _parent: Option<ObjectHandle>,
+            _cancel: Option<&crate::cancel::CancelToken>,
+        ) -> Result<crate::mtp::backend::BackendListing, Error> {
+            unimplemented!()
+        }
+        async fn object_info(&self, _obj: ObjectHandle) -> Result<ObjectInfo, Error> {
+            unimplemented!()
+        }
+        async fn download(
+            &self,
+            _obj: ObjectHandle,
+            _range: ByteRange,
+            _size: u64,
+        ) -> Result<Box<dyn DownloadBody>, Error> {
+            unimplemented!()
+        }
+        async fn read_range(
+            &self,
+            _obj: ObjectHandle,
+            _offset: u64,
+            _len: Option<u32>,
+        ) -> Result<Vec<u8>, Error> {
+            unimplemented!()
+        }
+        async fn thumbnail(&self, _obj: ObjectHandle) -> Result<Vec<u8>, Error> {
+            unimplemented!()
+        }
+        async fn upload(
+            &self,
+            _storage: crate::mtp::StorageId,
+            _parent: Option<ObjectHandle>,
+            _info: crate::mtp::object::NewObjectInfo,
+            _data: crate::mtp::backend::UploadStream<'_>,
+            _progress: Option<crate::mtp::backend::ProgressFn<'_>>,
+        ) -> Result<ObjectHandle, crate::mtp::UploadError> {
+            unimplemented!()
+        }
+        async fn create_folder(
+            &self,
+            _storage: crate::mtp::StorageId,
+            _parent: Option<ObjectHandle>,
+            _name: &str,
+        ) -> Result<ObjectHandle, Error> {
+            unimplemented!()
+        }
+        async fn delete(
+            &self,
+            _obj: ObjectHandle,
+            _cancel: Option<&crate::cancel::CancelToken>,
+        ) -> Result<(), Error> {
+            unimplemented!()
+        }
+        async fn move_object(
+            &self,
+            _obj: ObjectHandle,
+            _new_parent: ObjectHandle,
+            _new_storage: crate::mtp::StorageId,
+        ) -> Result<(), Error> {
+            unimplemented!()
+        }
+        async fn copy_object(
+            &self,
+            _obj: ObjectHandle,
+            _new_parent: ObjectHandle,
+            _new_storage: crate::mtp::StorageId,
+        ) -> Result<ObjectHandle, Error> {
+            unimplemented!()
+        }
+        async fn rename(&self, _obj: ObjectHandle, _new_name: &str) -> Result<(), Error> {
+            unimplemented!()
+        }
+        async fn next_event(&self) -> Result<crate::mtp::DeviceEvent, Error> {
+            unimplemented!()
+        }
+        async fn close(&self) -> Result<(), Error> {
+            unimplemented!()
+        }
+    }
+
+    /// #61: on WPD a window after an interleaved call first reopens the stream (and on a
+    /// forward-only stream reads the whole prefix again). That's not the transfer rate, so it
+    /// must not shrink the next window: only the time spent streaming counts.
+    #[test]
+    fn a_slow_window_start_does_not_shrink_the_next_window() {
+        let backend = Arc::new(SlowStartBackend {
+            open_delay: Duration::from_millis(500),
+            // 8 MiB in ~50 ms is ~168 MB/s, so a 2 s window is ~320 MiB.
+            stream_delay: Duration::from_millis(50),
+            windows: std::sync::Mutex::new(Vec::new()),
+            device_info: Default::default(),
+            capabilities: Default::default(),
+        });
+        let info = ObjectInfo {
+            size: GIB,
+            ..Default::default()
+        };
+        futures::executor::block_on(async {
+            let mut download = FileDownload::start(
+                backend.clone(),
+                ObjectHandle(1),
+                &info,
+                ByteRange::Full,
+                DownloadPacing::MaxCancelDelay(Duration::from_secs(2)),
+            )
+            .await
+            .unwrap();
+            // Read the whole first window, then one chunk of the second, which starts it.
+            while download.bytes_received() <= 8 * MIB {
+                download.next_chunk().await.unwrap().unwrap();
+            }
+        });
+        let windows = backend.windows.lock().unwrap().clone();
+        assert_eq!(windows.len(), 2, "windows: {windows:?}");
+        assert_eq!(windows[0], 8 * MIB as u32);
+        // Counting the 0.5 s start would give ~29 MiB. Leave room for a slow test machine.
+        assert!(
+            u64::from(windows[1]) >= 64 * MIB,
+            "second window {} MiB: the slow start was counted as transfer time",
+            u64::from(windows[1]) / MIB
+        );
     }
 
     #[test]

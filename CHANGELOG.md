@@ -14,6 +14,10 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Fixed
+
+- **[lib] On Windows, a big download no longer slows to a crawl when other calls run between its windows.** Each such call made the next window reopen the file on the phone, and on phones that can't seek, read everything before the window again. The download counted that as transfer time, so it shrank its windows, which let in more calls and caused more reopens: a 1 GB copy fell to under 1 MB/s while the app browsed the phone. Window sizes now come from the time spent receiving data only. [#61](https://github.com/vdavid/mtp-rs/issues/61)
+
 ## [0.38.0] - 2026-11-06
 
 Library `0.38.0` and CLI `0.11.8`. Downloads read in windows of about two seconds, so a cancel on Android stops within one window instead of reading the rest of the file, and the device stays usable during a big download. Breaking for library users: `download_windowed` is gone; see the first bullet for how to migrate.
