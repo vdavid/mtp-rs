@@ -17,6 +17,7 @@ mod com;
 mod consts;
 mod events;
 mod ids;
+mod passthrough;
 mod props;
 
 use crate::cancel::CancelToken;
@@ -191,7 +192,11 @@ impl MtpBackend for WpdBackend {
     }
 
     fn can_read_partially_at(&self, _offset: u64) -> bool {
-        // Any offset: the worker seeks, or reads and discards up to it on forward-only streams.
+        // Any offset. Where the driver offers the MTP passthrough and the device a partial-read op
+        // covering the offset, a window is one `GetPartialObject64`/`GetPartialObject` (see
+        // `passthrough.rs`). Otherwise the worker continues the kept stream, or reopens it and
+        // seeks, reading and discarding the prefix on forward-only streams. That's slow after a
+        // call between windows, but still better than holding the worker for a whole file.
         true
     }
 

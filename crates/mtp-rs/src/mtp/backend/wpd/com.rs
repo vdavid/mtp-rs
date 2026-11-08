@@ -6,6 +6,7 @@
 use super::consts::WPD_DEVICE_OBJECT_ID;
 use super::events::WpdEventSink;
 use super::ids::IdMap;
+use super::passthrough::{PartialOp, Passthrough};
 use super::props::{
     is_folder_content_type, map_hresult, read_date, read_object_info, set_u32, take_pwstr, wide,
 };
@@ -99,6 +100,9 @@ pub(crate) struct WpdDevice {
     storage_wpd_ids: HashSet<String>,
     device_info: DeviceInfo,
     capabilities: Capabilities,
+    /// The MTP passthrough for real partial reads, when the driver offers it (see
+    /// [`super::passthrough`]).
+    passthrough: Option<Passthrough>,
 }
 
 impl Drop for WpdDevice {
@@ -146,7 +150,9 @@ impl WpdDevice {
 
         let ids = Arc::new(Mutex::new(IdMap::new()));
         let device_info = read_device_info(&props);
-        let capabilities = probe_capabilities(&device);
+        let commands = supported_commands(&device);
+        let capabilities = capabilities_from(&commands);
+        let passthrough = Passthrough::new(&device, &commands);
         let storage_wpd_ids =
             collect_storage_ids(&content, &mut ids.lock().expect("idmap poisoned"));
 
@@ -161,6 +167,7 @@ impl WpdDevice {
             storage_wpd_ids,
             device_info,
             capabilities,
+            passthrough,
         })
     }
 
@@ -403,6 +410,40 @@ impl WpdDevice {
         stream.ok_or_else(|| Error::Other {
             detail: "WPD GetStream returned a null stream".into(),
         })
+    }
+
+    /// The passthrough and checked MTP handle to read `obj` from `offset` with, or `None` when the
+    /// stream serves the read: no passthrough, no partial-read op covering `offset`, or a WPD id
+    /// that doesn't map to a checked MTP handle (see [`Passthrough::handle_for`]).
+    ///
+    /// # Safety
+    /// COM thread only.
+    pub(crate) unsafe fn partial_read_target(
+        &mut self,
+        obj: ObjectHandle,
+        offset: u64,
+    ) -> Option<(&mut Passthrough, PartialOp, u32)> {
+        let op = self.passthrough.as_mut()?.op_for(offset)?;
+        let wpd_id = self
+            .ids
+            .lock()
+            .expect("idmap poisoned")
+            .object_id(obj)?
+            .to_string();
+        // WPD's name and size, to check the MTP handle against on the object's first read.
+        let checked = self
+            .passthrough
+            .as_ref()
+            .is_some_and(|p| p.has_checked(obj));
+        let (name, size) = if checked {
+            (String::new(), 0)
+        } else {
+            let info = self.object_info(obj).ok()?;
+            (info.filename, info.size)
+        };
+        let pt = self.passthrough.as_mut()?;
+        let handle = pt.handle_for(obj, &wpd_id, &name, size)?;
+        Some((pt, op, handle))
     }
 
     // ---- write path (Phase 3) ------------------------------------------------------------------
@@ -1040,20 +1081,12 @@ unsafe fn read_storage_info(
     info
 }
 
-/// Derive [`Capabilities`] from the device's supported WPD commands.
-///
-/// Reads `IPortableDeviceCapabilities::GetSupportedCommands` and maps the object-management commands
-/// to the neutral flags. Falls back to permissive MTP defaults if the probe yields nothing (older
-/// driver). `supports_partial_download` is always true (we provide ranged reads via seek or the
-/// read-and-discard fallback); `supports_thumbnails` is true (the backend reads the
-/// `WPD_RESOURCE_THUMBNAIL` resource — *whether a given object has one* is resolved at call time,
-/// which is the only place WPD can answer it); `supports_events` is true (the backend registers a
-/// WPD event callback at open — see [`WpdDevice::register_events`]).
+/// The WPD commands the device's driver supports (`GetSupportedCommands`), empty if that fails.
 ///
 /// # Safety
 /// COM thread only.
-unsafe fn probe_capabilities(device: &IPortableDevice) -> Capabilities {
-    let commands: Vec<PROPERTYKEY> = (|| {
+unsafe fn supported_commands(device: &IPortableDevice) -> Vec<PROPERTYKEY> {
+    (|| {
         let caps = device.Capabilities().ok()?;
         let cmds = caps.GetSupportedCommands().ok()?;
         // GetCount / GetAt write through `*const` out-pointers (a windows-rs quirk), so these need
@@ -1069,8 +1102,19 @@ unsafe fn probe_capabilities(device: &IPortableDevice) -> Capabilities {
         }
         Some(out)
     })()
-    .unwrap_or_default();
+    .unwrap_or_default()
+}
 
+/// Derive [`Capabilities`] from the device's supported WPD commands.
+///
+/// Maps the object-management commands to the neutral flags. Falls back to permissive MTP
+/// defaults if the driver listed nothing (older driver). `supports_partial_download` is always
+/// true (ranged reads go through the MTP passthrough, or the stream with seek or read-and-discard);
+/// `supports_thumbnails` is true (the backend reads the `WPD_RESOURCE_THUMBNAIL` resource —
+/// *whether a given object has one* is resolved at call time, which is the only place WPD can
+/// answer it); `supports_events` is true (the backend registers a WPD event callback at open — see
+/// [`WpdDevice::register_events`]).
+fn capabilities_from(commands: &[PROPERTYKEY]) -> Capabilities {
     // Permissive defaults when the device doesn't enumerate commands.
     if commands.is_empty() {
         return Capabilities {

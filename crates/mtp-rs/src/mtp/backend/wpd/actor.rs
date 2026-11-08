@@ -6,6 +6,7 @@
 //! (held by the backend) carries only channel ends, so it is `Send + Sync` with no `unsafe`.
 
 use super::com::{self, WpdDevice};
+use super::passthrough::Refusal;
 use super::props::map_hresult;
 use crate::cancel::CancelToken;
 use crate::mtp::backend::ByteRange;
@@ -657,6 +658,9 @@ fn handle_download_window(
     last: &mut Option<OpenRead>,
     reply: oneshot::Sender<Result<ChunkReceiver, Error>>,
 ) {
+    let Some(reply) = passthrough_window(dev, obj, offset, len, last, reply) else {
+        return;
+    };
     let (stream, reused) = match take_continuing(last, obj, offset, "DownloadWindow") {
         Some(stream) => (stream, true),
         None => match unsafe { open_at(dev, obj, offset, "DownloadWindow") } {
@@ -694,6 +698,116 @@ fn handle_download_window(
             stream,
         });
     }
+}
+
+/// Serve one window as one MTP partial read through the passthrough (see [`super::passthrough`]),
+/// when the device can. Hands `reply` back when the stream has to serve it instead.
+///
+/// The chunks go to the consumer as they arrive. A consumer that stops reading (a cancel, or a
+/// dropped download) doesn't end the transfer early: the rest of the window is read and dropped,
+/// then the transaction ends normally. The driver's early `END_DATA_TRANSFER` is its own cancel,
+/// and on Android that may lose the `io_cancel` race #54 took `CLASS_CANCEL` away for. The cost is
+/// the rest of one window, about one pacing target.
+fn passthrough_window(
+    dev: &mut WpdDevice,
+    obj: ObjectHandle,
+    offset: u64,
+    len: u32,
+    last: &mut Option<OpenRead>,
+    reply: oneshot::Sender<Result<ChunkReceiver, Error>>,
+) -> Option<oneshot::Sender<Result<ChunkReceiver, Error>>> {
+    let Some((pt, op, handle)) = (unsafe { dev.partial_read_target(obj, offset) }) else {
+        return Some(reply);
+    };
+    // An open stream keeps the device busy.
+    release_read(last, "before", "a passthrough read");
+    let timer = DiagTimer::start();
+    let transfer = match unsafe { pt.begin_partial(op, handle, offset, len) } {
+        Ok(t) => t,
+        Err(Refusal::UseStream) => return Some(reply),
+        Err(Refusal::Fatal(e)) => {
+            let _ = reply.send(Err(e));
+            return None;
+        }
+    };
+    let executed = timer.elapsed();
+    let (tx, rx) = mpsc::channel::<Result<Bytes, Error>>(DATA_BOUND);
+    let mut tx = reply.send(Ok(rx)).is_ok().then_some(tx);
+    let done = unsafe {
+        pt.finish(&transfer, |chunk| {
+            let delivered = tx
+                .as_mut()
+                .is_some_and(|sender| block_on(sender.send(Ok(Bytes::from(chunk)))).is_ok());
+            if !delivered {
+                tx = None;
+            }
+            delivered
+        })
+    };
+    // The data time includes waiting for the consumer to take chunks off the bounded channel.
+    diag_debug!(
+        "wpd: DownloadWindow of {:?} at {} ({} bytes) via passthrough {:?}: execute {:?}, data {} bytes in {:?}, end {:?}{}{}",
+        obj,
+        offset,
+        len,
+        op,
+        executed,
+        done.bytes,
+        done.data_time,
+        done.end_time,
+        if done.consumer_stopped { ", consumer stopped (rest read and dropped)" } else { "" },
+        match &done.result {
+            Ok(()) => String::new(),
+            Err(e) => format!(", failed: {e}"),
+        }
+    );
+    if let (Err(e), Some(sender)) = (done.result, tx.as_mut()) {
+        let _ = block_on(sender.send(Err(e)));
+    }
+    None
+}
+
+/// `read_range` as one MTP partial read through the passthrough, when the device can and the
+/// length is known. `None` means the stream serves it.
+fn passthrough_read_range(
+    dev: &mut WpdDevice,
+    obj: ObjectHandle,
+    offset: u64,
+    len: u32,
+    last: &mut Option<OpenRead>,
+) -> Option<Result<Vec<u8>, Error>> {
+    let (pt, op, handle) = unsafe { dev.partial_read_target(obj, offset) }?;
+    release_read(last, "before", "a passthrough read");
+    let timer = DiagTimer::start();
+    let transfer = match unsafe { pt.begin_partial(op, handle, offset, len) } {
+        Ok(t) => t,
+        Err(Refusal::UseStream) => return None,
+        Err(Refusal::Fatal(e)) => return Some(Err(e)),
+    };
+    let executed = timer.elapsed();
+    let mut out = Vec::with_capacity(len as usize);
+    let done = unsafe {
+        pt.finish(&transfer, |chunk| {
+            out.extend_from_slice(&chunk);
+            true
+        })
+    };
+    diag_debug!(
+        "wpd: ReadRange of {:?} at {} ({} bytes) via passthrough {:?}: execute {:?}, data {} bytes in {:?}, end {:?}{}",
+        obj,
+        offset,
+        len,
+        op,
+        executed,
+        done.bytes,
+        done.data_time,
+        done.end_time,
+        match &done.result {
+            Ok(()) => String::new(),
+            Err(e) => format!(", failed: {e}"),
+        }
+    );
+    Some(done.result.map(|()| out))
 }
 
 /// How [`pump_chunks`] ended.
@@ -764,6 +878,11 @@ fn handle_read_range(
     len: Option<u32>,
     last: &mut Option<OpenRead>,
 ) -> Result<Vec<u8>, Error> {
+    if let Some(len) = len {
+        if let Some(result) = passthrough_read_range(dev, obj, offset, len, last) {
+            return result;
+        }
+    }
     let (stream, reused) = match take_continuing(last, obj, offset, "ReadRange") {
         Some(stream) => (stream, true),
         None => (unsafe { open_at(dev, obj, offset, "ReadRange") }?, false),
