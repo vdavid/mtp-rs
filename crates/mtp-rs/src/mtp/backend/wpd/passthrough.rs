@@ -163,7 +163,9 @@ pub(crate) struct Finished {
     pub(crate) bytes: u64,
     /// The sink stopped wanting chunks (the rest was read and dropped).
     pub(crate) consumer_stopped: bool,
-    /// Time in `READ_DATA` calls (zero without the `tracing` feature).
+    /// Time in `READ_DATA` calls, without the time `sink` took: what the pacer sizes windows by.
+    pub(crate) device_time: std::time::Duration,
+    /// Time in the data phase, `sink` included (zero without the `tracing` feature).
     pub(crate) data_time: std::time::Duration,
     /// Time in `END_DATA_TRANSFER` (zero without the `tracing` feature).
     pub(crate) end_time: std::time::Duration,
@@ -455,6 +457,7 @@ impl Passthrough {
         let mut done = Finished {
             bytes: 0,
             consumer_stopped: false,
+            device_time: std::time::Duration::ZERO,
             data_time: std::time::Duration::ZERO,
             end_time: std::time::Duration::ZERO,
             result: Ok(()),
@@ -469,7 +472,10 @@ impl Passthrough {
                 break Ok(());
             }
             let ask = next_ask(t, done.bytes);
-            match self.read(t, ask, &mut buf) {
+            let reading = std::time::Instant::now();
+            let chunk = self.read(t, ask, &mut buf);
+            done.device_time += reading.elapsed();
+            match chunk {
                 Ok(c) => {
                     let n = c.len();
                     done.bytes += n as u64;

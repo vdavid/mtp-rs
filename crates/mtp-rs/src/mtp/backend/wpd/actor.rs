@@ -20,7 +20,9 @@ use futures::channel::mpsc::UnboundedSender;
 use futures::channel::{mpsc, oneshot};
 use futures::executor::block_on;
 use futures::{SinkExt, StreamExt};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc as std_mpsc;
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, IStream, COINIT_MULTITHREADED};
@@ -57,6 +59,29 @@ pub(crate) enum OpenSpec {
 
 /// The channel a streaming download's chunks arrive on. It closes at the end of the read.
 pub(crate) type ChunkReceiver = mpsc::Receiver<Result<Bytes, Error>>;
+
+/// Where the worker leaves how long the device took to send a window's bytes: the time in
+/// device reads, without the time spent waiting for the consumer to take chunks. The worker reads
+/// ahead into the bounded channel, so the consumer's own waits undercount it (#61). Written
+/// before the chunk channel closes; read through [`DeviceClock::get`].
+#[derive(Clone, Default)]
+pub(crate) struct DeviceClock(Arc<AtomicU64>);
+
+impl DeviceClock {
+    /// Nanoseconds plus one, so zero means "not set yet".
+    fn set(&self, time: std::time::Duration) {
+        let nanos = u64::try_from(time.as_nanos()).unwrap_or(u64::MAX - 1);
+        self.0.store(nanos + 1, Ordering::SeqCst);
+    }
+
+    /// The device time, once the window has ended.
+    pub(crate) fn get(&self) -> Option<std::time::Duration> {
+        match self.0.load(Ordering::SeqCst) {
+            0 => None,
+            n => Some(std::time::Duration::from_nanos(n - 1)),
+        }
+    }
+}
 
 /// The streaming-upload verdict the worker sends back once the data channel closes.
 ///
@@ -97,6 +122,7 @@ pub(crate) enum Request {
         obj: ObjectHandle,
         offset: u64,
         len: u32,
+        clock: DeviceClock,
         reply: oneshot::Sender<Result<ChunkReceiver, Error>>,
     },
     ReadRange {
@@ -371,8 +397,9 @@ fn worker_main(
                 obj,
                 offset,
                 len,
+                clock,
                 reply,
-            } => handle_download_window(&mut dev, obj, offset, len, &mut last_read, reply),
+            } => handle_download_window(&mut dev, obj, offset, len, &clock, &mut last_read, reply),
             Request::ReadRange {
                 obj,
                 offset,
@@ -548,7 +575,9 @@ fn handle_download(
         _ => None,
     };
     let timer = DiagTimer::start();
-    let (outcome, sent) = pump_chunks(&stream, limit, tx);
+    let mut tx = tx;
+    let (outcome, sent, _) = pump_chunks(&stream, limit, &mut tx);
+    drop(tx);
     diag_debug!(
         "wpd: Download of {:?} from {}: streamed {} bytes in {:?} ({:?})",
         obj,
@@ -655,10 +684,11 @@ fn handle_download_window(
     obj: ObjectHandle,
     offset: u64,
     len: u32,
+    clock: &DeviceClock,
     last: &mut Option<OpenRead>,
     reply: oneshot::Sender<Result<ChunkReceiver, Error>>,
 ) {
-    let Some(reply) = passthrough_window(dev, obj, offset, len, last, reply) else {
+    let Some(reply) = passthrough_window(dev, obj, offset, len, clock, last, reply) else {
         return;
     };
     let (stream, reused) = match take_continuing(last, obj, offset, "DownloadWindow") {
@@ -672,12 +702,14 @@ fn handle_download_window(
         },
     };
 
-    let (tx, rx) = mpsc::channel::<Result<Bytes, Error>>(DATA_BOUND);
+    let (mut tx, rx) = mpsc::channel::<Result<Bytes, Error>>(DATA_BOUND);
     if reply.send(Ok(rx)).is_err() {
         return; // consumer already gave up; the stream is released here
     }
     let timer = DiagTimer::start();
-    let (outcome, sent) = pump_chunks(&stream, Some(u64::from(len)), tx);
+    let (outcome, sent, device_time) = pump_chunks(&stream, Some(u64::from(len)), &mut tx);
+    clock.set(device_time);
+    drop(tx);
     // The time includes waiting for the consumer to take chunks off the bounded channel.
     diag_debug!(
         "wpd: DownloadWindow of {:?} at {} ({} bytes, {} stream): streamed {} bytes in {:?} ({:?})",
@@ -713,6 +745,7 @@ fn passthrough_window(
     obj: ObjectHandle,
     offset: u64,
     len: u32,
+    clock: &DeviceClock,
     last: &mut Option<OpenRead>,
     reply: oneshot::Sender<Result<ChunkReceiver, Error>>,
 ) -> Option<oneshot::Sender<Result<ChunkReceiver, Error>>> {
@@ -744,9 +777,11 @@ fn passthrough_window(
             delivered
         })
     };
-    // The data time includes waiting for the consumer to take chunks off the bounded channel.
+    clock.set(done.device_time);
+    // The data time includes waiting for the consumer to take chunks off the bounded channel; the
+    // device time doesn't.
     diag_debug!(
-        "wpd: DownloadWindow of {:?} at {} ({} bytes) via passthrough {:?}: execute {:?}, data {} bytes in {:?}, end {:?}{}{}",
+        "wpd: DownloadWindow of {:?} at {} ({} bytes) via passthrough {:?}: execute {:?}, data {} bytes in {:?} ({:?} of it reading), end {:?}{}{}",
         obj,
         offset,
         len,
@@ -754,6 +789,7 @@ fn passthrough_window(
         executed,
         done.bytes,
         done.data_time,
+        done.device_time,
         done.end_time,
         if done.consumer_stopped { ", consumer stopped (rest read and dropped)" } else { "" },
         match &done.result {
@@ -822,15 +858,17 @@ enum PumpOutcome {
 }
 
 /// Read `stream` in `CHUNK`s and send them to the consumer, up to `limit` bytes (or to EOF).
-/// Returns how it ended and how many bytes went out. Dropping `tx` on return closes the channel,
-/// which the consumer sees as the end of the read.
+/// Returns how it ended, how many bytes went out, and the time spent in device reads (without
+/// waiting for the consumer). The caller drops `tx` afterwards, which closes the channel: the
+/// consumer sees that as the end of the read.
 fn pump_chunks(
     stream: &IStream,
     limit: Option<u64>,
-    mut tx: mpsc::Sender<Result<Bytes, Error>>,
-) -> (PumpOutcome, u64) {
+    tx: &mut mpsc::Sender<Result<Bytes, Error>>,
+) -> (PumpOutcome, u64, std::time::Duration) {
     let mut remaining = limit;
     let mut sent = 0u64;
+    let mut device_time = std::time::Duration::ZERO;
     let mut buf = vec![0u8; CHUNK];
     loop {
         let want = match remaining {
@@ -838,18 +876,21 @@ fn pump_chunks(
             None => buf.len(),
         };
         if want == 0 {
-            return (PumpOutcome::Complete, sent);
+            return (PumpOutcome::Complete, sent, device_time);
         }
-        let n = match unsafe { com::stream_read(stream, &mut buf[..want]) } {
-            Ok(0) => return (PumpOutcome::Eof, sent),
+        let reading = std::time::Instant::now();
+        let read = unsafe { com::stream_read(stream, &mut buf[..want]) };
+        device_time += reading.elapsed();
+        let n = match read {
+            Ok(0) => return (PumpOutcome::Eof, sent, device_time),
             Ok(n) => n,
             Err(e) => {
                 let _ = block_on(tx.send(Err(e)));
-                return (PumpOutcome::Stopped, sent);
+                return (PumpOutcome::Stopped, sent, device_time);
             }
         };
         if block_on(tx.send(Ok(Bytes::copy_from_slice(&buf[..n])))).is_err() {
-            return (PumpOutcome::Stopped, sent); // consumer dropped → cancel
+            return (PumpOutcome::Stopped, sent, device_time); // consumer dropped → cancel
         }
         sent += n as u64;
         if let Some(r) = remaining.as_mut() {

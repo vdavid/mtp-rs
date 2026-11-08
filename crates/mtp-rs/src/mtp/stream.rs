@@ -142,8 +142,17 @@ struct ActiveRead {
     /// Bytes received so far.
     received: u64,
     /// Time spent waiting on the device for this read's chunks, not counting the time to start
-    /// the read or the consumer's time between chunks.
+    /// the read or the consumer's time between chunks. The body's own measurement wins when it
+    /// has one ([`ActiveRead::device_time`]).
     device_time: Duration,
+}
+
+impl ActiveRead {
+    /// How long the device took for this read: the body's own measurement when it reads ahead
+    /// (WPD), else the time waited for its chunks.
+    fn device_time(&self) -> Duration {
+        self.body.device_time().unwrap_or(self.device_time)
+    }
 }
 
 /// A file download in progress, streamed from the device.
@@ -375,7 +384,7 @@ impl FileDownload {
                             )))));
                         }
                         if !read.held_open {
-                            self.pacer.record(read.received, read.device_time);
+                            self.pacer.record(read.received, read.device_time());
                         }
                         // A short read is legal: the next read picks up at `offset`.
                     }
@@ -399,7 +408,7 @@ impl FileDownload {
         read.device_time += waited.elapsed();
         match item {
             None => {
-                self.pacer.record(read.received, read.device_time);
+                self.pacer.record(read.received, read.device_time());
                 Ok(())
             }
             Some(Ok(extra)) => Err(Error::invalid_data(format!(
@@ -587,6 +596,8 @@ mod tests {
     struct SlowStartBackend {
         open_delay: Duration,
         stream_delay: Duration,
+        /// What each window's body reports as its device time (`DownloadBody::device_time`).
+        reported: Option<Duration>,
         windows: std::sync::Mutex<Vec<u32>>,
         device_info: crate::mtp::DeviceInfo,
         capabilities: crate::mtp::Capabilities,
@@ -595,6 +606,7 @@ mod tests {
     struct SlowBody {
         left: u32,
         stream_delay: Option<Duration>,
+        reported: Option<Duration>,
     }
 
     #[async_trait::async_trait]
@@ -614,6 +626,10 @@ mod tests {
         async fn cancel(&mut self, _idle_timeout: Duration) -> Result<(), Error> {
             self.left = 0;
             Ok(())
+        }
+
+        fn device_time(&self) -> Option<Duration> {
+            self.reported
         }
     }
 
@@ -636,6 +652,7 @@ mod tests {
             Ok(Box::new(SlowBody {
                 left: len,
                 stream_delay: Some(self.stream_delay),
+                reported: self.reported,
             }))
         }
         fn can_read_partially_at(&self, _offset: u64) -> bool {
@@ -741,6 +758,7 @@ mod tests {
             open_delay: Duration::from_millis(500),
             // 8 MiB in ~50 ms is ~168 MB/s, so a 2 s window is ~320 MiB.
             stream_delay: Duration::from_millis(50),
+            reported: None,
             windows: std::sync::Mutex::new(Vec::new()),
             device_info: Default::default(),
             capabilities: Default::default(),
@@ -773,6 +791,44 @@ mod tests {
             "second window {} MiB: the slow start was counted as transfer time",
             u64::from(windows[1]) / MIB
         );
+    }
+
+    /// #61: WPD's worker reads ahead into a channel while the consumer handles earlier chunks
+    /// (writes them to disk, say), so the consumer's waits undercount the device's time and every
+    /// window came out bigger than the last: 500 ms windows grew to 5.7 s on a Pixel under
+    /// Windows. A body that measures the device's time itself is believed over those waits.
+    #[test]
+    fn a_body_that_times_the_device_itself_sizes_the_next_window() {
+        let backend = Arc::new(SlowStartBackend {
+            open_delay: Duration::ZERO,
+            // The chunks were read ahead, so they arrive at once...
+            stream_delay: Duration::ZERO,
+            // ...but the device took 2 s for the 8 MiB: 4 MiB/s, so a 2 s window is 8 MiB.
+            reported: Some(Duration::from_secs(2)),
+            windows: std::sync::Mutex::new(Vec::new()),
+            device_info: Default::default(),
+            capabilities: Default::default(),
+        });
+        let info = ObjectInfo {
+            size: GIB,
+            ..Default::default()
+        };
+        futures::executor::block_on(async {
+            let mut download = FileDownload::start(
+                backend.clone(),
+                ObjectHandle(1),
+                &info,
+                ByteRange::Full,
+                DownloadPacing::MaxCancelDelay(Duration::from_secs(2)),
+            )
+            .await
+            .unwrap();
+            while download.bytes_received() <= 8 * MIB {
+                download.next_chunk().await.unwrap().unwrap();
+            }
+        });
+        let windows = backend.windows.lock().unwrap().clone();
+        assert_eq!(windows, vec![8 * MIB as u32, 8 * MIB as u32]);
     }
 
     #[test]

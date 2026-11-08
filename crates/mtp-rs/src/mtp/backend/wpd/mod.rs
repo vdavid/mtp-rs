@@ -85,6 +85,8 @@ impl WpdBackend {
 /// The WPD streaming-download body: chunks arrive over a bounded channel from the worker thread.
 struct WpdDownloadBody {
     data: mpsc::Receiver<Result<Bytes, Error>>,
+    /// For a window: the device time the worker measured (see [`actor::DeviceClock`]).
+    clock: Option<actor::DeviceClock>,
 }
 
 #[async_trait]
@@ -99,6 +101,10 @@ impl DownloadBody for WpdDownloadBody {
         self.data.close();
         while self.data.next().await.is_some() {}
         Ok(())
+    }
+
+    fn device_time(&self) -> Option<Duration> {
+        self.clock.as_ref().and_then(actor::DeviceClock::get)
     }
 }
 
@@ -170,7 +176,7 @@ impl MtpBackend for WpdBackend {
                 reply,
             })
             .await?;
-        Ok(Box::new(WpdDownloadBody { data }))
+        Ok(Box::new(WpdDownloadBody { data, clock: None }))
     }
 
     async fn download_window(
@@ -179,16 +185,21 @@ impl MtpBackend for WpdBackend {
         offset: u64,
         len: u32,
     ) -> Result<Box<dyn DownloadBody>, Error> {
+        let clock = actor::DeviceClock::default();
         let data = self
             .handle
             .call(|reply| actor::Request::DownloadWindow {
                 obj,
                 offset,
                 len,
+                clock: clock.clone(),
                 reply,
             })
             .await?;
-        Ok(Box::new(WpdDownloadBody { data }))
+        Ok(Box::new(WpdDownloadBody {
+            data,
+            clock: Some(clock),
+        }))
     }
 
     fn can_read_partially_at(&self, _offset: u64) -> bool {

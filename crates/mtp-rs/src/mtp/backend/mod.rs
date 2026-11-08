@@ -102,6 +102,15 @@ pub(crate) trait DownloadBody: Send {
     /// Cancel the in-flight read, releasing the backend resource and leaving the device usable
     /// for the next operation. A no-op if already complete.
     async fn cancel(&mut self, idle_timeout: Duration) -> Result<(), Error>;
+
+    /// How long the device took to send this read's bytes, once it has ended, when the backend
+    /// measures that itself. `None` means [`FileDownload`](crate::mtp::FileDownload) times its own
+    /// waits for chunks, which is right only when the body reads on demand. WPD's worker reads
+    /// ahead into a channel while the consumer handles earlier chunks, so there those waits
+    /// undercount the device's time and the pacer would size windows far past the target.
+    fn device_time(&self) -> Option<Duration> {
+        None
+    }
 }
 
 /// Whether a per-handle metadata error invalidates the whole collection or can
