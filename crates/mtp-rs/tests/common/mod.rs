@@ -12,9 +12,10 @@
 //!
 //! - **Writable parent** (`parent: Option<ObjectHandle>`): every fn creates and works under the
 //!   supplied parent instead of assuming the root is writable.
-//! - **Upload-cancel partial handle** (`expects_partial: bool`): the two-phase USB/virtual backend
-//!   leaves `UploadError::partial = Some(handle)` after a cancelled upload; WPD commits
-//!   transactionally and leaves `None`.
+//! - **Upload-cancel partial handle** (`expects_partial: bool`): a two-phase USB device that keeps
+//!   the half-written object leaves `UploadError::partial = Some(handle)` after a cancelled upload;
+//!   Android (and so the virtual device) drops it, and WPD commits transactionally, so both leave
+//!   `None`.
 //!
 //! Lives in `tests/common/` so cargo does not treat it as its own test binary; each test file
 //! includes it with `mod common;`.
@@ -316,11 +317,11 @@ pub async fn run_upload_with_progress(storage: &Storage, parent: Option<ObjectHa
     storage.delete(handle).await.unwrap();
 }
 
-/// A cancelled upload fails with [`Error::Cancelled`].
+/// A cancelled upload fails with [`Error::Cancelled`], and the next call answers right away.
 ///
-/// `expects_partial` parameterizes the backend divergence: the two-phase USB/virtual backend leaves
-/// a partial object (`UploadError::partial = Some(handle)`) that the caller must clean up; WPD
-/// commits transactionally and leaves `None`.
+/// `expects_partial` parameterizes the device divergence: a two-phase USB device that keeps the
+/// half-written object surfaces it (`UploadError::partial = Some(handle)`) for the caller to clean
+/// up; Android (and the virtual device) drops it, and WPD commits transactionally, so `None`.
 pub async fn run_upload_cancel(
     storage: &Storage,
     parent: Option<ObjectHandle>,
@@ -345,9 +346,15 @@ pub async fn run_upload_cancel(
     } else {
         assert!(
             err.partial.is_none(),
-            "transactional backends commit atomically: no partial handle to clean up"
+            "the device dropped the object (Android) or never committed it (WPD)"
         );
     }
+    // On Android the next call used to time out: the phone read its command as file data (#62).
+    let listed = storage
+        .list_objects(parent)
+        .await
+        .expect("the session must answer right after a cancelled upload");
+    assert!(listed.iter().all(|o| o.filename != "cancelled.bin"));
 }
 
 /// A cancelled streaming download drains the pipe and leaves the session usable.

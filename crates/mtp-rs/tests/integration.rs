@@ -1901,4 +1901,190 @@ mod destructive {
         }
         tlog!("Big-file (>4 GiB) round trip PASSED");
     }
+
+    /// An upload source that yields the [`fill_pattern`] bytes until `stall_at`, then never
+    /// yields again. Dropping the upload future while it waits here is a drop mid-`SendObject`:
+    /// the transport waits for every USB transfer it submits, so the stream's `next` is where an
+    /// upload future can be dropped.
+    struct StallingStream {
+        offset: u64,
+        stall_at: u64,
+        chunk_size: usize,
+    }
+
+    impl futures::Stream for StallingStream {
+        type Item = Result<Bytes, std::io::Error>;
+
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            if self.offset >= self.stall_at {
+                return std::task::Poll::Pending;
+            }
+            let n = (self.stall_at - self.offset).min(self.chunk_size as u64) as usize;
+            let mut buf = vec![0u8; n];
+            fill_pattern(&mut buf, self.offset);
+            self.offset += n as u64;
+            std::task::Poll::Ready(Some(Ok(Bytes::from(buf))))
+        }
+    }
+
+    /// Runs `op` with a hang guard, so a Pixel-style silent wedge reads as a failure with a
+    /// timing instead of stalling the run. Returns the result (or `None` on a hang) and seconds.
+    async fn timed<T>(
+        label: &str,
+        op: impl std::future::Future<Output = Result<T, Error>>,
+    ) -> (Option<Result<T, Error>>, f64) {
+        const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(90);
+        let started = Instant::now();
+        let result = tokio::time::timeout(HANG_GUARD, op).await.ok();
+        let secs = started.elapsed().as_secs_f64();
+        match &result {
+            Some(Ok(_)) => tlog!("  {label}: ok in {secs:.2} s"),
+            Some(Err(e)) => tlog!("  {label}: {e:?} in {secs:.2} s"),
+            None => tlog!("  {label}: HUNG (no answer in {secs:.0} s)"),
+        }
+        (result, secs)
+    }
+
+    /// What the session looks like after an upload stops partway (#62's open question).
+    ///
+    /// Each run uploads a generated file into the writable folder and stops it at 10% or 50%,
+    /// alternating, then times the next operations: list the folder, read the partial object's
+    /// info, delete it. `MTP_UPLOAD_STOP=break` (default) stops through the progress callback
+    /// (`ControlFlow::Break`); `MTP_UPLOAD_STOP=drop` drops the upload future while it waits on
+    /// its source. `MTP_UPLOAD_STOP_RUNS` (default 10) and `MTP_UPLOAD_STOP_SIZE` (bytes, default
+    /// 256 MiB) tune it. Any file the test made that's still listed at the end is deleted.
+    ///
+    /// ```sh
+    /// MTP_UPLOAD_STOP=drop cargo test -p mtp-rs --test integration upload_stopped -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore]
+    #[serial]
+    async fn test_upload_stopped_midway_then_session_works() {
+        use std::ops::ControlFlow;
+
+        let drop_mode = std::env::var("MTP_UPLOAD_STOP").is_ok_and(|v| v.trim() == "drop");
+        let runs = std::env::var("MTP_UPLOAD_STOP_RUNS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(10);
+        let size = std::env::var("MTP_UPLOAD_STOP_SIZE")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|&s| s > 0)
+            .unwrap_or(256 * 1024 * 1024);
+        let prefix = format!("mtp-rs-upload-stop-{}-", std::process::id());
+
+        let Some((_device, storage, folder)) = setup_with_writable_folder().await else {
+            return;
+        };
+        tlog!(
+            "{} runs, {} MB each, stopping by {}",
+            runs,
+            size / 1_000_000,
+            if drop_mode {
+                "dropping the future"
+            } else {
+                "ControlFlow::Break"
+            }
+        );
+
+        let mut failures = Vec::new();
+        for run in 0..runs {
+            let percent = if run % 2 == 0 { 10 } else { 50 };
+            let stop_at = size * percent / 100;
+            let name = format!("{prefix}{run}.bin");
+            tlog!("Run {run}: {name}, stopping at {percent}%");
+
+            let started = Instant::now();
+            let info = NewObjectInfo::file(&name, size);
+            let outcome = if drop_mode {
+                let source = StallingStream {
+                    offset: 0,
+                    stall_at: stop_at,
+                    chunk_size: 1024 * 1024,
+                };
+                // The source stalls at `stop_at`; the timeout then drops the future there.
+                let upload = storage.upload(Some(folder), info, source);
+                match tokio::time::timeout(std::time::Duration::from_secs(3), upload).await {
+                    Ok(result) => format!("finished on its own: {:?}", result.map(|_| ())),
+                    Err(_) => "dropped".to_string(),
+                }
+            } else {
+                let source = PatternStream {
+                    offset: 0,
+                    total: size,
+                    chunk_size: 1024 * 1024,
+                };
+                let mut broke_at = None;
+                let result = storage
+                    .upload_with_progress(Some(folder), info, source, |p| {
+                        if p.bytes_transferred >= stop_at {
+                            broke_at.get_or_insert_with(Instant::now);
+                            ControlFlow::Break(())
+                        } else {
+                            ControlFlow::Continue(())
+                        }
+                    })
+                    .await;
+                let after_break = broke_at.map_or(0.0, |t| t.elapsed().as_secs_f64());
+                match result {
+                    Ok(_) => "finished despite the break".to_string(),
+                    Err(e) => format!(
+                        "{:?}, partial {:?}, returned {after_break:.2} s after the break",
+                        e.source, e.partial
+                    ),
+                }
+            };
+            tlog!(
+                "  upload: {outcome} after {:.2} s",
+                started.elapsed().as_secs_f64()
+            );
+
+            let (mut listing, _) = timed("list folder", storage.list_objects(Some(folder))).await;
+            if !matches!(listing, Some(Ok(_))) {
+                failures.push(format!("run {run}: listing after the stop failed"));
+                // Does the session come back by itself, or is it gone?
+                (listing, _) = timed("list folder again", storage.list_objects(Some(folder))).await;
+            }
+            let partial = match listing {
+                Some(Ok(objects)) => objects.into_iter().find(|o| o.filename == name),
+                // A wedged session won't answer the rest either.
+                _ => break,
+            };
+            match partial {
+                Some(obj) => {
+                    tlog!("  partial object listed: {} bytes", obj.size);
+                    let (info, _) = timed("object info", storage.get_object_info(obj.handle)).await;
+                    if let Some(Ok(info)) = info {
+                        tlog!("  partial object info: {} bytes", info.size);
+                    }
+                    let (deleted, _) = timed("delete partial", storage.delete(obj.handle)).await;
+                    if !matches!(deleted, Some(Ok(()))) {
+                        failures.push(format!("run {run}: deleting the partial failed"));
+                    }
+                }
+                None => tlog!("  no partial object listed"),
+            }
+        }
+
+        // Cleanup: whatever this run left behind.
+        if let Ok(objects) = storage.list_objects(Some(folder)).await {
+            for obj in objects
+                .into_iter()
+                .filter(|o| o.filename.starts_with(&prefix))
+            {
+                match storage.delete(obj.handle).await {
+                    Ok(()) => tlog!("Cleanup: deleted {}", obj.filename),
+                    Err(e) => tlog!("WARNING: couldn't delete {}: {:?}", obj.filename, e),
+                }
+            }
+        }
+
+        assert!(failures.is_empty(), "{failures:#?}");
+        tlog!("Upload stop test PASSED");
+    }
 }

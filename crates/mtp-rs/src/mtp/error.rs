@@ -285,8 +285,9 @@ pub(crate) fn map_response_code(code: ResponseCode) -> Error {
 /// Uploads are two-phase: the object is created (returning a handle), then the bytes are streamed.
 /// If the data phase fails or is cancelled, the device may keep a partial (empty or truncated)
 /// object. This surfaces that handle so the caller owns the cleanup-or-resume decision; the library
-/// never auto-deletes it. (Backends differ: the WPD backend commits atomically, so `partial` is
-/// `None` there.)
+/// never auto-deletes it. (Devices and backends differ: Android removes the object itself when an
+/// upload is cancelled or its source fails, and the WPD backend commits atomically, so `partial` is
+/// `None` in both cases.)
 ///
 /// [`From<UploadError> for Error`] keeps `?` ergonomic; callers drop [`partial`](Self::partial)
 /// unless they match on `UploadError` explicitly.

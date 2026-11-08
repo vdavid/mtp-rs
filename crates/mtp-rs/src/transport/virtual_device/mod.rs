@@ -54,6 +54,7 @@ use async_trait::async_trait;
 use config::VirtualDeviceConfig;
 use state::{PendingCommand, VirtualDeviceState};
 pub use state::{RescanSummary, DROPPED_PATHS_CAP};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -77,6 +78,9 @@ pub struct VirtualTransport {
     serial: String,
     /// Filesystem watcher. Stops watching when dropped.
     _watcher: Option<notify::RecommendedWatcher>,
+    /// Set when `GetDeviceInfo` shows Android's `MtpServer`, as the virtual device's does. See
+    /// [`Transport::set_drain_on_cancel`].
+    drain_on_cancel: AtomicBool,
 }
 
 impl VirtualTransport {
@@ -105,6 +109,7 @@ impl VirtualTransport {
             event_poll_interval,
             serial,
             _watcher: watcher,
+            drain_on_cancel: AtomicBool::new(false),
         }
     }
 }
@@ -122,6 +127,19 @@ const CONTAINER_TYPE_DATA: u16 = 2;
 #[async_trait]
 impl Transport for VirtualTransport {
     async fn send_bulk(&self, data: &[u8]) -> Result<(), crate::PtpError> {
+        let mut state = self.state.lock().unwrap();
+
+        // While a data phase is open, the device reads the bulk OUT pipe as data, so anything
+        // that isn't a data container (a zero-length packet, or the next command) ends it short.
+        let is_data = data.len() >= 12 && unpack_u16(&data[4..6])? == CONTAINER_TYPE_DATA;
+        if state.pending_command.is_some() && !is_data {
+            handlers::end_data_phase_short(&mut state);
+            return Ok(());
+        }
+        if data.is_empty() {
+            // A zero-length packet with no data phase open: nothing to read.
+            return Ok(());
+        }
         if data.len() < 12 {
             return Err(crate::PtpError::invalid_data("container too small"));
         }
@@ -130,8 +148,6 @@ impl Transport for VirtualTransport {
         let container_type = unpack_u16(&data[4..6])?;
         let code = unpack_u16(&data[6..8])?;
         let tx_id = unpack_u32(&data[8..12])?;
-
-        let mut state = self.state.lock().unwrap();
 
         match container_type {
             CONTAINER_TYPE_COMMAND => {
@@ -229,13 +245,29 @@ impl Transport for VirtualTransport {
     ) -> Result<(), crate::PtpError> {
         // Virtual device has no USB pipe to drain, so just clear any pending state.
         let mut state = self.state.lock().unwrap();
-        state.pending_command = None;
+        // A CLASS_CANCEL ends an open data phase. On Android no CLASS_CANCEL goes out (#54), only
+        // a drain of bulk IN, so the device keeps reading bulk OUT as data.
+        if !self.drain_on_cancel.load(Ordering::SeqCst) {
+            state.pending_command = None;
+        }
         state.response_queue.clear();
         // Model the Samsung cancel wedge (#18): when armed via
         // `force_cancel_wedge`, report `DeviceReset` (one-shot), as the real USB
         // transport does after detecting the wedge and resetting the device.
         if std::mem::take(&mut state.pending_cancel_wedge) {
             return Err(crate::PtpError::DeviceReset);
+        }
+        Ok(())
+    }
+
+    fn set_drain_on_cancel(&self, enabled: bool) {
+        self.drain_on_cancel.store(enabled, Ordering::SeqCst);
+    }
+
+    async fn end_send_phase(&self) -> Result<(), crate::PtpError> {
+        // Same rule as the USB transport: a zero-length packet on Android, nothing elsewhere.
+        if self.drain_on_cancel.load(Ordering::SeqCst) {
+            self.send_bulk(&[]).await?;
         }
         Ok(())
     }
@@ -1644,7 +1676,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upload_surfaces_partial_handle_on_midstream_error() {
+    async fn upload_source_error_midway_leaves_nothing_on_android() {
         use crate::mtp::UploadError;
 
         let dir = tempfile::tempdir().unwrap();
@@ -1665,35 +1697,57 @@ mod tests {
             .await
             .expect_err("upload should fail when the source stream errors mid-stream");
 
-        // The created handle must be surfaced so the caller can clean up or resume.
         let UploadError { source, partial } = err;
         assert!(
             matches!(source, crate::mtp::Error::Io { .. }),
             "expected the underlying I/O error, got {source:?}"
         );
-        let handle = partial.expect("partial handle must be Some after SendObjectInfo succeeded");
+        // Like AOSP, the device drops the object when the data phase ends short (#62), so
+        // there's no partial for the caller to clean up, and the session answers right away.
+        assert!(partial.is_none(), "the device already removed it");
+        assert_upload_left_nothing(&storages[0], download.handle, "partial.bin", dir.path()).await;
+    }
 
-        // The library must NOT have auto-deleted the object: it's a real handle on
-        // the device, so resuming the data phase against it stays possible.
-        let info = storages[0]
-            .get_object_info(handle)
+    /// After an upload that stopped partway: the next operation answers (on Android it used to
+    /// time out, #62), and neither the object nor its file is left behind.
+    async fn assert_upload_left_nothing(
+        storage: &crate::mtp::Storage,
+        folder: crate::mtp::ObjectHandle,
+        name: &str,
+        root: &std::path::Path,
+    ) {
+        let listed = storage
+            .list_objects(Some(folder))
             .await
-            .expect("the partially-written object should still exist at the surfaced handle");
-        assert_eq!(info.filename, "partial.bin");
-
-        // And the caller CAN clean it up with the surfaced handle.
-        storages[0]
-            .delete(handle)
-            .await
-            .expect("the surfaced handle should be deletable");
-        assert!(
-            storages[0].get_object_info(handle).await.is_err(),
-            "object should be gone after delete"
-        );
+            .expect("the session must answer right after a stopped upload");
+        assert!(listed.iter().all(|o| o.filename != name), "{listed:?}");
+        assert!(!root.join("Download").join(name).exists());
     }
 
     #[tokio::test]
-    async fn upload_surfaces_partial_handle_on_cancel() {
+    async fn upload_dropped_midway_leaves_the_session_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("Download")).unwrap();
+        let device = MtpDevice::builder()
+            .open_virtual(test_config(dir.path()))
+            .await
+            .unwrap();
+        let storages = device.storages().await.unwrap();
+        let items = storages[0].list_objects(None).await.unwrap();
+        let download = items.iter().find(|i| i.filename == "Download").unwrap();
+
+        // A source that never finishes, dropped while the upload waits on it.
+        let source = futures::StreamExt::chain(bytes_stream(b"abc"), futures::stream::pending());
+        let info = crate::mtp::NewObjectInfo::file("dropped.bin", 100);
+        let mut upload = Box::pin(storages[0].upload(Some(download.handle), info, source));
+        assert!(futures::poll!(upload.as_mut()).is_pending());
+        drop(upload);
+
+        assert_upload_left_nothing(&storages[0], download.handle, "dropped.bin", dir.path()).await;
+    }
+
+    #[tokio::test]
+    async fn upload_cancelled_midway_leaves_nothing_on_android() {
         use crate::mtp::UploadError;
         use std::ops::ControlFlow;
 
@@ -1724,10 +1778,9 @@ mod tests {
             matches!(source, crate::mtp::Error::Cancelled),
             "cancellation must map to Error::Cancelled, got {source:?}"
         );
-        assert!(
-            partial.is_some(),
-            "partial handle must be surfaced on cancellation too"
-        );
+        assert!(partial.is_none(), "the device already removed it");
+        assert_upload_left_nothing(&storages[0], download.handle, "cancelled.bin", dir.path())
+            .await;
     }
 
     #[tokio::test]

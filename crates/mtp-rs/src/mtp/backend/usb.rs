@@ -978,21 +978,36 @@ impl MtpBackend for UsbBackend {
         // Phase 2: SendObject. The object already exists on the device, so any failure (genuine
         // error or cancellation) surfaces the handle as `partial` for the caller to delete or
         // resume. We do NOT delete it here.
-        self.session
+        let Err(e) = self
+            .session
             .send_object_stream(total_size, progress_stream)
             .await
-            .map_err(|e| match &e {
-                PtpError::Io(io_err) if io_err.kind() == std::io::ErrorKind::Interrupted => {
-                    Error::Cancelled
-                }
-                _ => Error::from(e),
-            })
-            .map_err(|source| UploadError {
-                source,
-                partial: Some(handle.into()),
-            })?;
-
-        Ok(handle.into())
+        else {
+            return Ok(handle.into());
+        };
+        // When the source stopped (a cancel or a read error), the session has already ended the
+        // data phase and the device answered. Android drops the object at that point (#62), so
+        // a handle we'd surface would only answer "not found". Ask once; any other answer keeps
+        // the partial, since a device that kept it needs the caller to clean up.
+        let source_stopped = matches!(e, PtpError::Io(_));
+        let source = match &e {
+            PtpError::Io(io_err) if io_err.kind() == std::io::ErrorKind::Interrupted => {
+                Error::Cancelled
+            }
+            _ => Error::from(e),
+        };
+        let gone = source_stopped
+            && matches!(
+                self.session.get_object_info(handle).await,
+                Err(PtpError::Protocol {
+                    code: ResponseCode::InvalidObjectHandle,
+                    ..
+                })
+            );
+        Err(UploadError {
+            source,
+            partial: (!gone).then(|| handle.into()),
+        })
     }
 
     async fn create_folder(

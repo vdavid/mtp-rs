@@ -752,9 +752,44 @@ device, the leave-vs-delete behavior is device-dependent, and PTP's design
 intends a failed `SendObject` to be retriable against the same handle. We push
 the cleanup-or-resume policy to the consumer. `From<UploadError> for Error` keeps
 `?` ergonomic; callers drop `partial` unless they match on `UploadError`. The
-virtual device mirrors real devices here: it creates the object (empty
-placeholder) at `SendObjectInfo` time, so a partial upload leaves a real,
-queryable, deletable handle.
+virtual device creates the object (empty placeholder) at `SendObjectInfo` time,
+like real devices, so the handle is real before the data phase.
+
+**Android removes the object itself when an upload stops partway, so `partial` is
+`None` there.** After a source failure (a progress `Break` arrives as one),
+`UsbBackend::upload` asks `GetObjectInfo` once: `InvalidObjectHandle` means the
+device dropped it, any other answer keeps `Some`. See the next section for why
+the device drops it.
+
+### Ending an upload that stopped partway (#62)
+
+A `SendObject` that stops mid-data (a `ControlFlow::Break`, a source error, or a
+dropped future) leaves Android's `MtpServer` inside `MtpFfsHandle::receiveFile`,
+reading bulk OUT as file data for as long as it takes. Before the fix, the next
+command went in as file data: a 12-byte short packet, so the server logged
+"unexpected short packet", unlinked the file, and answered `GeneralError` for the
+*`SendObject`*. The host skipped that as a stale reply and waited for an answer
+to its own command that never came: every first operation after a stopped
+upload timed out (30 s by default), and the one after it worked. Deterministic,
+not a race: 5 of 5 runs (Pixel 9 Pro XL, macOS/nusb, 2026-11-08).
+
+The fix: `TransactionScope::set_sending` marks the data-out phase open, and
+recovery calls `Transport::end_send_phase` before its drain. On Android
+(`set_drain_on_cancel`) that sends a zero-length packet, which the server reads
+as the short packet above, so it answers the `SendObject` and the drain takes
+the answer. The data sent before always ends on a whole `max_packet_size`, so
+the ZLP is the first short packet. A source failure (`Io`) runs this at once,
+inside `execute_with_send_stream`, so the upload returns with the session clean;
+a dropped future and transport errors leave it to the next operation. Off
+Android `end_send_phase` does nothing: `cancel_transfer`'s CLASS_CANCEL is PTP's
+way to end a data phase, and no camera has been tried, so don't widen the ZLP
+without one. **Hardware-verified on a Pixel 9 Pro XL** (macOS/nusb, 2026-11-08,
+`test_upload_stopped_midway_then_session_works`, 268 MB file, stopped at 10% and
+50%): 20 of 20 `Break` runs returned 0.05–0.44 s after the break and the next
+listing took ~0.1 s; 20 of 20 dropped futures, next listing 0.14–0.29 s; four
+500 MB runs the same. No object left behind in any run, no wedge, no replug. The
+virtual device models the same AOSP behavior (`end_data_phase_short`), and
+advertises `android.com` so the host treats it as Android.
 
 ## Receiving data containers (multi-transfer convention)
 

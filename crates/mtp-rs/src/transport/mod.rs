@@ -87,6 +87,22 @@ pub trait Transport: Send + Sync {
     /// The default implementation ignores it, for transports with no USB pipe.
     fn set_drain_on_cancel(&self, _enabled: bool) {}
 
+    /// End a bulk OUT data phase the host stopped partway (an upload whose source failed or
+    /// whose future was dropped), so the device stops reading the bulk OUT pipe as data.
+    ///
+    /// On Android (see [`set_drain_on_cancel`](Self::set_drain_on_cancel)) this sends a
+    /// zero-length packet. `MtpServer` reads it as a short packet, gives up on the object
+    /// (deletes it), and answers the transaction with `GeneralError`;
+    /// [`cancel_transfer`](Self::cancel_transfer) then drains that answer. Without it, the next
+    /// command went in as file data, so its operation never got an answer and timed out
+    /// (Pixel 9 Pro XL, #62). Elsewhere it does nothing: the CLASS_CANCEL that
+    /// `cancel_transfer` sends is how PTP ends a data phase.
+    ///
+    /// The default implementation is a no-op for transports with no USB pipe.
+    async fn end_send_phase(&self) -> Result<(), crate::PtpError> {
+        Ok(())
+    }
+
     /// Read and discard whatever the device has queued on the bulk IN pipe, until it stays
     /// quiet for `idle_timeout` or `max_duration` passes. Returns the bytes discarded.
     ///

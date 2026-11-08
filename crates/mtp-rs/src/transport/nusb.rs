@@ -795,6 +795,18 @@ impl Transport for NusbTransport {
         Ok(())
     }
 
+    /// A zero-length packet on Android ends the data phase short: `MtpFfsHandle::receiveFile`
+    /// logs "unexpected short packet", and `MtpServer::doSendObject` unlinks the file and answers
+    /// `GeneralError` (Pixel 9 Pro XL, #62). Data sent so far always ends on a whole
+    /// `max_packet_size` (the transfers are multiples of it), so nothing short went out before.
+    async fn end_send_phase(&self) -> Result<(), crate::PtpError> {
+        if self.drain_on_cancel.load(Ordering::Relaxed) {
+            diag_debug!("end_send_phase: zero-length packet to end the stopped data phase");
+            self.send_bulk(&[]).await?;
+        }
+        Ok(())
+    }
+
     async fn receive_bulk(&self, max_size: usize) -> Result<Vec<u8>, crate::PtpError> {
         let mut ep = self.bulk_in.lock().await;
 

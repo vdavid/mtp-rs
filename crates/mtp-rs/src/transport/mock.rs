@@ -249,6 +249,14 @@ impl Transport for MockTransport {
     fn set_drain_on_cancel(&self, enabled: bool) {
         self.drain_on_cancel.store(enabled, Ordering::SeqCst);
     }
+
+    /// Mirrors the USB transport: a zero-length packet (recorded as an empty send) on Android.
+    async fn end_send_phase(&self) -> Result<(), crate::PtpError> {
+        if self.drain_on_cancel() {
+            self.actual_sends.lock().push(Vec::new());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

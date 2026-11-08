@@ -710,6 +710,32 @@ fn handle_send_object(state: &mut VirtualDeviceState, tx_id: u32, data_payload: 
         .push_back(build_response(OK, tx_id, &[]));
 }
 
+/// The host ended an open data phase early: a zero-length packet, or the next command, arrived
+/// where the device was reading data.
+///
+/// Modeled on AOSP: `MtpFfsHandle::receiveFile` reads the short packet as an error ("Mtp got
+/// unexpected short packet"), and `MtpServer::doSendObject` unlinks the file, drops the object
+/// (`endSendObject(handle, false)`), and answers `GeneralError` for the `SendObject`. Whatever
+/// the short packet carried is gone: a command that ended the phase gets no answer of its own.
+pub(super) fn end_data_phase_short(state: &mut VirtualDeviceState) {
+    let Some(pending) = state.pending_command.take() else {
+        return;
+    };
+    if OperationCode::from(pending.code) == OperationCode::SendObject {
+        if let Some(send) = state.pending_send.take() {
+            if !send.is_folder {
+                if let Some(path) = state.resolve_path(send.assigned_handle) {
+                    let _ = std::fs::remove_file(path);
+                }
+                state.objects.remove(&send.assigned_handle.0);
+            }
+        }
+    }
+    state
+        .response_queue
+        .push_back(build_response(GENERAL_ERROR, pending.tx_id, &[]));
+}
+
 fn handle_delete_object(state: &mut VirtualDeviceState, tx_id: u32, params: &[u32]) {
     let handle = ObjectHandle(params.first().copied().unwrap_or(0));
 

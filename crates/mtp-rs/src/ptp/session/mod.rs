@@ -90,21 +90,33 @@ pub(crate) struct RecoveryState {
     /// The transaction ID that was in flight when the pipe was poisoned,
     /// passed to `cancel_transfer` so the drain targets the right transaction.
     poisoned_tx_id: AtomicU32,
+    /// Whether that transaction stopped inside its data-out phase, so the device may still be
+    /// reading bulk OUT as data (see [`Transport::end_send_phase`]).
+    send_open: AtomicBool,
 }
 
 impl RecoveryState {
     /// Flag the pipe as needing a drain before the next operation, recording
     /// the transaction ID that was in flight.
     fn flag(&self, tx_id: u32) {
+        self.flag_with(tx_id, false);
+    }
+
+    fn flag_with(&self, tx_id: u32, send_open: bool) {
         self.poisoned_tx_id.store(tx_id, Ordering::SeqCst);
+        self.send_open.store(send_open, Ordering::SeqCst);
         self.needed.store(true, Ordering::SeqCst);
     }
 
     /// If recovery is pending, clear the flag and return the poisoned
-    /// transaction ID. Callers hold the operation lock, so this is race-free.
-    fn take(&self) -> Option<u32> {
+    /// transaction ID and whether its data-out phase was left open. Callers hold the operation
+    /// lock, so this is race-free.
+    fn take(&self) -> Option<(u32, bool)> {
         if self.needed.swap(false, Ordering::SeqCst) {
-            Some(self.poisoned_tx_id.load(Ordering::SeqCst))
+            Some((
+                self.poisoned_tx_id.load(Ordering::SeqCst),
+                self.send_open.load(Ordering::SeqCst),
+            ))
         } else {
             None
         }
@@ -124,6 +136,7 @@ struct TransactionScope<'a> {
     recovery: &'a RecoveryState,
     tx_id: u32,
     armed: bool,
+    sending: bool,
 }
 
 impl<'a> TransactionScope<'a> {
@@ -132,7 +145,14 @@ impl<'a> TransactionScope<'a> {
             recovery,
             tx_id,
             armed: true,
+            sending: false,
         }
+    }
+
+    /// Mark the data-out phase as open (the command that expects it went out) or closed (all
+    /// of it went out). An exit while it's open makes recovery end it first.
+    fn set_sending(&mut self, sending: bool) {
+        self.sending = sending;
     }
 
     /// Mark the transaction as cleanly completed (response fully drained and
@@ -145,7 +165,7 @@ impl<'a> TransactionScope<'a> {
 impl Drop for TransactionScope<'_> {
     fn drop(&mut self) {
         if self.armed {
-            self.recovery.flag(self.tx_id);
+            self.recovery.flag_with(self.tx_id, self.sending);
         }
     }
 }
@@ -427,13 +447,23 @@ impl PtpSession {
     /// must hold the operation lock (so the flag check is race-free). A cheap
     /// no-op when nothing is pending.
     async fn recover_if_needed(&self) -> Result<(), Error> {
-        let Some(tx_id) = self.recovery.take() else {
+        let Some((tx_id, send_open)) = self.recovery.take() else {
             return Ok(());
         };
         diag_debug!(
-            "recover_if_needed: draining pipe for abandoned txn={} before next op",
-            tx_id
+            "recover_if_needed: draining pipe for abandoned txn={} (data-out open: {}) before next op",
+            tx_id,
+            send_open
         );
+        // An upload stopped mid-data leaves the device reading bulk OUT as data: our next
+        // command would go in as file bytes and never get an answer (#62). End that phase
+        // first, so the device answers the abandoned transaction and the drain below takes it.
+        if send_open {
+            if let Err(e) = self.transport.end_send_phase().await {
+                self.recovery.flag_with(tx_id, true);
+                return Err(e);
+            }
+        }
         // Drain via the validated SIC cancel path (CLASS_CANCEL, then read the
         // bulk IN and interrupt pipes until idle). After this the session is
         // clean and the transaction-ID stream realigns on the next command.
@@ -636,6 +666,7 @@ impl PtpSession {
             params: params.to_vec(),
         };
         self.transport.send_bulk(&cmd.to_bytes()).await?;
+        scope.set_sending(true);
 
         // Send data container
         if self.split_header_data.load(Ordering::Relaxed) {
@@ -659,6 +690,7 @@ impl PtpSession {
             };
             self.transport.send_bulk(&data_container.to_bytes()).await?;
         }
+        scope.set_sending(false);
 
         let response = self.receive_response(tx_id, operation).await?;
 
@@ -845,6 +877,110 @@ mod tests {
             vec![1],
             "recovery must drain the pipe for the poisoned transaction (tx=1)",
         );
+    }
+
+    /// An upload source that yields one chunk, then fails (a progress callback's
+    /// `ControlFlow::Break` arrives this way) or never yields again (`stall`).
+    fn upload_stopped_after_one_chunk(
+        stall: bool,
+    ) -> impl futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin + Send {
+        let first = futures::stream::iter([Ok(bytes::Bytes::from_static(&[0xAA; 8]))]);
+        let rest: std::pin::Pin<Box<dyn futures::Stream<Item = _> + Send>> = if stall {
+            Box::pin(futures::stream::pending())
+        } else {
+            Box::pin(futures::stream::iter([Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled",
+            ))]))
+        };
+        futures::StreamExt::chain(first, rest)
+    }
+
+    /// #62: an upload stopped mid-`SendObject` left Android reading bulk OUT as file data, so
+    /// the next command went in as data and its operation timed out. The session now ends the
+    /// data phase with a zero-length packet and drains the answer before returning.
+    #[tokio::test]
+    async fn upload_stopped_by_its_source_ends_the_data_phase_at_once() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+        let session = PtpSession::open(transport.clone(), 1).await.unwrap();
+        transport.set_drain_on_cancel(true); // Android
+
+        let result = session
+            .execute_with_send_stream(
+                OperationCode::SendObject,
+                &[],
+                1024,
+                upload_stopped_after_one_chunk(false),
+            )
+            .await;
+        assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
+
+        let sends = mock.get_sends();
+        assert_eq!(
+            sends.len(),
+            3,
+            "OpenSession, SendObject, then the ZLP: {sends:?}"
+        );
+        assert!(sends[2].is_empty(), "the data phase must end with a ZLP");
+        assert_eq!(
+            mock.get_cancel_calls(),
+            vec![1],
+            "the answer must be drained"
+        );
+        assert!(
+            !session.needs_recovery(),
+            "nothing may be left for the next op"
+        );
+    }
+
+    /// The same for an upload future dropped while it waits on its source: the next operation
+    /// ends the data phase before it sends its own command.
+    #[tokio::test]
+    async fn upload_dropped_mid_data_phase_is_ended_before_the_next_command() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+        let session = PtpSession::open(transport.clone(), 1).await.unwrap();
+        transport.set_drain_on_cancel(true); // Android
+
+        let mut upload = Box::pin(session.execute_with_send_stream(
+            OperationCode::SendObject,
+            &[],
+            1024,
+            upload_stopped_after_one_chunk(true),
+        ));
+        assert!(futures::poll!(upload.as_mut()).is_pending());
+        drop(upload);
+
+        // The mock's drain discards queued replies, so the op itself finds an empty pipe; what
+        // matters is what went out before its command.
+        let _ = session.execute(OperationCode::GetStorageIds, &[]).await;
+
+        let sends = mock.get_sends();
+        assert_eq!(sends.len(), 4, "{sends:?}");
+        assert!(sends[2].is_empty(), "a ZLP must precede the next command");
+        assert_eq!(crate::ptp::unpack_u16(&sends[3][6..8]).unwrap(), 0x1004); // GetStorageIDs
+        assert_eq!(mock.get_cancel_calls(), vec![1]);
+    }
+
+    /// Off Android the CLASS_CANCEL in `cancel_transfer` ends the data phase, so no ZLP goes out.
+    #[tokio::test]
+    async fn upload_stopped_off_android_sends_no_zlp() {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+        let session = PtpSession::open(transport, 1).await.unwrap();
+
+        let result = session
+            .execute_with_send_stream(
+                OperationCode::SendObject,
+                &[],
+                1024,
+                upload_stopped_after_one_chunk(false),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(mock.get_sends().iter().all(|s| !s.is_empty()));
+        assert_eq!(mock.get_cancel_calls(), vec![1]);
     }
 
     #[test]

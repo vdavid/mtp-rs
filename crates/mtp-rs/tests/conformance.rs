@@ -5,8 +5,8 @@
 //! The assertion bodies live in [`common`] as reusable `run_*` harness functions, so the WPD
 //! suite (`conformance_wpd.rs`) can point the exact same assertions at a real device. Each test
 //! here is a thin wrapper that opens the virtual device and calls the corresponding harness fn with
-//! `parent = None` (the virtual storage root is writable) and `expects_partial = true` (the
-//! two-phase USB backend surfaces a partial handle on a cancelled upload).
+//! `parent = None` (the virtual storage root is writable) and `expects_partial = false` (the
+//! virtual device models Android, which drops the object when an upload stops partway, #62).
 //!
 //! Run with: `cargo test -p mtp-rs --features virtual-device --test conformance`.
 
@@ -100,11 +100,11 @@ async fn upload_with_progress_reports_and_completes() {
 }
 
 #[tokio::test]
-async fn upload_cancel_surfaces_partial_handle() {
+async fn upload_cancel_leaves_no_partial_on_android() {
     let (device, _dir) = open_device("conf-upload-cancel").await;
     let storage = &device.storages().await.unwrap()[0];
-    // The two-phase USB backend surfaces a partial handle on a cancelled upload.
-    common::run_upload_cancel(storage, None, true).await;
+    // Android drops the half-written object itself, so there's no partial handle (#62).
+    common::run_upload_cancel(storage, None, false).await;
 }
 
 #[tokio::test]

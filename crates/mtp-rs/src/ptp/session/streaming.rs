@@ -194,6 +194,7 @@ impl PtpSession {
             params: params.to_vec(),
         };
         self.transport.send_bulk(&cmd.to_bytes()).await?;
+        scope.set_sending(true);
 
         let container_length = HEADER_SIZE as u64 + total_size;
 
@@ -208,27 +209,46 @@ impl PtpSession {
         header.extend_from_slice(&pack_u16(operation.into()));
         header.extend_from_slice(&pack_u32(tx_id));
 
-        if self.split_header_data.load(Ordering::Relaxed) {
+        let sent = if self.split_header_data.load(Ordering::Relaxed) {
             // Split mode: send the header as its own bulk transfer, then send
             // each streamed chunk as its own bulk transfer. Required by some
             // devices that don't handle a combined header+data bulk transfer.
-            self.transport.send_bulk(&header).await?;
-            while let Some(chunk_result) = data.next().await {
-                let chunk = chunk_result.map_err(Error::Io)?;
-                if !chunk.is_empty() {
-                    self.transport.send_bulk(&chunk).await?;
+            async {
+                self.transport.send_bulk(&header).await?;
+                while let Some(chunk_result) = data.next().await {
+                    let chunk = chunk_result.map_err(Error::Io)?;
+                    if !chunk.is_empty() {
+                        self.transport.send_bulk(&chunk).await?;
+                    }
                 }
+                Ok(())
             }
+            .await
         } else {
             // Combined mode: stream header + data as one continuous USB
             // transfer. The transport handles buffering and ZLP termination,
             // so we never buffer the entire file in RAM.
             let header_stream = futures::stream::once(async { Ok(Bytes::from(header)) });
             let combined = header_stream.chain(data);
-            self.transport
-                .send_bulk_streaming(Box::pin(combined))
-                .await?;
+            self.transport.send_bulk_streaming(Box::pin(combined)).await
+        };
+        if let Err(e) = sent {
+            // The source failed (a progress callback's Break arrives as an `Io` error), so the
+            // device is healthy and still reading data. End the phase now rather than at the
+            // next operation: the device then drops the object and answers, and nothing stays
+            // pending. Transport errors keep the lazy path, since the device may not answer.
+            if matches!(e, Error::Io(_)) {
+                drop(scope);
+                if let Err(recovery) = self.recover_if_needed().await {
+                    diag_debug!(
+                        "execute_with_send_stream: ending the stopped data phase failed: {:?}",
+                        recovery
+                    );
+                }
+            }
+            return Err(e);
         }
+        scope.set_sending(false);
 
         let response = self.receive_response(tx_id, operation).await?;
 
