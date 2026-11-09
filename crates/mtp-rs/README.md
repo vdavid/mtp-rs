@@ -199,7 +199,7 @@ honestly, any) library.
   manually.
   If your app isn't in the App Store, then you're in a better position and may be able to use the workarounds, BUT
   it's a bit murky territory with Apple.
-- See [Cmdr](https://github.com/vdavid/cmdr) and [Commander One](https://mac.eltima.com/file-manager.html) for UX
+- See [Cmdr](https://github.com/getcmdr/cmdr) and [Commander One](https://mac.eltima.com/file-manager.html) for UX
   inspiration on handling this gracefully.
 
 ### Windows
@@ -607,7 +607,7 @@ WPD COM stack winmtp uses on Windows.
 
 - [Android Bridge](https://android-bridge.com/): a macOS app for moving files to and from an Android phone, with
   drag-and-drop, SHA-256 copy verification, and resumable moves.
-- [Cmdr](https://github.com/vdavid/cmdr): an AI-native file manager that browses MTP devices alongside local folders.
+- [Cmdr](https://github.com/getcmdr/cmdr): an AI-native file manager that browses MTP devices alongside local folders.
 - [EyeCanSee](https://github.com/IoSonoPiero/eyecansee): an image and video viewer and manager for Linux and
   Windows that browses, copies, and converts photos and videos on Android phones, disks, and servers.
 - [mtp-mount](https://github.com/vdavid/mtp-mount): mounts a phone or camera as a normal folder over FUSE, writes
