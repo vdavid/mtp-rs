@@ -590,6 +590,16 @@ copy lookup matched on the name), and his app's rename of "the copy" renamed the
 - **Hardware-verified on a Pixel 9 Pro XL** (2026-11-04): the raw `CopyObject` answered OK + 0xFFFF in both cases, and
   the in-place overwrite of a longer file is real. The fixed library refuses before sending, and the CLI's staged `cp`
   worked there too. David replied on the thread and filed https://issuetracker.google.com/issues/581487246.
+- **Upstream patches** (2026-11-10, after Google asked for one; reviewer Neill Kapron, `media/mtp` owner): topic
+  `mtp-copy-object-handle`, which has to land as a pair because the interface and its implementations change together:
+  https://android-review.googlesource.com/c/platform/frameworks/av/+/4430057 (`IMtpDatabase` returns `MtpObjectHandle`,
+  plus the fuzzer mock) and https://android-review.googlesource.com/c/platform/frameworks/base/+/4430077 (JNI, Java's
+  unknown-object path returns -1 rather than a response code, plus a `MtpStorageManagerTest` case). Separate:
+  https://android-review.googlesource.com/c/platform/frameworks/av/+/4430097 (`doCopyObject` passed its response code
+  as `endCopyObject`'s bool, so a failed copy always reported success). Not built or run on a device, presubmit only.
+  Older bugs on the same path, left for later changes: the response carries a handle even on failure, a Java exception
+  becomes handle 0 and the copy runs, and `getChild` matches names case-sensitively, so `a.jpg` onto `A.JPG` still
+  overwrites. Even after this lands, devices on older Android keep the bug, so keep the mtp-rs guards.
 
 ## Device quirks reference
 
