@@ -1767,11 +1767,7 @@ mod tests {
             utc_offset: offset(60),
             ..test_config(dir.path())
         };
-        let device = MtpDevice::builder()
-            .use_windowed_uploads(false)
-            .open_virtual(config)
-            .await
-            .unwrap();
+        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
         let storages = device.storages().await.unwrap();
 
         for (name, sent, want_unix) in cases {
@@ -1937,11 +1933,7 @@ mod tests {
         std::fs::create_dir(dir.path().join("Download")).unwrap();
 
         let config = test_config(dir.path());
-        let device = MtpDevice::builder()
-            .use_windowed_uploads(false)
-            .open_virtual(config)
-            .await
-            .unwrap();
+        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
         let storages = device.storages().await.unwrap();
 
         // Find the Download folder to upload into (avoids root-creation quirks).
@@ -1987,7 +1979,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("Download")).unwrap();
         let device = MtpDevice::builder()
-            .use_windowed_uploads(false)
             .open_virtual(test_config(dir.path()))
             .await
             .unwrap();
@@ -2014,11 +2005,7 @@ mod tests {
         std::fs::create_dir(dir.path().join("Download")).unwrap();
 
         let config = test_config(dir.path());
-        let device = MtpDevice::builder()
-            .use_windowed_uploads(false)
-            .open_virtual(config)
-            .await
-            .unwrap();
+        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
         let storages = device.storages().await.unwrap();
 
         let items = storages[0].list_objects(None).await.unwrap();
@@ -2105,9 +2092,18 @@ mod tests {
         let (_device, storage, folder) = open_camera_with_download_folder(dir.path()).await;
 
         let info = crate::mtp::NewObjectInfo::file("cancelled.bin", 5);
+        // Break on the second chunk: a Break before the first byte went out creates nothing.
+        let source = futures::stream::iter(vec![
+            Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"hel")),
+            Ok(bytes::Bytes::from_static(b"lo")),
+        ]);
         let err = storage
-            .upload_with_progress(Some(folder), info, bytes_stream(b"hello"), |_| {
-                ControlFlow::Break(())
+            .upload_with_progress(Some(folder), info, source, |p| {
+                if p.bytes_transferred > 3 {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
             })
             .await
             .expect_err("cancelled upload should fail");

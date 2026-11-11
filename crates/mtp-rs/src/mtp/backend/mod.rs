@@ -119,7 +119,8 @@ pub(crate) trait DownloadBody: Send {
 /// It tracks how many bytes the device acknowledged and writes only there, so no window can ever
 /// start past the end of what the device holds (Android refuses such a window without reading
 /// its data, which wedges the phone). Dropping it with the edit still open makes the next
-/// operation on the device end the edit at the acknowledged size.
+/// operation on the device end the edit and delete the object, since nobody holds its handle;
+/// after [`keep_on_drop`](Self::keep_on_drop) it only ends the edit.
 #[async_trait]
 pub(crate) trait UploadBody: Send {
     /// The new object's handle.
@@ -128,9 +129,19 @@ pub(crate) trait UploadBody: Send {
     /// Bytes the device acknowledged so far: where the next window starts.
     fn acknowledged(&self) -> u64;
 
-    /// Send the next `len` bytes from `data`, at [`acknowledged`](Self::acknowledged). Holds the
-    /// device only while the window is in flight. On an error the acknowledged size doesn't move.
-    async fn write_window(&mut self, len: u32, data: UploadStream<'_>) -> Result<(), Error>;
+    /// Send the next `len` bytes from `data`, at [`acknowledged`](Self::acknowledged), and hand
+    /// the body back with the result. Owned (`'static`) so the window can stay in flight across
+    /// calls of a [`FileUpload`](crate::mtp::FileUpload); dropping the future drops the body. On
+    /// an error the acknowledged size doesn't move.
+    fn write_window(
+        self: Box<Self>,
+        len: u32,
+        data: UploadStream<'static>,
+    ) -> futures::future::BoxFuture<'static, (Box<dyn UploadBody>, Result<(), Error>)>;
+
+    /// The caller is getting the handle (a stop that returns `partial`), so a later drop with the
+    /// edit still open ends the edit but keeps the object.
+    fn keep_on_drop(&mut self);
 
     /// Commit the object: the upload is complete.
     async fn finish(&mut self) -> Result<(), Error>;
@@ -262,6 +273,13 @@ pub(crate) trait MtpBackend: Send + Sync {
     /// on a device listing Android's edit operations, unless the consumer turned it off).
     fn can_upload_in_windows(&self) -> bool {
         false
+    }
+
+    /// The pacing `Storage::upload` uses: what the consumer chose with
+    /// [`MtpDeviceBuilder::upload_pacing`](crate::mtp::MtpDeviceBuilder::upload_pacing), else
+    /// held open.
+    fn default_upload_pacing(&self) -> crate::mtp::UploadPacing {
+        crate::mtp::UploadPacing::HeldOpen
     }
 
     /// Create an empty object under `parent` on `storage` and open it for a windowed upload.

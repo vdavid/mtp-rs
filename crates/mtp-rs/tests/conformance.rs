@@ -101,20 +101,22 @@ async fn upload_with_progress_reports_and_completes() {
 }
 
 #[tokio::test]
-async fn upload_cancel_surfaces_partial_on_android_in_windows() {
+async fn upload_cancel_leaves_no_partial_on_android() {
     let (device, _dir) = open_device("conf-upload-cancel").await;
+    let storage = &device.storages().await.unwrap()[0];
+    // Held open (the default), Android drops the half-written object itself, so there's no
+    // partial handle (#62).
+    common::run_upload_cancel(storage, None, false).await;
+}
+
+#[tokio::test]
+async fn upload_cancel_surfaces_partial_on_android_in_windows() {
+    let windows = mtp_rs::UploadPacing::MaxWindowTime(mtp_rs::DEFAULT_UPLOAD_WINDOW_TIME);
+    let (device, _dir) = common::open_device_with("conf-upload-cancel-win", true, windows).await;
     let storage = &device.storages().await.unwrap()[0];
     // A windowed upload keeps the windows the phone acknowledged (here none), so the caller
     // gets the object to delete.
     common::run_upload_cancel(storage, None, true).await;
-}
-
-#[tokio::test]
-async fn upload_cancel_leaves_no_partial_on_android_held_open() {
-    let (device, _dir) = common::open_device_with("conf-upload-cancel-held", true, false).await;
-    let storage = &device.storages().await.unwrap()[0];
-    // Android drops the half-written object itself, so there's no partial handle (#62).
-    common::run_upload_cancel(storage, None, false).await;
 }
 
 #[tokio::test]

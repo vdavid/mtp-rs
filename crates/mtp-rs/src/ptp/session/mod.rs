@@ -128,6 +128,16 @@ impl RecoveryState {
     }
 }
 
+/// An edit to end before the next operation (see [`PtpSession::defer_edit_close`]).
+#[derive(Debug, Clone, Copy)]
+struct DeferredEditClose {
+    handle: ObjectHandle,
+    /// Bytes to truncate the object to first.
+    keep: u64,
+    /// Delete the object afterwards: nobody holds its handle.
+    delete: bool,
+}
+
 /// RAII guard armed around an operation's command→response cycle. While armed,
 /// dropping it (the operation's future was cancelled, or it returned early via
 /// `?` before the response was fully drained and verified) flags the session
@@ -218,7 +228,7 @@ pub struct PtpSession {
     recovery: Arc<RecoveryState>,
     /// Edits (handle, bytes to keep) to end before the next operation; see
     /// [`defer_edit_close`](Self::defer_edit_close).
-    deferred_edit_closes: std::sync::Mutex<Vec<(ObjectHandle, u64)>>,
+    deferred_edit_closes: std::sync::Mutex<Vec<DeferredEditClose>>,
     /// Whether `deferred_edit_closes` has anything, so the check costs one load per operation.
     edits_deferred: AtomicBool,
 }
@@ -459,15 +469,20 @@ impl PtpSession {
     }
 
     /// Keep an edit open on the device from being forgotten: the next operation on this session
-    /// truncates `handle` to `keep` bytes and ends the edit, before it runs. For a windowed upload
-    /// whose future was dropped (`Drop` can't send anything): without this the edit stays open on
-    /// an Android phone until its MTP server restarts, holding the file open. Refusals are
-    /// harmless (both operations have no data phase), so an edit that already ended costs two
-    /// `GeneralError` answers.
-    pub(crate) fn defer_edit_close(&self, handle: ObjectHandle, keep: u64) {
+    /// truncates `handle` to `keep` bytes and ends the edit, then deletes the object if `delete`,
+    /// before it runs. For a windowed upload that was dropped (`Drop` can't send anything):
+    /// without this the edit stays open on an Android phone until its MTP server restarts,
+    /// holding the file open, and a file nobody holds a handle to stays under its real name.
+    /// Refusals are harmless (none of the three has a data phase), so an edit that already ended
+    /// costs a few `GeneralError` answers.
+    pub(crate) fn defer_edit_close(&self, handle: ObjectHandle, keep: u64, delete: bool) {
         let mut closes = self.deferred_edit_closes.lock().unwrap();
-        closes.retain(|(h, _)| *h != handle);
-        closes.push((handle, keep));
+        closes.retain(|c| c.handle != handle);
+        closes.push(DeferredEditClose {
+            handle,
+            keep,
+            delete,
+        });
         self.edits_deferred.store(true, Ordering::SeqCst);
     }
 
@@ -475,7 +490,7 @@ impl PtpSession {
     /// (or never opened) by the code that deferred it.
     pub(crate) fn cancel_deferred_edit_close(&self, handle: ObjectHandle) {
         let mut closes = self.deferred_edit_closes.lock().unwrap();
-        closes.retain(|(h, _)| *h != handle);
+        closes.retain(|c| c.handle != handle);
         self.edits_deferred
             .store(!closes.is_empty(), Ordering::SeqCst);
     }
@@ -489,24 +504,33 @@ impl PtpSession {
             self.edits_deferred.store(false, Ordering::SeqCst);
             std::mem::take(&mut *closes)
         };
-        for (i, &(handle, keep)) in closes.iter().enumerate() {
-            diag_debug!(
-                "recover: ending the edit of {:?} a dropped upload left open, at {} bytes",
+        for (i, close) in closes.iter().enumerate() {
+            let DeferredEditClose {
                 handle,
-                keep
+                keep,
+                delete,
+            } = *close;
+            diag_debug!(
+                "recover: ending the edit of {:?} a dropped upload left open, at {} bytes{}",
+                handle,
+                keep,
+                if delete { ", and deleting it" } else { "" }
             );
-            let steps = [
+            let mut steps = vec![
                 (
                     OperationCode::TruncateObject,
                     vec![handle.0, keep as u32, (keep >> 32) as u32],
                 ),
                 (OperationCode::EndEditObject, vec![handle.0]),
             ];
+            if delete {
+                steps.push((OperationCode::DeleteObject, vec![handle.0]));
+            }
             for (op, params) in steps {
                 if let Err(e) = self.transact(op, &params).await {
                     // The session failed under us: keep what's left for the next operation.
-                    for &(h, k) in &closes[i..] {
-                        self.defer_edit_close(h, k);
+                    for c in &closes[i..] {
+                        self.defer_edit_close(c.handle, c.keep, c.delete);
                     }
                     return Err(e);
                 }

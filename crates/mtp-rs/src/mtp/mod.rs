@@ -60,4 +60,4 @@ pub use types::{
     Capabilities, DateTime, DeviceInfo, FilesystemType, ObjectFormat, ObjectHandle, ObjectInfo,
     StorageId, StorageInfo, StorageType, UtcOffset,
 };
-pub use upload::{UploadPacing, DEFAULT_UPLOAD_WINDOW_TIME};
+pub use upload::{FileUpload, UploadPacing, DEFAULT_UPLOAD_WINDOW_TIME};

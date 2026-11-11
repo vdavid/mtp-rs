@@ -1961,8 +1961,9 @@ mod destructive {
     /// (bytes, default 256 MiB) tune it. Any file the test made that's still listed at the end is
     /// deleted.
     ///
-    /// Uploads go out in windows where the device supports it (the default pacing);
-    /// `MTP_UPLOAD_PACING` picks another (see [`upload_pacing_from_env`]). After a windowed stop
+    /// Uploads are held open (the default pacing); `MTP_UPLOAD_PACING=time:2000` sends them in
+    /// windows of about 2 s where the device supports it (see [`upload_pacing_from_env`]). After a
+    /// windowed stop
     /// the partial object must hold a clean prefix of the file (the windows the phone
     /// acknowledged, never the stopped window's tail), which the test reads back and checks.
     ///
@@ -1998,7 +1999,7 @@ mod destructive {
         let Some((device, storage, folder)) = setup_with_writable_folder().await else {
             return;
         };
-        let pacing = upload_pacing_from_env();
+        let pacing = upload_pacing_from_env(mtp_rs::UploadPacing::HeldOpen);
         let windowed = device.capabilities().supports_windowed_upload
             && pacing != mtp_rs::UploadPacing::HeldOpen;
         tlog!("Pacing {pacing:?}, windowed: {windowed}");
@@ -2151,8 +2152,8 @@ mod destructive {
     }
 
     /// `MTP_UPLOAD_PACING`: `held` for one `SendObject`, `fixed:<bytes>` for fixed windows,
-    /// `time:<ms>` for windows of about that long, unset for the default.
-    fn upload_pacing_from_env() -> mtp_rs::UploadPacing {
+    /// `time:<ms>` for windows of about that long, unset for `default`.
+    fn upload_pacing_from_env(default: mtp_rs::UploadPacing) -> mtp_rs::UploadPacing {
         let value = std::env::var("MTP_UPLOAD_PACING").unwrap_or_default();
         let value = value.trim();
         if value == "held" {
@@ -2164,7 +2165,7 @@ mod destructive {
                 ms.parse().expect("time:<ms>"),
             ))
         } else {
-            mtp_rs::UploadPacing::default()
+            default
         }
     }
 
@@ -2226,7 +2227,9 @@ mod destructive {
         }
         let prefix = format!("mtp-rs-paced-upload-{}-", std::process::id());
         let sent_date = mtp_rs::DateTime::new(2020, 1, 2, 3, 4, 5).unwrap();
-        let windowed = upload_pacing_from_env();
+        let windowed = upload_pacing_from_env(mtp_rs::UploadPacing::MaxWindowTime(
+            mtp_rs::DEFAULT_UPLOAD_WINDOW_TIME,
+        ));
         let mut pacings = vec![mtp_rs::UploadPacing::HeldOpen];
         pacings.extend(std::iter::repeat_n(windowed, runs as usize));
         let mut failures = Vec::new();

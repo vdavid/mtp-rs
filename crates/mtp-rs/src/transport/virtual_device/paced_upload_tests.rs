@@ -73,6 +73,22 @@ async fn assert_clean(storage: &Storage, serial: &str) {
     assert_eq!(virtual_open_edits(serial), Some(0), "an edit was left open");
 }
 
+/// Poll `upload` until `done()` holds, asserting it never finishes on the way. Feeding a chunk
+/// through the transfer's channel can return `Pending` once on its way, so a test that wants a
+/// state between or inside windows waits for it instead of counting polls.
+async fn poll_until<F: std::future::Future>(
+    mut upload: std::pin::Pin<&mut F>,
+    mut done: impl FnMut() -> bool,
+) {
+    for _ in 0..1000 {
+        assert!(futures::poll!(upload.as_mut()).is_pending(), "it finished");
+        if done() {
+            return;
+        }
+    }
+    panic!("never got there");
+}
+
 fn continue_(_: crate::mtp::Progress) -> ControlFlow<()> {
     ControlFlow::Continue(())
 }
@@ -105,8 +121,9 @@ async fn a_windowed_upload_arrives_whole_in_the_windows_asked_for() {
     assert_clean(&storage, serial).await;
 }
 
+/// Until the date question is settled, `upload` is held open: windows lose the file's date.
 #[tokio::test]
-async fn upload_goes_out_in_windows_by_default() {
+async fn upload_is_held_open_by_default() {
     let dir = tempfile::tempdir().unwrap();
     let serial = "paced-up-default";
     let (_device, storage) = open(dir.path(), serial).await;
@@ -122,16 +139,46 @@ async fn upload_goes_out_in_windows_by_default() {
         .unwrap();
 
     assert_eq!(std::fs::read(dir.path().join("default.bin")).unwrap(), data);
+    assert_eq!(count(serial, OperationCode::SendPartialObject), 0);
+    assert_eq!(count(serial, OperationCode::SendObject), 1);
+}
+
+#[tokio::test]
+async fn a_device_default_pacing_puts_every_upload_in_windows() {
+    let dir = tempfile::tempdir().unwrap();
+    let serial = "paced-up-device-default";
+    let device = MtpDevice::builder()
+        .upload_pacing(UploadPacing::MaxWindowTime(
+            crate::mtp::DEFAULT_UPLOAD_WINDOW_TIME,
+        ))
+        .open_virtual(config(dir.path(), serial))
+        .await
+        .unwrap();
+    let storage = device.storages().await.unwrap().remove(0);
+    let data = pattern(20 * MIB);
+
+    storage
+        .upload(
+            None,
+            NewObjectInfo::file("windowed.bin", data.len() as u64),
+            chunks(&data),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read(dir.path().join("windowed.bin")).unwrap(),
+        data
+    );
     // 8 MiB first, then a window sized from the speed.
     assert!(count(serial, OperationCode::SendPartialObject) >= 2);
     assert_clean(&storage, serial).await;
 }
 
 #[tokio::test]
-async fn held_open_pacing_and_the_opt_out_send_one_send_object() {
+async fn held_open_pacing_sends_one_send_object() {
     let dir = tempfile::tempdir().unwrap();
     let data = pattern(2 * MIB);
-
     let serial = "paced-up-held";
     let (_device, storage) = open(dir.path(), serial).await;
     storage
@@ -146,26 +193,6 @@ async fn held_open_pacing_and_the_opt_out_send_one_send_object() {
         .unwrap();
     assert_eq!(count(serial, OperationCode::SendPartialObject), 0);
     assert_eq!(std::fs::read(dir.path().join("held.bin")).unwrap(), data);
-
-    let serial = "paced-up-optout";
-    let device = MtpDevice::builder()
-        .use_windowed_uploads(false)
-        .open_virtual(config(dir.path(), serial))
-        .await
-        .unwrap();
-    let storage = device.storages().await.unwrap().remove(0);
-    storage
-        .upload_with_pacing(
-            None,
-            NewObjectInfo::file("optout.bin", data.len() as u64),
-            chunks(&data),
-            UploadPacing::FixedWindow(MIB as u32),
-            continue_,
-        )
-        .await
-        .unwrap();
-    assert_eq!(count(serial, OperationCode::SendPartialObject), 0);
-    assert_eq!(std::fs::read(dir.path().join("optout.bin")).unwrap(), data);
 }
 
 #[tokio::test]
@@ -238,10 +265,12 @@ async fn the_device_is_free_between_windows() {
         UploadPacing::FixedWindow(MIB as u32),
         continue_,
     ));
-    // The virtual device answers at once, so the first poll runs the first window and parks on
-    // the yield before the second.
-    assert!(futures::poll!(upload.as_mut()).is_pending());
-    assert_eq!(count(serial, OperationCode::SendPartialObject), 1);
+    // The virtual device answers at once, so the upload runs the first window and parks on the
+    // yield before the second.
+    poll_until(upload.as_mut(), || {
+        count(serial, OperationCode::SendPartialObject) == 1
+    })
+    .await;
     let listed = storage.list_objects(None).await.unwrap();
     assert!(listed.iter().any(|o| o.filename == "other.txt"));
     assert_eq!(count(serial, OperationCode::SendPartialObject), 1);
@@ -325,10 +354,11 @@ async fn a_cancel_in_the_first_window_keeps_an_empty_object() {
     let data = pattern(2 * MIB);
 
     let err = storage
-        .upload_with_progress(
+        .upload_with_pacing(
             None,
             NewObjectInfo::file("first.bin", data.len() as u64),
             chunks(&data),
+            UploadPacing::FixedWindow(MIB as u32),
             |_| ControlFlow::Break(()),
         )
         .await
@@ -439,9 +469,25 @@ async fn a_source_shorter_or_longer_than_declared_stops_cleanly() {
     .await;
 }
 
-/// `Drop` can't send anything, so a dropped upload's edit is ended by the next operation.
+/// A dropped upload leaves nothing: nobody holds its handle, and a file cut short under its real
+/// name reads as a complete one. `Drop` can't send anything, so the next operation ends the edit
+/// and deletes the object.
+async fn assert_dropped_and_deleted(storage: &Storage, serial: &str, dir: &Path, name: &str) {
+    assert_eq!(
+        virtual_open_edits(serial),
+        Some(1),
+        "the edit is still open"
+    );
+    assert!(dir.join(name).exists(), "nothing ran yet");
+    assert_clean(storage, serial).await;
+    assert!(!dir.join(name).exists(), "the next operation deletes it");
+    let listed = storage.list_objects(None).await.unwrap();
+    assert!(listed.iter().all(|o| o.filename != name), "{listed:?}");
+    assert_eq!(count(serial, OperationCode::DeleteObject), 1);
+}
+
 #[tokio::test]
-async fn a_dropped_upload_between_windows_is_ended_by_the_next_operation() {
+async fn a_dropped_upload_between_windows_is_deleted_by_the_next_operation() {
     let dir = tempfile::tempdir().unwrap();
     let serial = "paced-up-drop-between";
     let (_device, storage) = open(dir.path(), serial).await;
@@ -454,19 +500,17 @@ async fn a_dropped_upload_between_windows_is_ended_by_the_next_operation() {
         UploadPacing::FixedWindow(MIB as u32),
         continue_,
     ));
-    assert!(futures::poll!(upload.as_mut()).is_pending());
+    // Parked on the yield before window 2.
+    poll_until(upload.as_mut(), || {
+        count(serial, OperationCode::SendPartialObject) == 1
+    })
+    .await;
     drop(upload);
-    assert_eq!(virtual_open_edits(serial), Some(1));
-
-    assert_clean(&storage, serial).await;
-    assert_eq!(
-        std::fs::read(dir.path().join("dropped.bin")).unwrap(),
-        &data[..MIB]
-    );
+    assert_dropped_and_deleted(&storage, serial, dir.path(), "dropped.bin").await;
 }
 
 #[tokio::test]
-async fn a_dropped_upload_mid_window_is_ended_by_the_next_operation() {
+async fn a_dropped_upload_mid_window_is_deleted_by_the_next_operation() {
     let dir = tempfile::tempdir().unwrap();
     let serial = "paced-up-drop-mid";
     let (_device, storage) = open(dir.path(), serial).await;
@@ -481,18 +525,18 @@ async fn a_dropped_upload_mid_window_is_ended_by_the_next_operation() {
         UploadPacing::FixedWindow(MIB as u32),
         continue_,
     ));
-    assert!(futures::poll!(upload.as_mut()).is_pending()); // parked before window 2
-                                                           // Inside window 2: its command went out, and the device is reading its data. (A command
-                                                           // with a data phase is counted once its data arrives, so the count still says 1.)
-    assert!(futures::poll!(upload.as_mut()).is_pending());
+    // Run it until window 2 is in flight and waiting for the source. (A command with a data phase
+    // is counted once its data arrives, so the count stays at 1.)
+    poll_until(upload.as_mut(), || {
+        count(serial, OperationCode::SendPartialObject) == 1
+    })
+    .await;
+    for _ in 0..20 {
+        assert!(futures::poll!(upload.as_mut()).is_pending());
+    }
     assert_eq!(count(serial, OperationCode::SendPartialObject), 1);
     drop(upload);
-
-    assert_clean(&storage, serial).await;
-    assert_eq!(
-        std::fs::read(dir.path().join("midway.bin")).unwrap(),
-        &data[..MIB]
-    );
+    assert_dropped_and_deleted(&storage, serial, dir.path(), "midway.bin").await;
 }
 
 #[tokio::test]
@@ -506,10 +550,12 @@ async fn a_file_bigger_than_the_free_space_is_refused_before_anything_exists() {
     let data = pattern(3 * MIB);
 
     let err = storage
-        .upload(
+        .upload_with_pacing(
             None,
             NewObjectInfo::file("big.bin", data.len() as u64),
             chunks(&data),
+            UploadPacing::FixedWindow(MIB as u32),
+            continue_,
         )
         .await
         .unwrap_err();
@@ -529,21 +575,270 @@ async fn a_windowed_upload_gets_the_time_of_its_last_write() {
     let sent = crate::mtp::DateTime::new(2020, 1, 2, 3, 4, 5).unwrap();
     let data = pattern(MIB);
 
-    let handle = storage
-        .upload(
+    let windowed = storage
+        .upload_with_pacing(
             None,
             NewObjectInfo::file("dated.bin", data.len() as u64).with_modified(sent),
+            chunks(&data),
+            UploadPacing::FixedWindow(MIB as u32),
+            continue_,
+        )
+        .await
+        .unwrap();
+    let modified = storage.get_object_info(windowed).await.unwrap().modified;
+    assert!(modified.unwrap().year >= 2026, "{modified:?}");
+
+    // Held open, the default, keeps it (as a Pixel does).
+    let held = storage
+        .upload(
+            None,
+            NewObjectInfo::file("kept.bin", data.len() as u64).with_modified(sent),
             chunks(&data),
         )
         .await
         .unwrap();
-    let modified = storage
-        .get_object_info(handle)
+    let modified = storage.get_object_info(held).await.unwrap().modified;
+    assert_eq!(modified.map(|d| d.year), Some(2020), "{modified:?}");
+}
+
+// --- The step-by-step upload (`FileUpload`) ---
+
+#[tokio::test]
+async fn a_step_by_step_upload_frees_the_device_between_windows() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("other.txt"), "x").unwrap();
+    let serial = "file-up-steps";
+    let (_device, storage) = open(dir.path(), serial).await;
+    let data = pattern(3 * MIB);
+
+    let mut upload = storage
+        .start_upload(
+            None,
+            NewObjectInfo::file("steps.bin", data.len() as u64),
+            UploadPacing::FixedWindow(MIB as u32),
+        )
         .await
-        .unwrap()
-        .modified
         .unwrap();
-    assert!(modified.year >= 2026, "{modified:?}");
+    assert!(upload.is_windowed());
+    let handle = upload
+        .handle()
+        .expect("a windowed upload has its object at the start");
+    assert!(!upload.holds_session());
+
+    let mut held = Vec::new();
+    let mut listings = 0;
+    for piece in data.chunks(MIB / 2) {
+        upload
+            .write_chunk(Bytes::copy_from_slice(piece))
+            .await
+            .unwrap();
+        held.push(upload.holds_session());
+        if !upload.holds_session() {
+            // A whole window just closed: the device answers other calls right away.
+            storage.list_objects(None).await.unwrap();
+            listings += 1;
+        }
+    }
+    // Half a window in flight, then closed, three times.
+    assert_eq!(held, [true, false, true, false, true, false]);
+    assert_eq!(listings, 3);
+    assert_eq!(upload.bytes_written(), data.len() as u64);
+    assert_eq!(upload.finish().await.unwrap(), handle);
+    assert_eq!(std::fs::read(dir.path().join("steps.bin")).unwrap(), data);
+    assert_clean(&storage, serial).await;
+}
+
+#[tokio::test]
+async fn a_held_open_step_by_step_upload_holds_the_device_to_the_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let serial = "file-up-held";
+    let (_device, storage) = open(dir.path(), serial).await;
+    let data = pattern(2 * MIB);
+
+    let mut upload = storage
+        .start_upload(
+            None,
+            NewObjectInfo::file("held.bin", data.len() as u64),
+            UploadPacing::HeldOpen,
+        )
+        .await
+        .unwrap();
+    assert!(!upload.is_windowed());
+    assert_eq!(upload.handle(), None);
+    assert!(
+        !upload.holds_session(),
+        "nothing starts before the first chunk"
+    );
+    for piece in data.chunks(MIB / 2) {
+        upload
+            .write_chunk(Bytes::copy_from_slice(piece))
+            .await
+            .unwrap();
+        assert!(upload.holds_session());
+    }
+    let handle = upload.finish().await.unwrap();
+    assert_eq!(storage.download_to_vec(handle).await.unwrap(), data);
+    assert_eq!(count(serial, OperationCode::SendPartialObject), 0);
+}
+
+#[tokio::test]
+async fn cancelling_a_step_by_step_upload_keeps_the_acknowledged_windows() {
+    let dir = tempfile::tempdir().unwrap();
+    let serial = "file-up-cancel";
+    let (_device, storage) = open(dir.path(), serial).await;
+    let data = pattern(3 * MIB);
+
+    let mut upload = storage
+        .start_upload(
+            None,
+            NewObjectInfo::file("cancel.bin", data.len() as u64),
+            UploadPacing::FixedWindow(MIB as u32),
+        )
+        .await
+        .unwrap();
+    for piece in data[..MIB + MIB / 2].chunks(MIB / 2) {
+        upload
+            .write_chunk(Bytes::copy_from_slice(piece))
+            .await
+            .unwrap();
+    }
+    assert!(upload.holds_session(), "mid-window");
+    let partial = upload.cancel().await;
+    assert_clean_prefix(
+        &storage,
+        serial,
+        dir.path(),
+        "cancel.bin",
+        partial,
+        &data,
+        MIB,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn cancelling_a_held_open_step_by_step_upload_leaves_nothing_on_android() {
+    let dir = tempfile::tempdir().unwrap();
+    let serial = "file-up-cancel-held";
+    let (_device, storage) = open(dir.path(), serial).await;
+    let data = pattern(2 * MIB);
+
+    let mut upload = storage
+        .start_upload(
+            None,
+            NewObjectInfo::file("gone.bin", data.len() as u64),
+            UploadPacing::HeldOpen,
+        )
+        .await
+        .unwrap();
+    upload
+        .write_chunk(Bytes::copy_from_slice(&data[..MIB]))
+        .await
+        .unwrap();
+    assert_eq!(upload.cancel().await, None);
+    assert!(!dir.path().join("gone.bin").exists());
+    storage
+        .list_objects(None)
+        .await
+        .expect("the device answers");
+}
+
+#[tokio::test]
+async fn dropping_a_step_by_step_upload_deletes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = pattern(3 * MIB);
+    // Mid-window, and between windows.
+    for (serial, written) in [
+        ("file-up-drop-mid", MIB + MIB / 2),
+        ("file-up-drop-between", MIB),
+    ] {
+        let (_device, storage) = open(dir.path(), serial).await;
+        let name = format!("{serial}.bin");
+        let mut upload = storage
+            .start_upload(
+                None,
+                NewObjectInfo::file(&name, data.len() as u64),
+                UploadPacing::FixedWindow(MIB as u32),
+            )
+            .await
+            .unwrap();
+        for piece in data[..written].chunks(MIB / 2) {
+            upload
+                .write_chunk(Bytes::copy_from_slice(piece))
+                .await
+                .unwrap();
+        }
+        drop(upload);
+        assert_dropped_and_deleted(&storage, serial, dir.path(), &name).await;
+    }
+}
+
+#[tokio::test]
+async fn a_step_by_step_upload_refuses_more_or_less_than_declared() {
+    let dir = tempfile::tempdir().unwrap();
+    let serial = "file-up-size";
+    let (_device, storage) = open(dir.path(), serial).await;
+    let data = pattern(3 * MIB);
+
+    let mut long = storage
+        .start_upload(
+            None,
+            NewObjectInfo::file("long.bin", 2 * MIB as u64),
+            UploadPacing::FixedWindow(MIB as u32),
+        )
+        .await
+        .unwrap();
+    long.write_chunk(Bytes::copy_from_slice(&data[..MIB]))
+        .await
+        .unwrap();
+    let err = long
+        .write_chunk(Bytes::copy_from_slice(&data[MIB..3 * MIB]))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err.source, Error::InvalidData { .. }),
+        "{:?}",
+        err.source
+    );
+    assert!(
+        long.write_chunk(Bytes::from_static(b"x")).await.is_err(),
+        "over"
+    );
+    assert_clean_prefix(
+        &storage,
+        serial,
+        dir.path(),
+        "long.bin",
+        err.partial,
+        &data,
+        MIB,
+    )
+    .await;
+
+    let mut short = storage
+        .start_upload(
+            None,
+            NewObjectInfo::file("short.bin", data.len() as u64),
+            UploadPacing::FixedWindow(MIB as u32),
+        )
+        .await
+        .unwrap();
+    short
+        .write_chunk(Bytes::copy_from_slice(&data[..MIB + 5]))
+        .await
+        .unwrap();
+    let err = short.finish().await.unwrap_err();
+    assert!(matches!(err.source, Error::Io { .. }), "{:?}", err.source);
+    assert_clean_prefix(
+        &storage,
+        serial,
+        dir.path(),
+        "short.bin",
+        err.partial,
+        &data,
+        MIB,
+    )
+    .await;
 }
 
 mod model {

@@ -16,7 +16,7 @@ use crate::mtp::object::NewObjectInfo;
 use crate::mtp::stream::Progress;
 use crate::mtp::{
     Capabilities, DeviceEvent, DeviceInfo, Error, ObjectHandle, ObjectInfo, StorageId, StorageInfo,
-    UploadError,
+    UploadError, UploadPacing,
 };
 use crate::ptp::{
     DeviceInfo as PtpDeviceInfo, ObjectHandle as PtpHandle, ObjectInfo as PtpObjectInfo,
@@ -94,31 +94,28 @@ pub(crate) struct UsbBackend {
     /// [`PROP_LIST_OPTIONAL`] properties the device declined, as bits by position: not asked
     /// again this session.
     prop_list_declined_optional: AtomicU8,
-    /// Whether uploads go out in windows through Android's edit operations: the device lists
-    /// all four (0x95C2–0x95C5) and the consumer didn't turn it off. See
-    /// [`MtpBackend::begin_windowed_upload`].
-    windowed_uploads: bool,
+    /// The pacing `Storage::upload` uses (see [`MtpBackend::default_upload_pacing`]).
+    upload_pacing: UploadPacing,
 }
 
-/// Which `mtp::` features the consumer turned off at open (see [`MtpDeviceBuilder`]).
+/// What the consumer chose at open (see [`MtpDeviceBuilder`]).
 ///
 /// [`MtpDeviceBuilder`]: crate::mtp::MtpDeviceBuilder
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UsbOptions {
     pub(crate) use_object_prop_list: bool,
-    pub(crate) use_windowed_uploads: bool,
+    pub(crate) upload_pacing: UploadPacing,
 }
 
 impl UsbBackend {
     /// Build the backend from an open session, deriving neutral info/capabilities once.
     ///
-    /// `use_object_prop_list: false` keeps every listing on the per-handle path, and
-    /// `use_windowed_uploads: false` every upload on one `SendObject`, whatever the device
-    /// advertises (see [`MtpDeviceBuilder::use_object_prop_list`] and
-    /// [`MtpDeviceBuilder::use_windowed_uploads`]).
+    /// `use_object_prop_list: false` keeps every listing on the per-handle path, whatever the
+    /// device advertises (see [`MtpDeviceBuilder::use_object_prop_list`]), and `upload_pacing` is
+    /// what `Storage::upload` uses (see [`MtpDeviceBuilder::upload_pacing`]).
     ///
     /// [`MtpDeviceBuilder::use_object_prop_list`]: crate::mtp::MtpDeviceBuilder::use_object_prop_list
-    /// [`MtpDeviceBuilder::use_windowed_uploads`]: crate::mtp::MtpDeviceBuilder::use_windowed_uploads
+    /// [`MtpDeviceBuilder::upload_pacing`]: crate::mtp::MtpDeviceBuilder::upload_pacing
     pub(crate) fn new(
         session: Arc<PtpSession>,
         ptp_info: PtpDeviceInfo,
@@ -130,8 +127,6 @@ impl UsbBackend {
         let has_partial_object = ptp_info.supports_operation(OperationCode::GetPartialObject);
         let has_object_prop_list = options.use_object_prop_list
             && ptp_info.supports_operation(OperationCode::GetObjectPropList);
-        let windowed_uploads =
-            options.use_windowed_uploads && capabilities.supports_windowed_upload;
         Self {
             session,
             device_info,
@@ -141,7 +136,7 @@ impl UsbBackend {
             has_object_prop_list,
             prop_list_off: AtomicBool::new(false),
             prop_list_declined_optional: AtomicU8::new(0),
-            windowed_uploads,
+            upload_pacing: options.upload_pacing,
         }
     }
 
@@ -736,19 +731,13 @@ struct UsbUploadEdit {
     acknowledged: u64,
     /// Whether the edit is still open on the device (until `finish` or `abandon` ends it).
     open: bool,
+    /// Whether the caller got the handle (`keep_on_drop`), so a drop with the edit open ends the
+    /// edit but leaves the object. Otherwise nobody can find it, so it's deleted.
+    handed_out: bool,
 }
 
-#[async_trait]
-impl UploadBody for UsbUploadEdit {
-    fn handle(&self) -> ObjectHandle {
-        self.handle.into()
-    }
-
-    fn acknowledged(&self) -> u64 {
-        self.acknowledged
-    }
-
-    async fn write_window(&mut self, len: u32, data: UploadStream<'_>) -> Result<(), Error> {
+impl UsbUploadEdit {
+    async fn send_window(&mut self, len: u32, data: UploadStream<'static>) -> Result<(), Error> {
         if !self.open {
             return Err(Error::invalid_data("the upload's edit is already closed"));
         }
@@ -763,6 +752,33 @@ impl UploadBody for UsbUploadEdit {
             })?;
         self.acknowledged += u64::from(len);
         Ok(())
+    }
+}
+
+#[async_trait]
+impl UploadBody for UsbUploadEdit {
+    fn handle(&self) -> ObjectHandle {
+        self.handle.into()
+    }
+
+    fn acknowledged(&self) -> u64 {
+        self.acknowledged
+    }
+
+    fn write_window(
+        self: Box<Self>,
+        len: u32,
+        data: UploadStream<'static>,
+    ) -> futures::future::BoxFuture<'static, (Box<dyn UploadBody>, Result<(), Error>)> {
+        Box::pin(async move {
+            let mut me = self;
+            let result = me.send_window(len, data).await;
+            (me as Box<dyn UploadBody>, result)
+        })
+    }
+
+    fn keep_on_drop(&mut self) {
+        self.handed_out = true;
     }
 
     async fn finish(&mut self) -> Result<(), Error> {
@@ -792,10 +808,13 @@ impl UploadBody for UsbUploadEdit {
 impl Drop for UsbUploadEdit {
     fn drop(&mut self) {
         if self.open {
-            // A dropped upload future, or a stop whose clean-up failed: the next operation on
-            // this session ends the edit (`Drop` can't send anything).
+            // A dropped upload, or a stop whose clean-up failed: the next operation on this
+            // session ends the edit (`Drop` can't send anything). Dropped, nobody holds the
+            // handle, and a file cut short under its real name reads as a complete one, so it's
+            // deleted too: the one place the library deletes an upload (AGENTS.md § Partial-handle
+            // contract).
             self.session
-                .defer_edit_close(self.handle, self.acknowledged);
+                .defer_edit_close(self.handle, self.acknowledged, !self.handed_out);
         }
     }
 }
@@ -1108,7 +1127,11 @@ impl MtpBackend for UsbBackend {
     }
 
     fn can_upload_in_windows(&self) -> bool {
-        self.windowed_uploads
+        self.capabilities.supports_windowed_upload
+    }
+
+    fn default_upload_pacing(&self) -> UploadPacing {
+        self.upload_pacing
     }
 
     async fn begin_windowed_upload(
@@ -1148,6 +1171,7 @@ impl MtpBackend for UsbBackend {
             handle,
             acknowledged: 0,
             open: true,
+            handed_out: false,
         }))
     }
 
@@ -1418,7 +1442,7 @@ mod tests {
             ptp_info,
             UsbOptions {
                 use_object_prop_list: true,
-                use_windowed_uploads: true,
+                upload_pacing: UploadPacing::HeldOpen,
             },
         )
     }
@@ -1570,7 +1594,7 @@ mod tests {
             ptp_info,
             UsbOptions {
                 use_object_prop_list: true,
-                use_windowed_uploads: true,
+                upload_pacing: UploadPacing::HeldOpen,
             },
         )
     }

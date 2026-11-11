@@ -378,10 +378,11 @@ impl PtpSession {
         Self::check_response(&response, OperationCode::SendObject)
             .map_err(|e| (Some(handle), e))?;
         // If this future is dropped while `BeginEditObject` is in flight, the edit may be open
-        // with nobody to end it: the deferred close ends it on the next operation. Nothing else
+        // with nobody to end it, and nobody holds the empty object's handle: the deferred close
+        // ends the edit and deletes the object on the next operation. Nothing else
         // can run before we cancel it again, since we hold the lock. (`transact`, not
         // `execute_locked`: recovery would run that close right now.)
-        self.defer_edit_close(handle, 0);
+        self.defer_edit_close(handle, 0, true);
         let result = self
             .transact(OperationCode::BeginEditObject, &[handle.0])
             .await

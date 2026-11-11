@@ -44,16 +44,16 @@ pub async fn open_device(serial: &str) -> (mtp_rs::MtpDevice, tempfile::TempDir)
 /// camera, which the host cancels with CLASS_CANCEL and which keeps a half-written upload.
 #[cfg(feature = "virtual-device")]
 pub async fn open_device_as(serial: &str, android: bool) -> (mtp_rs::MtpDevice, tempfile::TempDir) {
-    open_device_with(serial, android, true).await
+    open_device_with(serial, android, mtp_rs::UploadPacing::HeldOpen).await
 }
 
-/// Like [`open_device_as`], with windowed uploads on or off
-/// ([`MtpDeviceBuilder::use_windowed_uploads`](mtp_rs::MtpDeviceBuilder::use_windowed_uploads)).
+/// Like [`open_device_as`], with the device's default upload pacing chosen
+/// ([`MtpDeviceBuilder::upload_pacing`](mtp_rs::MtpDeviceBuilder::upload_pacing)).
 #[cfg(feature = "virtual-device")]
 pub async fn open_device_with(
     serial: &str,
     android: bool,
-    windowed_uploads: bool,
+    upload_pacing: mtp_rs::UploadPacing,
 ) -> (mtp_rs::MtpDevice, tempfile::TempDir) {
     use mtp_rs::virtual_device::{VirtualDeviceConfig, VirtualStorageConfig};
 
@@ -74,7 +74,7 @@ pub async fn open_device_with(
         ..Default::default()
     };
     let device = mtp_rs::MtpDevice::builder()
-        .use_windowed_uploads(windowed_uploads)
+        .upload_pacing(upload_pacing)
         .open_virtual(config)
         .await
         .unwrap();
@@ -351,9 +351,19 @@ pub async fn run_upload_cancel(
     expects_partial: bool,
 ) {
     let info = NewObjectInfo::file("cancelled.bin", 5);
+    // Break on the second chunk, once the first went out: a Break before any byte went out
+    // creates nothing on a held-open upload.
+    let source = futures::stream::iter(vec![
+        Ok::<_, std::io::Error>(Bytes::from_static(b"hel")),
+        Ok(Bytes::from_static(b"lo")),
+    ]);
     let err = storage
-        .upload_with_progress(parent, info, upload_stream(b"hello"), |_| {
-            std::ops::ControlFlow::Break(())
+        .upload_with_progress(parent, info, source, |p| {
+            if p.bytes_transferred > 3 {
+                std::ops::ControlFlow::Break(())
+            } else {
+                std::ops::ControlFlow::Continue(())
+            }
         })
         .await
         .expect_err("a cancelled upload should fail");

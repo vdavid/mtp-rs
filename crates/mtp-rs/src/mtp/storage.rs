@@ -8,7 +8,7 @@ use crate::mtp::backend::{
 use crate::mtp::error::check_name_length;
 use crate::mtp::object::NewObjectInfo;
 use crate::mtp::stream::{DownloadPacing, FileDownload, Progress};
-use crate::mtp::upload::UploadPacing;
+use crate::mtp::upload::{FileUpload, UploadPacing};
 use crate::mtp::{Error, ObjectHandle, ObjectInfo, StorageId, StorageInfo, UploadError};
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
@@ -520,45 +520,42 @@ impl Storage {
     // Upload operations
     // =========================================================================
 
-    /// Upload a file from a stream, with the default [`UploadPacing`]: on devices that support
-    /// it (Android phones), windows that each take about two seconds, freeing the device between
-    /// them.
+    /// Upload a file from a stream, with the device's default [`UploadPacing`]: one held-open
+    /// transfer, unless [`MtpDeviceBuilder::upload_pacing`](crate::MtpDeviceBuilder::upload_pacing)
+    /// chose windows.
     ///
     /// The data streams directly to the device in chunks; the protocol only needs the total size
     /// upfront (provided via `info`), not the whole file in memory. The stream must yield exactly
-    /// that many bytes. Use [`upload_with_pacing`](Self::upload_with_pacing) to pick another
-    /// pacing.
+    /// that many bytes. Use [`upload_with_pacing`](Self::upload_with_pacing) to pick a pacing for
+    /// one upload, or [`start_upload`](Self::start_upload) to feed it chunk by chunk.
     ///
     /// # Errors
     ///
     /// Returns [`UploadError`] on failure. If the object already exists on the device when the
     /// upload stops (an error, or a cancel from the progress callback), [`UploadError::partial`]
-    /// carries its handle, so you can [`delete`](Self::delete) it. The library does **not**
-    /// auto-delete it. What that object holds depends on how the upload went out:
+    /// carries its handle, so you can [`delete`](Self::delete) it. The library doesn't delete it.
+    /// What that object holds depends on how the upload went out:
     ///
+    /// - **Held open**: on Android the phone drops the object itself, so `partial` is `None`;
+    ///   other devices (cameras) may keep an empty or truncated object.
     /// - **In windows** ([`Capabilities::supports_windowed_upload`](crate::Capabilities::supports_windowed_upload)):
     ///   exactly the windows the device acknowledged, a clean prefix of the file (possibly empty).
     ///   `partial` is always `Some` once the object was created.
-    /// - **Held open**: on Android the phone drops the object itself, so `partial` is `None`;
-    ///   other devices (cameras) may keep an empty or truncated object.
     ///
     /// # Dropping the future
     ///
-    /// Dropping an upload in windows stops it after the bytes already acknowledged, and the object
-    /// stays on the device under its name with those bytes. The handle never reaches you, so find
-    /// it by listing the folder if you want it gone. The device's edit is ended by the next
-    /// operation on this device (`Drop` can't send anything); close or drop the device before
-    /// that, and an Android phone keeps the file open until its MTP server restarts. Prefer a
-    /// `ControlFlow::Break` from [`upload_with_progress`](Self::upload_with_progress), which
-    /// returns the handle.
+    /// A dropped upload leaves nothing behind. Held open, Android drops the half-written object
+    /// itself. In windows, nobody would ever learn the object's handle, and a file cut short
+    /// under its real name reads as a complete one, so the next operation on this device ends the
+    /// edit and deletes the object (`Drop` can't send anything). Close or drop the device before
+    /// that, and the object stays, with the phone holding it open until its MTP server restarts.
     ///
     /// # Dates
     ///
     /// Android stamps the modification date sent in `info` when the object is created, and every
-    /// write moves it on: a windowed upload ends with the time of its last window. Android has no
-    /// way to set it afterwards (`SetObjectPropValue` refuses `DateModified`). Keep the date with
-    /// [`UploadPacing::HeldOpen`] where it matters; a Pixel keeps it that way, a Galaxy S23 Ultra
-    /// doesn't either way.
+    /// write after that moves it on, so a windowed upload ends with the time of its last window.
+    /// Android can't set it afterwards (`SetObjectPropValue` refuses `DateModified`). A held-open
+    /// upload keeps it on a Pixel; a Galaxy S23 Ultra drops it either way.
     pub async fn upload<'a, S>(
         &'a self,
         parent: Option<ObjectHandle>,
@@ -568,11 +565,12 @@ impl Storage {
     where
         S: Stream<Item = Result<Bytes, std::io::Error>> + Unpin + Send + 'a,
     {
-        self.upload_paced(parent, info, Box::pin(data), None, UploadPacing::default())
+        let pacing = self.backend.default_upload_pacing();
+        self.upload_paced(parent, info, Box::pin(data), None, pacing)
             .await
     }
 
-    /// Upload a file with a progress callback, with the default [`UploadPacing`]. See
+    /// Upload a file with a progress callback, with the device's default [`UploadPacing`]. See
     /// [`upload`](Self::upload).
     ///
     /// Progress is reported as data is read from the stream. Return `ControlFlow::Break(())` from
@@ -590,14 +588,9 @@ impl Storage {
         F: FnMut(Progress) -> ControlFlow<()> + Send + 'a,
     {
         let progress: ProgressFn<'a> = Box::new(on_progress);
-        self.upload_paced(
-            parent,
-            info,
-            Box::pin(data),
-            Some(progress),
-            UploadPacing::default(),
-        )
-        .await
+        let pacing = self.backend.default_upload_pacing();
+        self.upload_paced(parent, info, Box::pin(data), Some(progress), pacing)
+            .await
     }
 
     /// Upload a file with a progress callback, spread over device transactions as `pacing` says.
@@ -622,6 +615,25 @@ impl Storage {
             .await
     }
 
+    /// Start an upload to feed chunk by chunk, spread over device transactions as `pacing` says.
+    /// The step-by-step counterpart of [`upload_with_pacing`](Self::upload_with_pacing), for a
+    /// consumer with its own lock around the device: see [`FileUpload`].
+    ///
+    /// A windowed upload creates the object here, so a refusal (a full storage, a bad parent)
+    /// surfaces from this call; a held-open one starts with the first chunk.
+    pub async fn start_upload(
+        &self,
+        parent: Option<ObjectHandle>,
+        info: NewObjectInfo,
+        pacing: UploadPacing,
+    ) -> Result<FileUpload, UploadError> {
+        check_name_length(&info.filename).map_err(|source| UploadError {
+            source,
+            partial: None,
+        })?;
+        FileUpload::start(Arc::clone(&self.backend), self.id, parent, info, pacing).await
+    }
+
     async fn upload_paced<'a>(
         &'a self,
         parent: Option<ObjectHandle>,
@@ -634,8 +646,8 @@ impl Storage {
             source,
             partial: None,
         })?;
-        crate::mtp::upload::upload(
-            self.backend.as_ref(),
+        crate::mtp::upload::upload_stream(
+            Arc::clone(&self.backend),
             self.id,
             parent,
             info,

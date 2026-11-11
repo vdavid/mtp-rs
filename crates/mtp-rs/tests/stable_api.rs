@@ -6,9 +6,9 @@
 
 use mtp_rs::ptp::{self, PtpDevice, PtpError};
 use mtp_rs::{
-    Backend, ByteRange, CancelToken, DateTime, DeviceEvent, DownloadPacing, Error, HotplugEvent,
-    ListingItem, MtpDevice, MtpDeviceInfo, MtpMatchReason, NewObjectInfo, ObjectFormat,
-    ObjectHandle, ObjectInfo, StorageId, UploadPacing, UsbSpeed, UtcOffset,
+    Backend, ByteRange, CancelToken, DateTime, DeviceEvent, DownloadPacing, Error, FileUpload,
+    HotplugEvent, ListingItem, MtpDevice, MtpDeviceInfo, MtpMatchReason, NewObjectInfo,
+    ObjectFormat, ObjectHandle, ObjectInfo, StorageId, UploadPacing, UsbSpeed, UtcOffset,
     DEFAULT_MAX_CANCEL_DELAY, DEFAULT_UPLOAD_WINDOW_TIME,
 };
 
@@ -75,14 +75,29 @@ fn id_newtypes_and_input_enums_are_buildable() {
         UploadPacing::FixedWindow(1 << 20),
     ];
     assert_eq!(upload_pacings.len(), 3);
-    assert_eq!(
-        UploadPacing::default(),
-        UploadPacing::MaxWindowTime(DEFAULT_UPLOAD_WINDOW_TIME)
-    );
+    // Held open until the date question (see `UploadPacing`) is settled.
+    assert_eq!(UploadPacing::default(), UploadPacing::HeldOpen);
 
     let _ = MtpDevice::builder()
         .backend(Backend::Usb)
-        .use_windowed_uploads(false);
+        .upload_pacing(UploadPacing::MaxWindowTime(DEFAULT_UPLOAD_WINDOW_TIME));
+
+    // The step-by-step upload, used the way a consumer with its own device lock would.
+    let _drive = |storage: mtp_rs::Storage, chunk: bytes::Bytes| async move {
+        let info = NewObjectInfo::file("a.bin", chunk.len() as u64);
+        let mut upload: FileUpload = storage
+            .start_upload(None, info, UploadPacing::FixedWindow(1 << 20))
+            .await?;
+        let _ = (upload.size(), upload.bytes_written(), upload.handle());
+        let _ = (upload.holds_session(), upload.is_windowed());
+        upload.write_chunk(chunk).await?;
+        let handle: ObjectHandle = upload.finish().await?;
+        Ok::<_, mtp_rs::UploadError>(handle)
+    };
+    let _cancel = |upload: FileUpload| async move {
+        let partial: Option<ObjectHandle> = upload.cancel().await;
+        partial
+    };
     assert!(!CancelToken::new().is_cancelled());
 }
 

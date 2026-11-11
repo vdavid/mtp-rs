@@ -448,7 +448,7 @@ pub struct MtpDeviceBuilder {
     backend: Backend,
     reuse_existing_session_id: Option<u32>,
     use_object_prop_list: bool,
-    use_windowed_uploads: bool,
+    upload_pacing: crate::UploadPacing,
 }
 
 impl MtpDeviceBuilder {
@@ -460,7 +460,7 @@ impl MtpDeviceBuilder {
             backend: Backend::default(),
             reuse_existing_session_id: None,
             use_object_prop_list: true,
-            use_windowed_uploads: true,
+            upload_pacing: crate::UploadPacing::HeldOpen,
         }
     }
 
@@ -643,33 +643,38 @@ impl MtpDeviceBuilder {
         self
     }
 
-    /// Whether uploads may go out in windows (default `true`).
+    /// The pacing [`Storage::upload`](crate::Storage::upload) and
+    /// [`upload_with_progress`](crate::Storage::upload_with_progress) use on this device (default
+    /// [`UploadPacing::HeldOpen`]).
     ///
-    /// On a device that lists Android's edit operations
-    /// ([`Capabilities::supports_windowed_upload`](crate::Capabilities::supports_windowed_upload)),
-    /// [`Storage::upload`](crate::Storage::upload) writes a file as a series of windows of about
-    /// two seconds each, and the device is free between them: a folder listing or a download from
-    /// another task waits for one window, not for the whole file. See [`UploadPacing`].
+    /// Pass a windowed pacing, usually `UploadPacing::MaxWindowTime(DEFAULT_UPLOAD_WINDOW_TIME)`,
+    /// to have every upload to a device that supports it
+    /// ([`Capabilities::supports_windowed_upload`](crate::Capabilities::supports_windowed_upload),
+    /// Android phones) go out in windows that free the device between them: a folder listing or a
+    /// download from another task then waits for one window, not for the whole file. Devices
+    /// without the operations upload in one piece whatever this says.
     ///
-    /// Pass `false` to send every upload as one held-open `SendObject`, as on devices without the
-    /// operations, whatever pacing a call asks for. Two things differ then on Android: the device
-    /// keeps the modification date sent in [`NewObjectInfo`](crate::NewObjectInfo) (a Pixel does;
-    /// a windowed upload gets the time of its last write), and a stopped upload leaves nothing
-    /// behind ([`UploadError::partial`](crate::UploadError::partial) is `None`).
+    /// Not the default because windows lose the modification date on Android: the file ends up
+    /// dated at its last window, and Android can't set it afterwards. A stopped windowed upload
+    /// also keeps the windows the device acknowledged ([`UploadError::partial`](crate::UploadError::partial)
+    /// is `Some`), where a held-open one to Android leaves nothing. See [`UploadPacing`].
     ///
+    /// [`Storage::upload_with_pacing`](crate::Storage::upload_with_pacing) and
+    /// [`Storage::start_upload`](crate::Storage::start_upload) pick a pacing per upload instead.
     /// This setting applies only to the USB backend; WPD on Windows always uploads in one piece.
     ///
     /// [`UploadPacing`]: crate::UploadPacing
+    /// [`UploadPacing::HeldOpen`]: crate::UploadPacing::HeldOpen
     #[must_use]
-    pub fn use_windowed_uploads(mut self, enabled: bool) -> Self {
-        self.use_windowed_uploads = enabled;
+    pub fn upload_pacing(mut self, pacing: crate::UploadPacing) -> Self {
+        self.upload_pacing = pacing;
         self
     }
 
     fn usb_options(&self) -> UsbOptions {
         UsbOptions {
             use_object_prop_list: self.use_object_prop_list,
-            use_windowed_uploads: self.use_windowed_uploads,
+            upload_pacing: self.upload_pacing,
         }
     }
 
