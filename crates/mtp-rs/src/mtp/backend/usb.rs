@@ -14,6 +14,7 @@ use crate::mtp::backend::{
 };
 use crate::mtp::object::NewObjectInfo;
 use crate::mtp::stream::Progress;
+use crate::mtp::upload::UploadDates;
 use crate::mtp::{
     Capabilities, DeviceEvent, DeviceInfo, Error, ObjectHandle, ObjectInfo, StorageId, StorageInfo,
     UploadError, UploadPacing,
@@ -96,6 +97,8 @@ pub(crate) struct UsbBackend {
     prop_list_declined_optional: AtomicU8,
     /// The pacing `Storage::upload` uses (see [`MtpBackend::default_upload_pacing`]).
     upload_pacing: UploadPacing,
+    /// Whether the device keeps an upload's sent date, as this session learned it.
+    upload_dates: UploadDates,
 }
 
 /// What the consumer chose at open (see [`MtpDeviceBuilder`]).
@@ -137,6 +140,7 @@ impl UsbBackend {
             prop_list_off: AtomicBool::new(false),
             prop_list_declined_optional: AtomicU8::new(0),
             upload_pacing: options.upload_pacing,
+            upload_dates: UploadDates::default(),
         }
     }
 
@@ -1136,6 +1140,10 @@ impl MtpBackend for UsbBackend {
 
     fn default_upload_pacing(&self) -> UploadPacing {
         self.upload_pacing
+    }
+
+    fn upload_dates(&self) -> Option<&UploadDates> {
+        Some(&self.upload_dates)
     }
 
     async fn begin_windowed_upload(

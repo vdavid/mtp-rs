@@ -70,13 +70,17 @@ fn id_newtypes_and_input_enums_are_buildable() {
     );
 
     let upload_pacings = [
+        UploadPacing::KeepDates(DEFAULT_UPLOAD_WINDOW_TIME),
         UploadPacing::HeldOpen,
         UploadPacing::MaxWindowTime(std::time::Duration::from_millis(500)),
         UploadPacing::FixedWindow(1 << 20),
     ];
-    assert_eq!(upload_pacings.len(), 3);
-    // Held open until the date question (see `UploadPacing`) is settled.
-    assert_eq!(UploadPacing::default(), UploadPacing::HeldOpen);
+    assert_eq!(upload_pacings.len(), 4);
+    // Held open where that keeps the date, windows otherwise (#68).
+    assert_eq!(
+        UploadPacing::default(),
+        UploadPacing::KeepDates(DEFAULT_UPLOAD_WINDOW_TIME)
+    );
 
     let _ = MtpDevice::builder()
         .backend(Backend::Usb)

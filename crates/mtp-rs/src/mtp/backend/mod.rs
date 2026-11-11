@@ -291,9 +291,16 @@ pub(crate) trait MtpBackend: Send + Sync {
 
     /// The pacing `Storage::upload` uses: what the consumer chose with
     /// [`MtpDeviceBuilder::upload_pacing`](crate::mtp::MtpDeviceBuilder::upload_pacing), else
-    /// held open.
+    /// [`UploadPacing::default`](crate::mtp::UploadPacing).
     fn default_upload_pacing(&self) -> crate::mtp::UploadPacing {
-        crate::mtp::UploadPacing::HeldOpen
+        crate::mtp::UploadPacing::default()
+    }
+
+    /// Where this session remembers whether the device keeps an upload's sent date, for
+    /// `UploadPacing::KeepDates` (#68). `None` where uploads never go in windows, so there's
+    /// nothing to choose (WPD).
+    fn upload_dates(&self) -> Option<&crate::mtp::upload::UploadDates> {
+        None
     }
 
     /// Create an empty object under `parent` on `storage` and open it for a windowed upload.

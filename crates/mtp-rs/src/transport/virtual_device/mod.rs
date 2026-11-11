@@ -1998,10 +1998,17 @@ mod tests {
         let items = storages[0].list_objects(None).await.unwrap();
         let download = items.iter().find(|i| i.filename == "Download").unwrap();
 
-        // Claim the file is 100 bytes, but the stream fails after one short chunk.
+        // Claim the file is 100 bytes, but the stream fails after one short chunk. Held open:
+        // an undated upload would otherwise go in windows, which keep their partial.
         let info = crate::mtp::NewObjectInfo::file("partial.bin", 100);
         let err = storages[0]
-            .upload(Some(download.handle), info, failing_stream(b"abc"))
+            .upload_with_pacing(
+                Some(download.handle),
+                info,
+                failing_stream(b"abc"),
+                crate::mtp::UploadPacing::HeldOpen,
+                |_| std::ops::ControlFlow::Continue(()),
+            )
             .await
             .expect_err("upload should fail when the source stream errors mid-stream");
 
@@ -2047,7 +2054,13 @@ mod tests {
         // A source that never finishes, dropped while the upload waits on it.
         let source = futures::StreamExt::chain(bytes_stream(b"abc"), futures::stream::pending());
         let info = crate::mtp::NewObjectInfo::file("dropped.bin", 100);
-        let mut upload = Box::pin(storages[0].upload(Some(download.handle), info, source));
+        let mut upload = Box::pin(storages[0].upload_with_pacing(
+            Some(download.handle),
+            info,
+            source,
+            crate::mtp::UploadPacing::HeldOpen,
+            |_| std::ops::ControlFlow::Continue(()),
+        ));
         assert!(futures::poll!(upload.as_mut()).is_pending());
         drop(upload);
 
@@ -2070,12 +2083,14 @@ mod tests {
         let download = items.iter().find(|i| i.filename == "Download").unwrap();
 
         let info = crate::mtp::NewObjectInfo::file("cancelled.bin", 5);
-        // Break from the progress callback on the first chunk -> Error::Cancelled.
+        // Break from the progress callback on the first chunk -> Error::Cancelled. Held open, as
+        // in the test above.
         let err = storages[0]
-            .upload_with_progress(
+            .upload_with_pacing(
                 Some(download.handle),
                 info,
                 bytes_stream(b"hello"),
+                crate::mtp::UploadPacing::HeldOpen,
                 |_progress| ControlFlow::Break(()),
             )
             .await

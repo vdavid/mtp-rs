@@ -460,7 +460,7 @@ impl MtpDeviceBuilder {
             backend: Backend::default(),
             reuse_existing_session_id: None,
             use_object_prop_list: true,
-            upload_pacing: crate::UploadPacing::HeldOpen,
+            upload_pacing: crate::UploadPacing::default(),
         }
     }
 
@@ -645,19 +645,21 @@ impl MtpDeviceBuilder {
 
     /// The pacing [`Storage::upload`](crate::Storage::upload) and
     /// [`upload_with_progress`](crate::Storage::upload_with_progress) use on this device (default
-    /// [`UploadPacing::HeldOpen`]).
+    /// [`UploadPacing::KeepDates`]: held open when the upload carries a date the device keeps,
+    /// windows otherwise).
     ///
-    /// Pass a windowed pacing, usually `UploadPacing::MaxWindowTime(DEFAULT_UPLOAD_WINDOW_TIME)`,
-    /// to have every upload to a device that supports it
+    /// Windows free a device that supports them
     /// ([`Capabilities::supports_windowed_upload`](crate::Capabilities::supports_windowed_upload),
-    /// Android phones) go out in windows that free the device between them: a folder listing or a
-    /// download from another task then waits for one window, not for the whole file. Devices
-    /// without the operations upload in one piece whatever this says.
+    /// Android phones) between them: a folder listing or a download from another task then waits
+    /// for one window, not for the whole file. Devices without the operations upload in one piece
+    /// whatever this says.
     ///
-    /// Not the default because windows lose the modification date on Android: the file ends up
-    /// dated at its last window, and Android can't set it afterwards. A stopped windowed upload
-    /// also keeps the windows the device acknowledged ([`UploadError::partial`](crate::UploadError::partial)
-    /// is `Some`), where a held-open one to Android leaves nothing. See [`UploadPacing`].
+    /// Pass `UploadPacing::MaxWindowTime(DEFAULT_UPLOAD_WINDOW_TIME)` for windows on every upload,
+    /// dated or not: on Android a windowed file ends up dated at its last window, and Android
+    /// can't set it afterwards. Pass [`UploadPacing::HeldOpen`] for one transfer per file. A
+    /// stopped windowed upload keeps the windows the device acknowledged
+    /// ([`UploadError::partial`](crate::UploadError::partial) is `Some`), where a held-open one to
+    /// Android leaves nothing. See [`UploadPacing`].
     ///
     /// [`Storage::upload_with_pacing`](crate::Storage::upload_with_pacing) and
     /// [`Storage::start_upload`](crate::Storage::start_upload) pick a pacing per upload instead.
@@ -665,6 +667,7 @@ impl MtpDeviceBuilder {
     ///
     /// [`UploadPacing`]: crate::UploadPacing
     /// [`UploadPacing::HeldOpen`]: crate::UploadPacing::HeldOpen
+    /// [`UploadPacing::KeepDates`]: crate::UploadPacing::KeepDates
     #[must_use]
     pub fn upload_pacing(mut self, pacing: crate::UploadPacing) -> Self {
         self.upload_pacing = pacing;

@@ -251,9 +251,17 @@ let handle = storage.upload(None, info, Box::pin(stream)).await?;
 println!("Uploaded with handle {:?}", handle);
 ```
 
-`upload` sends the file in one transfer, and the device is busy until it ends. On Android phones (`device.capabilities().supports_windowed_upload` is `true`) it can instead go out in windows of about two seconds each, freeing the device between them the way `download` reads (see below): a folder listing during a big upload then waits for one window, not for the whole file. Each window costs 1–3 ms, well under 1% of the speed. Devices without Android's edit operations, and Windows, always upload in one piece.
+On Android phones (`device.capabilities().supports_windowed_upload` is `true`) an upload can go out in windows of about two seconds each, freeing the device between them the way `download` reads (see below): a folder listing during a big upload then waits for one window, not for the whole file. Each window costs 1–3 ms, well under 1% of the speed. Devices without Android's edit operations, and Windows, always upload in one piece, and the device is busy until it ends.
 
-Windows are opt-in, per upload or for a whole device:
+Windows have one catch: they lose the modification date in `NewObjectInfo` on Android. Android stamps it when the file is created, and every write after that moves it to the time of the write, so the file ends up dated when its last window arrived, and Android can't set the date afterwards. A held-open upload keeps it on a Pixel. A Galaxy S23 Ultra drops it either way.
+
+So by default (`UploadPacing::KeepDates`), `upload` keeps the date wherever it can and uses windows everywhere else:
+
+- An upload with a date goes out in one piece, so the date survives.
+- An upload without a date goes in windows.
+- After the first dated upload, the library reads the date back once. If the phone dropped it anyway (a Galaxy S23 Ultra does), dated uploads go in windows too for the rest of the session, since holding them open keeps nothing.
+
+To choose for yourself, pass a pacing per upload or for a whole device:
 
 ```rust
 use mtp_rs::{MtpDevice, UploadPacing, DEFAULT_UPLOAD_WINDOW_TIME};
@@ -266,7 +274,7 @@ storage.upload_with_pacing(None, info, stream, windows, |_| ControlFlow::Continu
 let device = MtpDevice::builder().upload_pacing(windows).open_first().await?;
 ```
 
-Why they're not the default: a windowed upload loses the modification date in `NewObjectInfo` on Android. Android stamps it when the file is created, and every write after that moves it to the time of the write, so the file ends up dated when its last window arrived, and Android can't set the date afterwards. A held-open upload keeps it on a Pixel. A Galaxy S23 Ultra drops it either way. We're working out a better default in [#68](https://github.com/vdavid/mtp-rs/issues/68).
+`UploadPacing::HeldOpen` sends every file in one piece.
 
 If your app has its own lock around the device, `storage.start_upload(..)` returns a `FileUpload` you feed chunk by chunk with `write_chunk`. `upload.holds_session()` tells you when it's safe to let other work in: it's `false` between windows. See `examples/upload_with_app_lock.rs`.
 
@@ -482,7 +490,7 @@ We use `nusb` for USB access, which is also runtime-agnostic.
 | Non-empty folder delete   | Fails; delete contents first                       |
 | One connection per device | Can't open the same device twice                   |
 | Upload cancellation       | A partial object may remain on the device. `upload()` surfaces its handle via `UploadError::partial` so you can delete it; the library doesn't. A dropped windowed upload is the exception: nobody has its handle, so the next call deletes it. |
-| Upload dates on Android   | A windowed upload ends up dated at its last write; held open (the default) keeps the date on a Pixel. A Galaxy S23 Ultra loses it either way ([#68](https://github.com/vdavid/mtp-rs/issues/68)). |
+| Upload dates on Android   | A windowed upload ends up dated at its last write; held open keeps the date on a Pixel. A Galaxy S23 Ultra loses it either way. The default holds dated uploads open until the phone shows it drops dates ([#68](https://github.com/vdavid/mtp-rs/issues/68)). |
 | Recursive listing speed   | Manual traversal is slower (~1 request per folder) |
 
 ## Android weirdnesses

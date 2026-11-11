@@ -6,13 +6,18 @@ evidence and the options.
 
 ## Status
 
-**Built (option 1), opt-in.** The design and its rules are in AGENTS.md § Paced uploads; this doc keeps the
-evidence. Decisions (David, 2026-11-11):
+**Built (option 1), on by default where it keeps dates.** The design and its rules are in AGENTS.md § Paced
+uploads; this doc keeps the evidence. Decisions (David, 2026-11-11):
 
 - Windowed uploads on devices listing 0x95C2–0x95C5, everything else one `SendObject`, WPD keeps `Commit`.
-- **Windows are opt-in until the date question is decided** ([#68](https://github.com/vdavid/mtp-rs/issues/68)):
-  `Storage::upload` stays held open; windows per upload (`upload_with_pacing`, `start_upload`) or per device
-  (`MtpDeviceBuilder::upload_pacing`). Windows lose the file's date on Android, and nothing can set it afterwards.
+- **The default is #68's option (a), "dates win"** ([#68](https://github.com/vdavid/mtp-rs/issues/68)):
+  `UploadPacing::KeepDates` holds an upload open when it carries a date and the device keeps dates, and uses
+  windows otherwise. Whether the device keeps dates is learned per session from one `GetObjectInfo` after the
+  first held-open upload dated more than three days from now (no device list); a Pixel keeps them, a Galaxy S23
+  Ultra drops them, so Samsung gets windows from its second dated upload on. An explicit pacing always wins.
+  Windows lose the file's date on Android, and nothing can set it afterwards (§ Dates (#68)). The matching
+  rule and its tolerances are in AGENTS.md § Paced uploads. Not hardware-verified yet:
+  `test_default_upload_pacing_keeps_dates` in `tests/integration.rs` is the check.
 - A stopped windowed upload returns `UploadError::partial: Some(handle)` with a clean prefix; the library doesn't
   delete it. On a stop: truncate to what was acknowledged, then `EndEditObject`.
 - **A dropped windowed upload is deleted** by the next operation (truncate, end, delete): nobody holds its handle,
@@ -241,7 +246,7 @@ On the phone (MTP and `stat` agreed on every object):
   dated now (`ftruncate`).
 - Rechecked with `stat` 5 s and 60 s later: no change, so the media scan doesn't restore or reset anything.
 
-What's left (the product choice is #68's):
+The options #68 weighed (David chose (a), built as `UploadPacing::KeepDates`):
 
 - (a) Dates win by default: held open when the upload carries a date and the device keeps dates, windows
   otherwise (no date, or a device like Samsung that drops it anyway). The only option that loses no date a device

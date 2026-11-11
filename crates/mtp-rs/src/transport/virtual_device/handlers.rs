@@ -544,8 +544,11 @@ fn handle_send_object_info(
         size: info.size,
         is_folder,
         assigned_handle: new_handle,
+        // A device that ignores the sent date (`keeps_upload_dates: false`, like Samsung) dates
+        // the file at its writes.
         modified: info
             .modified
+            .filter(|_| state.config.keeps_upload_dates)
             .and_then(|dt| dt.to_unix_seconds_with_fallback(state.config.utc_offset))
             .map(system_time_from_unix),
     });

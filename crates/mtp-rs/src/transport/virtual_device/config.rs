@@ -172,6 +172,15 @@ pub struct VirtualDeviceConfig {
     /// whose `SendObject` never came leaves a ghost: listed, but `GetObject` and
     /// `BeginEditObject` answer `GeneralError` and `DeleteObject` `PartialDeletion`.
     pub supports_edit_objects: bool,
+    /// Whether the device keeps the `DateModified` sent in `SendObjectInfo`, stamping it as the
+    /// file's modification time once `SendObject` has the data, as AOSP and a Pixel do. `false`
+    /// models a Galaxy S23 Ultra, which ignores the sent date on every upload, so the file is
+    /// dated at its writes. Defaults to `true`.
+    ///
+    /// The default [`UploadPacing`](crate::UploadPacing) learns this per session (#68): a device
+    /// that drops dates gets windows for dated uploads too, since holding the upload open buys
+    /// it nothing.
+    pub keeps_upload_dates: bool,
 }
 
 /// A ready-to-extend starting point: an obviously-fake identity plus the
@@ -210,6 +219,7 @@ impl Default for VirtualDeviceConfig {
             dates_include_offset: false,
             android: true,
             supports_edit_objects: true,
+            keeps_upload_dates: true,
         }
     }
 }
@@ -256,5 +266,6 @@ mod tests {
         assert!(config.watch_backing_dirs);
         assert!(config.android);
         assert!(config.supports_edit_objects);
+        assert!(config.keeps_upload_dates);
     }
 }

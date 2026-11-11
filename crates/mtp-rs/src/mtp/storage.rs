@@ -520,9 +520,10 @@ impl Storage {
     // Upload operations
     // =========================================================================
 
-    /// Upload a file from a stream, with the device's default [`UploadPacing`]: one held-open
-    /// transfer, unless [`MtpDeviceBuilder::upload_pacing`](crate::MtpDeviceBuilder::upload_pacing)
-    /// chose windows.
+    /// Upload a file from a stream, with the device's default [`UploadPacing`]: held open when
+    /// `info` carries a modification date the device keeps, in windows otherwise
+    /// ([`UploadPacing::KeepDates`]), unless
+    /// [`MtpDeviceBuilder::upload_pacing`](crate::MtpDeviceBuilder::upload_pacing) chose another.
     ///
     /// The data streams directly to the device in chunks; the protocol only needs the total size
     /// upfront (provided via `info`), not the whole file in memory. The stream must yield exactly
@@ -555,7 +556,9 @@ impl Storage {
     /// Android stamps the modification date sent in `info` when the object is created, and every
     /// write after that moves it on, so a windowed upload ends with the time of its last window.
     /// Android can't set it afterwards (`SetObjectPropValue` refuses `DateModified`). A held-open
-    /// upload keeps it on a Pixel; a Galaxy S23 Ultra drops it either way.
+    /// upload keeps it on a Pixel; a Galaxy S23 Ultra drops it either way. That's why the default
+    /// holds a dated upload open until the device has shown it drops dates (see
+    /// [`UploadPacing::KeepDates`]).
     pub async fn upload<'a, S>(
         &'a self,
         parent: Option<ObjectHandle>,

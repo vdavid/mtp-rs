@@ -121,9 +121,17 @@ async fn a_windowed_upload_arrives_whole_in_the_windows_asked_for() {
     assert_clean(&storage, serial).await;
 }
 
-/// Until the date question is settled, `upload` is held open: windows lose the file's date.
+// --- The default pacing (#68): held open where that keeps the date, windows otherwise ---
+
+/// A date far enough from now that the read-back can tell "kept" from "dated now".
+fn old_date() -> crate::mtp::DateTime {
+    crate::mtp::DateTime::new(2019, 6, 14, 10, 23, 0)
+        .unwrap()
+        .with_offset(crate::mtp::UtcOffset::UTC)
+}
+
 #[tokio::test]
-async fn upload_is_held_open_by_default() {
+async fn an_undated_upload_goes_in_windows_by_default() {
     let dir = tempfile::tempdir().unwrap();
     let serial = "paced-up-default";
     let (_device, storage) = open(dir.path(), serial).await;
@@ -139,8 +147,184 @@ async fn upload_is_held_open_by_default() {
         .unwrap();
 
     assert_eq!(std::fs::read(dir.path().join("default.bin")).unwrap(), data);
+    // 8 MiB first, then a window sized from the speed.
+    assert!(count(serial, OperationCode::SendPartialObject) >= 2);
+    assert_clean(&storage, serial).await;
+}
+
+/// A Pixel keeps a held-open upload's date, so dated uploads stay held open, and one read-back
+/// learns that the device keeps dates.
+#[tokio::test]
+async fn a_dated_upload_stays_held_open_and_keeps_its_date_by_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let serial = "paced-up-default-dated";
+    let (_device, storage) = open(dir.path(), serial).await;
+    let data = pattern(3 * MIB);
+
+    for name in ["kept-1.bin", "kept-2.bin", "kept-3.bin"] {
+        let handle = storage
+            .upload(
+                None,
+                NewObjectInfo::file(name, data.len() as u64).with_modified(old_date()),
+                chunks(&data),
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(dir.path().join(name)).unwrap(), data);
+        let modified = storage.get_object_info(handle).await.unwrap().modified;
+        assert_eq!(modified.map(|d| d.year), Some(2019), "{modified:?}");
+    }
     assert_eq!(count(serial, OperationCode::SendPartialObject), 0);
-    assert_eq!(count(serial, OperationCode::SendObject), 1);
+    assert_eq!(count(serial, OperationCode::SendObject), 3);
+    // One read-back for the first upload, then the three asked here.
+    assert_eq!(count(serial, OperationCode::GetObjectInfo), 4);
+}
+
+/// A Galaxy S23 Ultra drops the sent date even held open. The first dated upload is held open
+/// and read back; from then on dated uploads go in windows too, since holding them open buys
+/// nothing.
+#[tokio::test]
+async fn a_device_that_drops_dates_gets_windows_after_the_first_dated_upload() {
+    let dir = tempfile::tempdir().unwrap();
+    let serial = "paced-up-drops-dates";
+    let device = MtpDevice::builder()
+        .open_virtual(VirtualDeviceConfig {
+            keeps_upload_dates: false,
+            ..config(dir.path(), serial)
+        })
+        .await
+        .unwrap();
+    let storage = device.storages().await.unwrap().remove(0);
+    let data = pattern(3 * MIB);
+
+    for name in ["first.bin", "second.bin"] {
+        storage
+            .upload(
+                None,
+                NewObjectInfo::file(name, data.len() as u64).with_modified(old_date()),
+                chunks(&data),
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(dir.path().join(name)).unwrap(), data);
+    }
+    // The first went out held open, the second in windows.
+    assert_eq!(count(serial, OperationCode::BeginEditObject), 1);
+    assert!(count(serial, OperationCode::SendPartialObject) >= 1);
+    assert_eq!(count(serial, OperationCode::GetObjectInfo), 1);
+
+    // The step-by-step upload follows the same rule.
+    let upload = storage
+        .start_upload(
+            None,
+            NewObjectInfo::file("third.bin", 10).with_modified(old_date()),
+            UploadPacing::default(),
+        )
+        .await
+        .unwrap();
+    assert!(upload.is_windowed());
+    let _ = upload.cancel().await;
+    assert_clean(&storage, serial).await;
+}
+
+/// A date within a few days of now reads the same kept or dropped (zones put a zoneless date up
+/// to a day off), so it teaches nothing: held open, and no read-back.
+#[tokio::test]
+async fn a_recent_date_stays_held_open_without_a_read_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let serial = "paced-up-recent-date";
+    let device = MtpDevice::builder()
+        .open_virtual(VirtualDeviceConfig {
+            keeps_upload_dates: false,
+            ..config(dir.path(), serial)
+        })
+        .await
+        .unwrap();
+    let storage = device.storages().await.unwrap().remove(0);
+    let data = pattern(2 * MIB);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let recent =
+        crate::mtp::DateTime::from_unix_seconds(now - 3600, crate::mtp::UtcOffset::UTC).unwrap();
+
+    for name in ["recent-1.bin", "recent-2.bin"] {
+        storage
+            .upload(
+                None,
+                NewObjectInfo::file(name, data.len() as u64).with_modified(recent),
+                chunks(&data),
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(count(serial, OperationCode::SendPartialObject), 0);
+    assert_eq!(count(serial, OperationCode::GetObjectInfo), 0);
+}
+
+#[tokio::test]
+async fn a_step_by_step_upload_follows_the_default_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let serial = "file-up-default";
+    let (_device, storage) = open(dir.path(), serial).await;
+
+    let dated = storage
+        .start_upload(
+            None,
+            NewObjectInfo::file("dated.bin", 10).with_modified(old_date()),
+            UploadPacing::default(),
+        )
+        .await
+        .unwrap();
+    assert!(!dated.is_windowed());
+    let _ = dated.cancel().await;
+
+    let undated = storage
+        .start_upload(
+            None,
+            NewObjectInfo::file("undated.bin", 10),
+            UploadPacing::default(),
+        )
+        .await
+        .unwrap();
+    assert!(undated.is_windowed());
+    let _ = undated.cancel().await;
+    assert_clean(&storage, serial).await;
+}
+
+/// An explicit pacing always wins over the date rule.
+#[tokio::test]
+async fn an_explicit_pacing_wins_over_the_date_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let serial = "paced-up-explicit";
+    let (_device, storage) = open(dir.path(), serial).await;
+    let data = pattern(2 * MIB);
+
+    storage
+        .upload_with_pacing(
+            None,
+            NewObjectInfo::file("dated.bin", data.len() as u64).with_modified(old_date()),
+            chunks(&data),
+            UploadPacing::FixedWindow(MIB as u32),
+            continue_,
+        )
+        .await
+        .unwrap();
+    assert_eq!(count(serial, OperationCode::SendPartialObject), 2);
+    storage
+        .upload_with_pacing(
+            None,
+            NewObjectInfo::file("undated.bin", data.len() as u64),
+            chunks(&data),
+            UploadPacing::HeldOpen,
+            continue_,
+        )
+        .await
+        .unwrap();
+    assert_eq!(count(serial, OperationCode::SendPartialObject), 2);
+    // No read-back on an explicit pacing.
+    assert_eq!(count(serial, OperationCode::GetObjectInfo), 0);
 }
 
 #[tokio::test]

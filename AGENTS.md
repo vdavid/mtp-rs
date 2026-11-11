@@ -94,8 +94,9 @@ windows of about two seconds and frees the session between them; `download_with_
 `Storage::download_to_vec(handle)` / `Storage::read_range(handle, offset, len)` /
 `Storage::thumbnail(handle)`.
 
-**Upload API:** `Storage::upload` / `upload_with_progress` use the device's default pacing (held open
-unless `MtpDeviceBuilder::upload_pacing` says otherwise), `upload_with_pacing` takes an `UploadPacing`, and
+**Upload API:** `Storage::upload` / `upload_with_progress` use the device's default pacing
+(`UploadPacing::KeepDates`: held open where that keeps the file's date, windows otherwise, unless
+`MtpDeviceBuilder::upload_pacing` says otherwise), `upload_with_pacing` takes an `UploadPacing`, and
 `Storage::start_upload` returns a step-by-step `FileUpload` (`write_chunk`, `finish`, `cancel`,
 `holds_session`); see § Paced uploads.
 
@@ -237,7 +238,7 @@ of it. It reads the version in `Cargo.toml`: a deliberate break passes once the 
 - **Unit**: `cargo test --workspace` (uses mock transport)
 - **Fuzz**: `crates/mtp-rs/fuzz/`, one cargo-fuzz target per device-facing parser, run weekly by `.github/workflows/fuzz.yml`. The proptest `fuzz_*` tests stay as the quick in-suite version. See `crates/mtp-rs/fuzz/CLAUDE.md`.
 - **Filesystem-watcher tests run in their own pass** (`just test` does this for you: everything else, then `fs_watcher` with `--test-threads=1`). They wait on real OS filesystem-event delivery, so inside the ~400-test parallel pool a loaded machine starves them past their poll budget and they fail as a group while passing every time alone. Don't fold them back in, and don't "fix" a flake there by inflating the timeout. Each one also calls `wait_for_watcher_ready` first, which writes a probe file and waits for the watcher to report it: `notify` arms its stream on a background thread, so a write issued straight after `open_virtual` can land before anything is listening. The probe file is deliberately left in place, since deleting it queues a late `ObjectRemoved` that lands after the drain and steals the next test's first event.
-- **Virtual device**: `cargo test -p mtp-rs --features virtual-device` (full protocol tests against local filesystem). Everything public is in `mtp_rs::virtual_device`. `VirtualDeviceConfig` implements `Default`, so build it as `VirtualDeviceConfig { storages: vec![...], ..Default::default() }` and state only the fields a test actually exercises; new fields must land with a default so consumers don't break (see CONTRIBUTING.md). `VirtualStorageConfig` has no `Default` (an unset `backing_dir` fails silently). Bulk reads honor the requested size like USB, so a held-open download or a window over 64 KiB comes out of `next_chunk` in 64 KiB pieces, and a consumer can test its per-call memory bound against it (#63). Fault injection: `force_partial_read_caps` (short/stall reads), `force_cancel_wedge` / `force_operation_wedge` (#18), `force_object_info_error` and `VirtualDeviceConfig::undescribable_objects` (partially-readable folders, #22). Capability shaping: `supports_partial_object` / `supports_partial_object_64` pick which partial-read ops the device advertises AND serves (both `false` models libhaze/Sphaira, where `download(ByteRange::Full)` is the only read). `GetObjectPropList` is advertised and served by default (modern Android does), so every non-root virtual-device listing takes the fast path; `supports_object_prop_list: false` turns it off, and `prop_list_declined_properties` declines single properties. It models AOSP (depth 1 includes the folder itself, unknown properties come back Undefined) except that it serves `DateCreated` alone, so both listing paths match field for field. A prop-list answer that would include an `undescribable_objects` / `force_object_info_error` object fails whole with `GeneralError`, so #22 skips still happen on the per-handle fallback. Dates: objects report their backing file's mtime (and birth time) on the clock set by `utc_offset` (default UTC, zoneless unless `dates_include_offset`), and a held-open upload's `DateModified` becomes the file's mtime (a windowed one ends at the time of its last write, like Android), so a fixture seeds a date with `File::set_modified`. `android` (default `true`) models Android's `MtpServer`: it advertises `android.com`, so the host drains instead of sending CLASS_CANCEL and ends a stopped upload with a zero-length packet, and the device drops the half-written object of a held-open upload (`UploadError::partial` is `None`, #62). `android: false` models a PTP camera: CLASS_CANCEL, and a stopped upload keeps its partial. Tests named `*_on_a_camera` cover that path. `supports_edit_objects` (default `true`, Android mode only) lists and serves the edit ops, so a windowed pacing takes the windowed path (§ Paced uploads); uploads are held open unless a test asks for windows. The model wedges the way a phone does on a data phase it refused unread (`virtual_device_wedged`), keeps edits across sessions (`virtual_open_edits`), and leaves filler past the edit's size when a window stops, so a host that forgets to truncate fails.
+- **Virtual device**: `cargo test -p mtp-rs --features virtual-device` (full protocol tests against local filesystem). Everything public is in `mtp_rs::virtual_device`. `VirtualDeviceConfig` implements `Default`, so build it as `VirtualDeviceConfig { storages: vec![...], ..Default::default() }` and state only the fields a test actually exercises; new fields must land with a default so consumers don't break (see CONTRIBUTING.md). `VirtualStorageConfig` has no `Default` (an unset `backing_dir` fails silently). Bulk reads honor the requested size like USB, so a held-open download or a window over 64 KiB comes out of `next_chunk` in 64 KiB pieces, and a consumer can test its per-call memory bound against it (#63). Fault injection: `force_partial_read_caps` (short/stall reads), `force_cancel_wedge` / `force_operation_wedge` (#18), `force_object_info_error` and `VirtualDeviceConfig::undescribable_objects` (partially-readable folders, #22). Capability shaping: `supports_partial_object` / `supports_partial_object_64` pick which partial-read ops the device advertises AND serves (both `false` models libhaze/Sphaira, where `download(ByteRange::Full)` is the only read). `GetObjectPropList` is advertised and served by default (modern Android does), so every non-root virtual-device listing takes the fast path; `supports_object_prop_list: false` turns it off, and `prop_list_declined_properties` declines single properties. It models AOSP (depth 1 includes the folder itself, unknown properties come back Undefined) except that it serves `DateCreated` alone, so both listing paths match field for field. A prop-list answer that would include an `undescribable_objects` / `force_object_info_error` object fails whole with `GeneralError`, so #22 skips still happen on the per-handle fallback. Dates: objects report their backing file's mtime (and birth time) on the clock set by `utc_offset` (default UTC, zoneless unless `dates_include_offset`), and a held-open upload's `DateModified` becomes the file's mtime (a windowed one ends at the time of its last write, like Android), so a fixture seeds a date with `File::set_modified`. `android` (default `true`) models Android's `MtpServer`: it advertises `android.com`, so the host drains instead of sending CLASS_CANCEL and ends a stopped upload with a zero-length packet, and the device drops the half-written object of a held-open upload (`UploadError::partial` is `None`, #62). `android: false` models a PTP camera: CLASS_CANCEL, and a stopped upload keeps its partial. Tests named `*_on_a_camera` cover that path. `supports_edit_objects` (default `true`, Android mode only) lists and serves the edit ops, so a windowed pacing takes the windowed path (§ Paced uploads); with the default `KeepDates` pacing an undated upload goes in windows and a dated one is held open, so a test of one path names its pacing. `keeps_upload_dates` (default `true`, like a Pixel) stamps the sent `DateModified`; `false` models a Galaxy S23 Ultra, which dates every upload at its writes. The model wedges the way a phone does on a data phase it refused unread (`virtual_device_wedged`), keeps edits across sessions (`virtual_open_edits`), and leaves filler past the edit's size when a window stops, so a host that forgets to truncate fails.
 - **Integration**: `cargo test -p mtp-rs --test integration -- --ignored --nocapture` (needs device). Destructive tests pick a writable root folder from a priority list (Android `Download`, Garmin `Music`, Kindle `documents`, etc.); set `MTP_TEST_FOLDER=Name` to override, or a path (`Download/mtprs-test`) to keep a destructive run in a folder of its own. A timeout or missing device skips a test only until the device has answered once in the run; after that it fails, so a wedge mid-run can't pass as a row of skips (#43). See `crates/mtp-rs/tests/integration.rs` header for full details. To compare the two listing paths on a real device (read-only, prints timings): `MTP_TEST_LIST_FOLDER=/DCIM/Camera cargo test -p mtp-rs --test integration prop_list -- --ignored --nocapture`, or `cargo run --release -p mtp-rs --example list_speed -- DCIM/Camera`.
 - **CLI**: `cargo test -p mtp-rs-cli --features virtual-device` (runs the built binary against a virtual device). The binary shapes that device from `__MTP_RS_TEST_VIRTUAL_*` env vars (`register_test_virtual_device` in `crates/mtp-rs-cli/src/main.rs`): unreadable objects, and the device's clock (`UTC_OFFSET_MINUTES`, `DATES_INCLUDE_OFFSET`). Date tests set the host zone with `TZ`, which the CLI honors on every OS (through `jiff`). The CLI's date rules (how `ls` prints a date, which zone `get` reads a zoneless one in, why `put` sends UTC) live in `crates/mtp-rs-cli/src/cli/dates.rs`.
 - **Property**: `cargo test --workspace --all-features` (proptest fuzzing)
@@ -640,11 +641,33 @@ and `mtp-bench --operations stream,paced,windowed`.
 
 ## Paced uploads (windows through Android's edit ops)
 
-**Windows are opt-in, because they lose the file's date on Android (#68).** `Storage::upload` /
-`upload_with_progress` use `MtpBackend::default_upload_pacing`: `UploadPacing::HeldOpen` (also
-`UploadPacing::default()`) unless `MtpDeviceBuilder::upload_pacing` picked windows. `upload_with_pacing` and
-`start_upload` take `HeldOpen`, `MaxWindowTime(d)` (`DEFAULT_UPLOAD_WINDOW_TIME` is 2 s), or
-`FixedWindow(bytes)`. Don't flip the default while #68 is open. Where a windowed pacing meets
+**The default keeps dates where it can and uses windows everywhere else (#68, David's option (a)).**
+`Storage::upload` / `upload_with_progress` use `MtpBackend::default_upload_pacing`, which is
+`UploadPacing::default()` = `KeepDates(DEFAULT_UPLOAD_WINDOW_TIME)` (2 s) unless `MtpDeviceBuilder::upload_pacing`
+picked another. `upload_with_pacing` and `start_upload` take `KeepDates(d)`, `HeldOpen`, `MaxWindowTime(d)`, or
+`FixedWindow(bytes)`; an explicit pacing always wins. `KeepDates` (resolved in `FileUpload::start`, so the
+stream uploads and the step-by-step one follow the same rule):
+
+- **Held open** when `NewObjectInfo::modified` is set and the session hasn't learned that the device drops
+  dates. Windows lose the date on Android (see Dates below), a held-open upload keeps it on a Pixel.
+- **Windows** (of about `d`) when the upload has no date, or the device drops dates anyway (a Galaxy S23
+  Ultra ignores the sent date even held open, so holding it open buys nothing).
+- **Learned per session, no device list** (`mtp::upload::UploadDates`, held by `UsbBackend`, `None` on WPD).
+  After a held-open `KeepDates` upload whose date is more than three days from now, one `GetObjectInfo`
+  reads the date back (`learn_dates`): within 27 h of the sent date is `Kept`, within 27 h of now is
+  `Dropped`, anything else (no date, a phone clock in 1970) is `CantTell`, which stops asking and keeps
+  dated uploads held open. The first verdict sticks. Why 27 h and three days: a zoneless date can be read
+  at any offset from −12 h to +14 h, and Android reads a sent `±hhmm` as phone-local, so two readings of
+  one instant can be 26 h apart; a sent date closer to now than twice that can't tell kept from dropped,
+  so it's never read back (no cost for freshly made files). Unknown means held open: dates win. A
+  failed read-back changes nothing. Only where windows are possible (`can_upload_in_windows`), so cameras
+  and WPD never pay for it. Not exposed in `Capabilities` (that's derived once at open and returned by
+  reference); add an accessor if a consumer needs to show it.
+- **Consequence for stops**: an undated default upload to Android is windowed, so a stop returns
+  `UploadError::partial: Some` (a clean prefix), where a held-open one gives `None`. Tests of the held-open
+  stop path pass `UploadPacing::HeldOpen` explicitly.
+
+Where a windowed pacing meets
 `MtpBackend::can_upload_in_windows` (the USB backend on a device listing 0x95C2–0x95C5, so
 `Capabilities::supports_windowed_upload`), the file goes out as `SendPartialObject` windows inside one
 `BeginEditObject`/`EndEditObject` edit and the session is free between them. Everything else (cameras,
@@ -694,7 +717,7 @@ Rules the hardware set; keep all of them:
 - **`UploadError::partial` is `Some(handle)` for every windowed stop the caller sees** (a `Break`, a source
   or device error, `FileUpload::cancel`) once the object exists: a clean prefix, possibly empty. The library
   doesn't delete it. Held-open Android uploads stay `None` (§ Ending an upload that stopped partway).
-- **Dates** (#68, open): **a windowed upload can't keep its date on AOSP.** The only thing that sets a
+- **Dates** (#68): **a windowed upload can't keep its date on AOSP.** The only thing that sets a
   file's mtime is the `futimens` at the end of `SendObject`, which opens the file `O_TRUNC`, so it can't
   come after the windows; every window's `pwrite` moves the date to now. `setObjectProperty` refuses
   everything but the file name (0xA80A `ObjectPropNotSupported`; `GetObjectPropDesc` marks `DateModified`
@@ -702,16 +725,19 @@ Rules the hardware set; keep all of them:
   upload's date. `EndEditObject` and the media scan leave the date alone, and an edit with only a truncate
   moves it to now. Hardware-verified on a Pixel 9 Pro XL, file system mtimes read on the phone (macOS/nusb,
   2026-11-11, `android_edit_probe dates`); details in the spec. A Pixel keeps the sent date on a held-open
-  upload, a Galaxy S23 Ultra never does. This is why windows are opt-in.
+  upload, a Galaxy S23 Ultra never does. This is why `KeepDates` holds dated uploads open.
 - A source shorter or longer than `NewObjectInfo::size` stops the upload (never a short window).
 - The `SendPartialObject` response parameter is a server bug (length minus the first 16 KiB read), never a
   byte count.
 
 Tested against the virtual device in `transport/virtual_device/paced_upload_tests.rs` (every stop mode, drops
-between and mid-window, `FileUpload` step by step, the defaults, the model's refusals and ghost), plus
+between and mid-window, `FileUpload` step by step, the `KeepDates` default against a Pixel-like and a
+Samsung-like (`keeps_upload_dates: false`) device, the model's refusals and ghost), unit tests for the date
+judging in `mtp/upload.rs`, plus
 conformance. Tests that need a state between or inside windows poll until it holds (`poll_until`): feeding a
 chunk through the channel can return `Pending` once on its way, so counting polls is fragile. Real-device:
-`test_paced_upload_round_trip_with_listings` and `test_upload_stopped_midway_then_session_works`
+`test_default_upload_pacing_keeps_dates` (the `KeepDates` rule, any device),
+`test_paced_upload_round_trip_with_listings`, and `test_upload_stopped_midway_then_session_works`
 (`MTP_UPLOAD_PACING=time:2000` for windows) in `tests/integration.rs`; `examples/android_edit_probe.rs` for
 raw edit-op work; `examples/paced_upload.rs` and `examples/upload_with_app_lock.rs` with no hardware.
 

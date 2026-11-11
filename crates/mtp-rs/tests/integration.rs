@@ -1976,7 +1976,7 @@ mod destructive {
     /// (bytes, default 256 MiB) tune it. Any file the test made that's still listed at the end is
     /// deleted.
     ///
-    /// Uploads are held open (the default pacing); `MTP_UPLOAD_PACING=time:2000` sends them in
+    /// Uploads are held open unless asked; `MTP_UPLOAD_PACING=time:2000` sends them in
     /// windows of about 2 s where the device supports it (see [`upload_pacing_from_env`]). A
     /// dropped windowed upload (`drop`, `timeout`) must be gone by the time the next listing
     /// answers: nobody holds its handle, so the library deletes it. After any other windowed stop
@@ -2175,6 +2175,89 @@ mod destructive {
 
         assert!(failures.is_empty(), "{failures:#?}");
         tlog!("Upload stop test PASSED");
+    }
+
+    /// The default pacing (`UploadPacing::KeepDates`, #68) on real hardware: a dated upload is
+    /// held open and read back, a second dated upload is held open if the device kept the first
+    /// one's date and windowed if it dropped it, and an undated upload is windowed. Each file is
+    /// 16 MiB, written step by step (`start_upload`) so the test can ask `is_windowed`, then read
+    /// back byte for byte and deleted.
+    ///
+    /// Expected on a Pixel 9 Pro XL: held, held, windowed, both dates 2019. On a Galaxy S23 Ultra:
+    /// held, windowed, windowed, dates "now".
+    ///
+    /// ```sh
+    /// cargo test -p mtp-rs --test integration default_upload_pacing -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore]
+    #[serial]
+    async fn test_default_upload_pacing_keeps_dates() {
+        let Some((device, storage, folder)) = setup_with_writable_folder().await else {
+            return;
+        };
+        let can_window = device.capabilities().supports_windowed_upload;
+        tlog!("supports_windowed_upload: {can_window}");
+        let size = 16 * 1024 * 1024u64;
+        let sent = mtp_rs::DateTime::new(2019, 6, 14, 10, 23, 0)
+            .unwrap()
+            .with_offset(mtp_rs::UtcOffset::UTC);
+        let prefix = format!("mtp-rs-keep-dates-{}-", std::process::id());
+        let mut made = Vec::new();
+        let mut kept = Vec::new();
+
+        for (step, dated) in [("dated-1", true), ("dated-2", true), ("undated", false)] {
+            let name = format!("{prefix}{step}.bin");
+            let mut info = NewObjectInfo::file(&name, size);
+            if dated {
+                info = info.with_modified(sent);
+            }
+            let started = Instant::now();
+            let mut upload = storage
+                .start_upload(Some(folder), info, mtp_rs::UploadPacing::default())
+                .await
+                .expect("start_upload");
+            let windowed = upload.is_windowed();
+            let mut source = PatternStream {
+                offset: 0,
+                total: size,
+                chunk_size: 1024 * 1024,
+            };
+            while let Some(chunk) = futures::StreamExt::next(&mut source).await {
+                upload
+                    .write_chunk(chunk.unwrap())
+                    .await
+                    .expect("write_chunk");
+            }
+            let handle = upload.finish().await.expect("finish");
+            made.push(handle);
+            let modified = storage.get_object_info(handle).await.unwrap().modified;
+            tlog!(
+                "{step}: windowed {windowed}, {:.2} s, modified {modified:?}",
+                started.elapsed().as_secs_f64()
+            );
+            assert!(
+                holds_pattern_prefix(&storage, handle, size).await.unwrap(),
+                "{step}: content"
+            );
+            match step {
+                "dated-1" => {
+                    assert!(!windowed, "the first dated upload is held open");
+                    kept.push(modified.map(|d| d.year) == Some(2019));
+                }
+                "dated-2" => assert_eq!(
+                    windowed,
+                    can_window && !kept[0],
+                    "held open where the first kept its date, windowed where it didn't"
+                ),
+                _ => assert_eq!(windowed, can_window, "an undated upload goes in windows"),
+            }
+        }
+        tlog!("The device keeps upload dates: {}", kept[0]);
+        for handle in made {
+            let _ = storage.delete(handle).await;
+        }
+        tlog!("Default upload pacing test PASSED");
     }
 
     /// `MTP_UPLOAD_PACING`: `held` for one `SendObject`, `fixed:<bytes>` for fixed windows,

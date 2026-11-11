@@ -16,13 +16,15 @@
 use crate::mtp::backend::{MtpBackend, ProgressFn, UploadBody, UploadStream};
 use crate::mtp::stream::Pacer;
 use crate::mtp::{
-    DownloadPacing, Error, NewObjectInfo, ObjectHandle, Progress, StorageId, UploadError,
+    DateTime, DownloadPacing, Error, NewObjectInfo, ObjectHandle, Progress, StorageId, UploadError,
+    UtcOffset,
 };
 use bytes::Bytes;
 use futures::channel::mpsc;
 use futures::future::{BoxFuture, Either};
 use futures::{FutureExt, SinkExt, StreamExt};
 use std::ops::ControlFlow;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -42,18 +44,31 @@ pub const DEFAULT_UPLOAD_WINDOW_TIME: Duration = Duration::from_secs(2);
 ///
 /// **Windows lose the file's modification date on Android**: the phone dates the file when it's
 /// created and every window's write moves the date on, so the file ends up dated at its last
-/// window, and Android can't set it afterwards. A held-open upload keeps the date on a Pixel. So
-/// the default is [`HeldOpen`](Self::HeldOpen), and windows are opt-in: per upload through
-/// [`Storage::upload_with_pacing`](crate::Storage::upload_with_pacing) or
+/// window, and Android can't set it afterwards. A held-open upload keeps the date on a Pixel; a
+/// Galaxy S23 Ultra drops it either way. So the default, [`KeepDates`](Self::KeepDates), holds
+/// an upload open when that keeps its date and uses windows otherwise. Pick another pacing per
+/// upload through [`Storage::upload_with_pacing`](crate::Storage::upload_with_pacing) or
 /// [`Storage::start_upload`](crate::Storage::start_upload), or for a whole device through
-/// [`MtpDeviceBuilder::upload_pacing`](crate::MtpDeviceBuilder::upload_pacing).
+/// [`MtpDeviceBuilder::upload_pacing`](crate::MtpDeviceBuilder::upload_pacing); an explicit
+/// pacing always wins.
 ///
 /// Devices without the operations, and the Windows WPD backend, always upload in one piece.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum UploadPacing {
-    /// One `SendObject` for the whole file, holding the device until it ends. The default.
-    #[default]
+    /// The default, at [`DEFAULT_UPLOAD_WINDOW_TIME`]: held open when the upload carries a
+    /// modification date ([`NewObjectInfo::modified`]) and the device keeps dates, windows of
+    /// about this long otherwise.
+    ///
+    /// Whether the device keeps dates is learned per session, with no device list: after the
+    /// first held-open upload with a date at least three days from now, one `GetObjectInfo`
+    /// reads the date back. Near the sent date means the device keeps dates; near now means it
+    /// dropped it (a Galaxy S23 Ultra does), and dated uploads go in windows from then on, since
+    /// holding them open buys nothing. Until a read-back has told, dated uploads stay held open.
+    /// A date closer to now can't tell the two apart (zoneless dates can be a day off), so it
+    /// isn't read back.
+    KeepDates(Duration),
+    /// One `SendObject` for the whole file, holding the device until it ends.
     HeldOpen,
     /// Windows sized from the measured speed to take about this long, so another call waits at
     /// most about this long. The first window is 8 MiB; later ones are never smaller than 1 MiB.
@@ -63,14 +78,127 @@ pub enum UploadPacing {
     FixedWindow(u32),
 }
 
+impl Default for UploadPacing {
+    /// [`KeepDates`](Self::KeepDates) at [`DEFAULT_UPLOAD_WINDOW_TIME`].
+    fn default() -> Self {
+        UploadPacing::KeepDates(DEFAULT_UPLOAD_WINDOW_TIME)
+    }
+}
+
 impl UploadPacing {
     /// The same window sizing, in the download pacer's terms.
     fn sizing(self) -> DownloadPacing {
         match self {
             UploadPacing::HeldOpen => DownloadPacing::HeldOpen,
-            UploadPacing::MaxWindowTime(target) => DownloadPacing::MaxCancelDelay(target),
+            UploadPacing::KeepDates(target) | UploadPacing::MaxWindowTime(target) => {
+                DownloadPacing::MaxCancelDelay(target)
+            }
             UploadPacing::FixedWindow(size) => DownloadPacing::FixedWindow(size),
         }
+    }
+}
+
+/// What a session learned about whether the device keeps an upload's sent date (#68), for
+/// [`UploadPacing::KeepDates`]. One-way: once it knows (or knows it can't tell), it stops asking.
+#[derive(Debug, Default)]
+pub(crate) struct UploadDates(AtomicU8);
+
+/// What one read-back said, and the states of [`UploadDates`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum DatesVerdict {
+    /// Not read back yet.
+    Unknown = 0,
+    /// The read-back matched the sent date.
+    Kept = 1,
+    /// The read-back matched now: the device dates uploads at their writes.
+    Dropped = 2,
+    /// The read-back matched neither (no date, a phone clock far off): don't ask again, and keep
+    /// dated uploads held open.
+    CantTell = 3,
+}
+
+impl UploadDates {
+    pub(crate) fn get(&self) -> DatesVerdict {
+        match self.0.load(Ordering::Relaxed) {
+            1 => DatesVerdict::Kept,
+            2 => DatesVerdict::Dropped,
+            3 => DatesVerdict::CantTell,
+            _ => DatesVerdict::Unknown,
+        }
+    }
+
+    fn set(&self, verdict: DatesVerdict) {
+        // Only the first answer counts, so two concurrent read-backs can't flip it.
+        let _ = self.0.compare_exchange(
+            DatesVerdict::Unknown as u8,
+            verdict as u8,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+}
+
+/// How far a date read back may be from the instant it stands for and still count as it: a
+/// zoneless date can be read at any offset from −12 h to +14 h on either side, and Android reads
+/// a sent `±hhmm` as phone-local, so two readings of one instant can be up to 26 h apart. Plus
+/// some slack for a phone clock a little off.
+const DATE_MATCH: i64 = 27 * 3600;
+
+/// A sent date counts as a probe only this far from now, so "near the sent date" and "near now"
+/// can't both hold (more than twice [`DATE_MATCH`]).
+const DATE_PROBE_DISTANCE: i64 = 3 * 24 * 3600;
+
+/// Seconds since the epoch for a date as a device or a caller wrote it: its own offset, else
+/// read as UTC (within [`DATE_MATCH`] of any zone's reading).
+fn rough_unix_seconds(date: &DateTime) -> Option<i64> {
+    date.to_unix_seconds_with_fallback(UtcOffset::UTC)
+}
+
+fn now_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Whether a read-back of an upload sent with `sent` can tell kept from dropped.
+fn is_date_probe(sent: &DateTime, now: i64) -> bool {
+    rough_unix_seconds(sent).is_some_and(|s| (s - now).abs() > DATE_PROBE_DISTANCE)
+}
+
+/// Judge a read-back: `reported` is the date the device gave for an upload sent with `sent`
+/// (a probe, see [`is_date_probe`]).
+fn judge_dates(sent: &DateTime, reported: Option<&DateTime>, now: i64) -> DatesVerdict {
+    let (Some(s), Some(r)) = (
+        rough_unix_seconds(sent),
+        reported.and_then(rough_unix_seconds),
+    ) else {
+        return DatesVerdict::CantTell;
+    };
+    if (r - s).abs() <= DATE_MATCH {
+        DatesVerdict::Kept
+    } else if (r - now).abs() <= DATE_MATCH {
+        DatesVerdict::Dropped
+    } else {
+        DatesVerdict::CantTell
+    }
+}
+
+/// Read back a held-open upload's date and remember whether the device kept it. Failures teach
+/// nothing and don't touch the upload, which already succeeded.
+async fn learn_dates(
+    backend: &Arc<dyn MtpBackend>,
+    dates: &UploadDates,
+    handle: ObjectHandle,
+    sent: DateTime,
+) {
+    match backend.object_info(handle).await {
+        Ok(info) => {
+            let verdict = judge_dates(&sent, info.modified.as_ref(), now_unix_seconds());
+            diag_debug!("upload: the device's date read-back says {:?}", verdict);
+            dates.set(verdict);
+        }
+        Err(e) => diag_debug!("upload: reading back the upload's date failed: {:?}", e),
     }
 }
 
@@ -111,6 +239,9 @@ enum Mode {
         backend: Arc<dyn MtpBackend>,
         start: Option<(StorageId, Option<ObjectHandle>, NewObjectInfo)>,
         transfer: Option<InFlight<HeldFuture>>,
+        /// The sent date, when this upload's date should be read back once it's done
+        /// ([`UploadPacing::KeepDates`] learning whether the device keeps dates).
+        probe: Option<DateTime>,
     },
     /// Windows into an object opened for editing.
     Windowed {
@@ -200,9 +331,23 @@ impl FileUpload {
         pacing: UploadPacing,
     ) -> Result<Self, UploadError> {
         let size = info.size;
+        let can_window = backend.can_upload_in_windows();
+        let dates = backend.upload_dates().map(UploadDates::get);
+        let keeps_dates = matches!(pacing, UploadPacing::KeepDates(_));
+        // A dated upload stays held open unless the device has shown it drops dates anyway.
+        let keep_date_held =
+            keeps_dates && info.modified.is_some() && dates != Some(DatesVerdict::Dropped);
         // An empty file has no data to window: the held-open path is the same two operations.
         let windowed =
-            pacing != UploadPacing::HeldOpen && size > 0 && backend.can_upload_in_windows();
+            pacing != UploadPacing::HeldOpen && !keep_date_held && size > 0 && can_window;
+        // Read the date back only where the answer could change a later upload, and only when
+        // it can tell (see `is_date_probe`).
+        let probe = info.modified.filter(|sent| {
+            keep_date_held
+                && can_window
+                && dates == Some(DatesVerdict::Unknown)
+                && is_date_probe(sent, now_unix_seconds())
+        });
         let mode = if windowed {
             let body = backend
                 .begin_windowed_upload(storage, parent, &info)
@@ -219,6 +364,7 @@ impl FileUpload {
                 backend,
                 start: Some((storage, parent, info)),
                 transfer: None,
+                probe,
             }
         };
         Ok(Self {
@@ -334,12 +480,17 @@ impl FileUpload {
                 backend,
                 start,
                 transfer,
+                probe,
             } => {
                 // An empty file never got a chunk to start it.
                 if transfer.is_none() {
                     *transfer = Some(start_held(backend, start.take()));
                 }
-                transfer.take().expect("started above").close().await
+                let handle = transfer.take().expect("started above").close().await?;
+                if let (Some(sent), Some(dates)) = (*probe, backend.upload_dates()) {
+                    learn_dates(backend, dates, handle, sent).await;
+                }
+                Ok(handle)
             }
             Mode::Windowed { body, handle, .. } => {
                 // The last window closed in the call that handed over its last byte.
@@ -435,6 +586,7 @@ impl FileUpload {
             backend,
             start,
             transfer,
+            ..
         } = &mut self.mode
         else {
             unreachable!("called for the held-open mode")
@@ -600,4 +752,89 @@ pub(crate) async fn upload_stream<'a>(
         upload.write_chunk(chunk).await?;
     }
     upload.finish().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DAY: i64 = 24 * 3600;
+    /// 2026-11-11T12:00:00Z.
+    const NOW: i64 = 1_794_398_400;
+
+    fn utc(secs: i64) -> DateTime {
+        DateTime::from_unix_seconds(secs, UtcOffset::UTC).unwrap()
+    }
+
+    /// The same instant as Android reports it: zoneless wall-clock time in the phone's zone.
+    fn phone_local(secs: i64, offset_minutes: i16) -> DateTime {
+        let d = DateTime::from_unix_seconds(secs, UtcOffset::from_minutes(offset_minutes).unwrap())
+            .unwrap();
+        DateTime { offset: None, ..d }
+    }
+
+    #[test]
+    fn a_date_near_now_is_no_probe() {
+        assert!(!is_date_probe(&utc(NOW), NOW));
+        assert!(!is_date_probe(&utc(NOW - 2 * DAY), NOW));
+        assert!(!is_date_probe(&phone_local(NOW, 14 * 60), NOW));
+        assert!(is_date_probe(&utc(NOW - 4 * DAY), NOW));
+        assert!(is_date_probe(&utc(NOW + 4 * DAY), NOW));
+    }
+
+    #[test]
+    fn a_kept_date_reads_as_kept_in_any_phone_zone() {
+        let sent = utc(NOW - 365 * DAY);
+        for offset in [-12 * 60, -5 * 60, 0, 60, 330, 14 * 60] {
+            let reported = phone_local(NOW - 365 * DAY, offset);
+            assert_eq!(
+                judge_dates(&sent, Some(&reported), NOW),
+                DatesVerdict::Kept,
+                "{offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_date_set_to_the_upload_time_reads_as_dropped_in_any_phone_zone() {
+        let sent = utc(NOW - 365 * DAY);
+        for offset in [-12 * 60, 0, 60, 14 * 60] {
+            // A few seconds after "now", as the upload ends.
+            let reported = phone_local(NOW + 5, offset);
+            assert_eq!(
+                judge_dates(&sent, Some(&reported), NOW),
+                DatesVerdict::Dropped,
+                "{offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn anything_else_cant_tell() {
+        let sent = utc(NOW - 365 * DAY);
+        assert_eq!(judge_dates(&sent, None, NOW), DatesVerdict::CantTell);
+        // A phone whose clock fell back to 1970.
+        let reported = utc(0);
+        assert_eq!(
+            judge_dates(&sent, Some(&reported), NOW),
+            DatesVerdict::CantTell
+        );
+    }
+
+    #[test]
+    fn the_first_verdict_sticks() {
+        let dates = UploadDates::default();
+        assert_eq!(dates.get(), DatesVerdict::Unknown);
+        dates.set(DatesVerdict::Dropped);
+        dates.set(DatesVerdict::Kept);
+        assert_eq!(dates.get(), DatesVerdict::Dropped);
+    }
+
+    #[test]
+    fn the_default_keeps_dates_with_two_second_windows() {
+        assert_eq!(
+            UploadPacing::default(),
+            UploadPacing::KeepDates(DEFAULT_UPLOAD_WINDOW_TIME)
+        );
+    }
 }
