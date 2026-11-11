@@ -36,6 +36,9 @@
 //! MTP_TEST_FOLDER=Internal cargo test --test integration destructive -- --ignored ...
 //! ```
 //!
+//! A value with a `/` is a path from the storage root, so a run can stay in a folder of its own:
+//! `MTP_TEST_FOLDER=Download/mtprs-test` (create it first).
+//!
 //! When no match is found, destructive tests skip with a clear log line.
 //!
 //! ## Picking a file for download tests
@@ -505,13 +508,25 @@ async fn find_suitable_file(
 
 /// Find a writable folder at storage root for destructive tests.
 ///
-/// If `MTP_TEST_FOLDER` is set, look for that folder name only.
-/// Otherwise walk a priority list covering Android, Kindle, and Garmin
+/// If `MTP_TEST_FOLDER` is set, look for that folder name only. A value with a `/` is a path
+/// from the storage root (`Download/mtprs-test`), so destructive runs can stay in a folder of
+/// their own. Otherwise walk a priority list covering Android, Kindle, and Garmin
 /// devices and return the first match. Returns `(handle, name)`.
 async fn find_writable_folder(storage: &Storage) -> Option<(ObjectHandle, String)> {
+    let override_name = std::env::var("MTP_TEST_FOLDER").ok();
+    if let Some(path) = override_name.as_deref().filter(|p| p.contains('/')) {
+        let handle = resolve_folder(storage, path).await;
+        if handle.is_none() {
+            tlog!(
+                "MTP_TEST_FOLDER='{}' is set, but no folder at that path",
+                path
+            );
+        }
+        return handle.map(|h| (h, path.to_string()));
+    }
+
     let root_objects = storage.list_objects(None).await.ok()?;
 
-    let override_name = std::env::var("MTP_TEST_FOLDER").ok();
     let candidates: Vec<String> = if let Some(name) = &override_name {
         vec![name.clone()]
     } else {
@@ -1962,8 +1977,9 @@ mod destructive {
     /// deleted.
     ///
     /// Uploads are held open (the default pacing); `MTP_UPLOAD_PACING=time:2000` sends them in
-    /// windows of about 2 s where the device supports it (see [`upload_pacing_from_env`]). After a
-    /// windowed stop
+    /// windows of about 2 s where the device supports it (see [`upload_pacing_from_env`]). A
+    /// dropped windowed upload (`drop`, `timeout`) must be gone by the time the next listing
+    /// answers: nobody holds its handle, so the library deletes it. After any other windowed stop
     /// the partial object must hold a clean prefix of the file (the windows the phone
     /// acknowledged, never the stopped window's tail), which the test reads back and checks.
     ///
@@ -2084,6 +2100,9 @@ mod destructive {
                 "  upload: {outcome} after {:.2} s",
                 started.elapsed().as_secs_f64()
             );
+            // A dropped windowed upload is deleted by the next operation; any other stop keeps
+            // the acknowledged windows for the caller.
+            let dropped = outcome.starts_with("dropped");
 
             let (mut listing, _) = timed("list folder", storage.list_objects(Some(folder))).await;
             if !matches!(listing, Some(Ok(_))) {
@@ -2099,6 +2118,12 @@ mod destructive {
             match partial {
                 Some(obj) => {
                     tlog!("  partial object listed: {} bytes", obj.size);
+                    if windowed && dropped {
+                        failures.push(format!(
+                            "run {run}: a dropped windowed upload must be deleted, {} bytes listed",
+                            obj.size
+                        ));
+                    }
                     let (info, _) = timed("object info", storage.get_object_info(obj.handle)).await;
                     if let Some(Ok(info)) = info {
                         tlog!("  partial object info: {} bytes", info.size);
@@ -2127,6 +2152,7 @@ mod destructive {
                         failures.push(format!("run {run}: deleting the partial failed"));
                     }
                 }
+                None if windowed && dropped => tlog!("  deleted, as a dropped windowed upload"),
                 None if windowed => {
                     failures.push(format!("run {run}: a windowed stop must keep the object"));
                 }

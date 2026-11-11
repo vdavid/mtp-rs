@@ -3,6 +3,7 @@
 //! This module provides session-level operations for MTP/PTP communication.
 //! A session maintains the connection state and serializes concurrent operations.
 
+mod lock;
 mod operations;
 mod properties;
 mod streaming;
@@ -15,7 +16,7 @@ use crate::ptp::{
 };
 use crate::transport::Transport;
 use crate::PtpError as Error;
-use futures::lock::Mutex;
+use lock::OperationLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -215,9 +216,9 @@ pub struct PtpSession {
     session_id: SessionId,
     /// Atomic counter for generating transaction IDs.
     transaction_id: AtomicU32,
-    /// Mutex to serialize operations (MTP only allows one operation at a time).
+    /// Serializes operations (MTP only allows one operation at a time); see [`OperationLock`].
     /// Wrapped in Arc so it can be shared with ReceiveStream.
-    pub(crate) operation_lock: Arc<Mutex<()>>,
+    pub(crate) operation_lock: Arc<OperationLock>,
     /// Whether to send data container headers separately from payloads.
     /// Some devices require the 12-byte PTP header and data payload to arrive
     /// as separate USB bulk transfers.
@@ -240,7 +241,7 @@ impl PtpSession {
             transport,
             session_id,
             transaction_id: AtomicU32::new(TransactionId::FIRST.0),
-            operation_lock: Arc::new(Mutex::new(())),
+            operation_lock: Arc::new(OperationLock::default()),
             split_header_data: AtomicBool::new(false),
             recovery: Arc::new(RecoveryState::default()),
             deferred_edit_closes: std::sync::Mutex::new(Vec::new()),
@@ -466,6 +467,12 @@ impl PtpSession {
     async fn recover_if_needed(&self) -> Result<(), Error> {
         self.drain_if_needed().await?;
         self.close_deferred_edits().await
+    }
+
+    /// Between the windows of a paced transfer, with the lock released: let a call that is
+    /// waiting for the session take it first. See [`OperationLock::let_waiting_calls_in`].
+    pub(crate) async fn let_waiting_calls_in(&self) {
+        self.operation_lock.let_waiting_calls_in().await;
     }
 
     /// Keep an edit open on the device from being forgotten: the next operation on this session

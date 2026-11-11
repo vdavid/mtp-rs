@@ -248,6 +248,15 @@ pub(crate) trait MtpBackend: Send + Sync {
     /// operation, or only the 32-bit one and `offset` is past 4 GiB.
     fn can_read_partially_at(&self, offset: u64) -> bool;
 
+    /// Called between the windows of a paced transfer, with the device free: let a call that
+    /// queued for the device during the last window run before the next window starts. USB
+    /// waits until a queued call has the session lock, since a yield alone doesn't do that on a
+    /// multi-thread runtime (`ptp/session/lock.rs`). The default yields once, which is enough
+    /// where requests queue in order (WPD's worker channel).
+    async fn let_queued_calls_in(&self) {
+        crate::mtp::stream::YieldNow::default().await;
+    }
+
     /// A single-shot buffered read of `[offset, offset+len)` (or to EOF when `len` is `None`).
     async fn read_range(
         &self,

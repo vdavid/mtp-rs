@@ -261,6 +261,10 @@ impl PtpSession {
 }
 ```
 
+The real lock is `OperationLock` (`ptp/session/lock.rs`), a `futures` mutex that also counts its waiters, so a
+paced transfer can let other calls in between windows; a yield alone doesn't on a multi-thread runtime
+(`AGENTS.md` § Paced downloads).
+
 ### Thread safety
 
 - `MtpDevice` is `Send + Sync`

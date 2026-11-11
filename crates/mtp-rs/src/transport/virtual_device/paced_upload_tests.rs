@@ -280,6 +280,69 @@ async fn the_device_is_free_between_windows() {
     assert_clean(&storage, serial).await;
 }
 
+/// A call from another task waits for the window in flight, not for the windows after it, on a
+/// multi-thread runtime too. A bare yield between windows didn't do that there: the woken caller
+/// sat behind the uploader in the worker's queue, and the uploader took the lock straight back.
+/// On a Pixel a listing waited out two or three 2 s windows (3.1–3.4 s, 2026-11-11).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_from_another_task_waits_for_one_window_on_a_multi_thread_runtime() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("other.txt"), "x").unwrap();
+    let serial = "paced-up-fair-mt";
+    let (device, storage) = open(dir.path(), serial).await;
+    let data = pattern(16 * MIB);
+    let window = 64 * 1024;
+
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let lister = {
+        let storage = device.storages().await.unwrap().remove(0);
+        let done = std::sync::Arc::clone(&done);
+        tokio::spawn(async move {
+            let mut worst = 0;
+            let mut listings = 0;
+            while listings < 20 {
+                // Wait until a window is in flight, then queue a listing behind it.
+                let start = count(serial, OperationCode::SendPartialObject);
+                while count(serial, OperationCode::SendPartialObject) == start {
+                    if done.load(std::sync::atomic::Ordering::Relaxed) {
+                        return (worst, listings);
+                    }
+                    tokio::task::yield_now().await;
+                }
+                listings += 1;
+                let before = count(serial, OperationCode::SendPartialObject);
+                storage.list_objects(None).await.unwrap();
+                worst = worst.max(count(serial, OperationCode::SendPartialObject) - before);
+            }
+            (worst, listings)
+        })
+    };
+    storage
+        .upload_with_pacing(
+            None,
+            NewObjectInfo::file("fair.bin", data.len() as u64),
+            chunks(&data),
+            UploadPacing::FixedWindow(window as u32),
+            continue_,
+        )
+        .await
+        .unwrap();
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    let (worst, listings) = lister.await.unwrap();
+    assert!(
+        listings >= 10,
+        "only {listings} listings ran during the upload (worst wait: {worst} windows)"
+    );
+    // A window here takes microseconds, so one or two can start between the lister seeing a
+    // window in flight and its listing queueing for the lock. Without the handoff it was 80–193.
+    assert!(
+        worst <= 3,
+        "a listing waited for {worst} windows to start after the one in flight"
+    );
+    assert_eq!(std::fs::read(dir.path().join("fair.bin")).unwrap(), data);
+    assert_clean(&storage, serial).await;
+}
+
 /// What a stopped windowed upload leaves: exactly the acknowledged windows, the edit ended, the
 /// handle surfaced, and a healthy device.
 async fn assert_clean_prefix(

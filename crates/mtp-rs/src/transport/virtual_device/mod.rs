@@ -1561,6 +1561,64 @@ mod tests {
         assert_eq!(got, content);
     }
 
+    /// The multi-thread twin of the test above: there a bare yield between windows left the
+    /// woken listing behind the download in the worker's queue (`ptp/session/lock.rs`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_listing_gets_in_between_windows_on_a_multi_thread_runtime() {
+        use crate::ptp::OperationCode;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let content: Vec<u8> = (0..16 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        std::fs::write(dir.path().join("big.bin"), &content).unwrap();
+        let serial = "paced-dl-fair-mt";
+        let device = MtpDevice::builder()
+            .open_virtual(test_config_with_serial(dir.path(), serial))
+            .await
+            .unwrap();
+        let storage = device.storages().await.unwrap().remove(0);
+        let handle = storage.list_objects(None).await.unwrap()[0].handle;
+        let windows = move || {
+            super::registry::operation_count(serial, OperationCode::GetPartialObject64).unwrap()
+        };
+
+        let done = Arc::new(AtomicBool::new(false));
+        let lister = {
+            let storage = device.storages().await.unwrap().remove(0);
+            let done = Arc::clone(&done);
+            tokio::spawn(async move {
+                let (mut worst, mut listings) = (0, 0);
+                while listings < 20 {
+                    let start = windows();
+                    while windows() == start {
+                        if done.load(Ordering::Relaxed) {
+                            return (worst, listings);
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                    listings += 1;
+                    let before = windows();
+                    storage.list_objects(None).await.unwrap();
+                    worst = worst.max(windows() - before);
+                }
+                (worst, listings)
+            })
+        };
+        let got =
+            collect_download(windowed(&storage, handle, ByteRange::Full, 64 * 1024).await).await;
+        done.store(true, Ordering::Relaxed);
+        let (worst, listings) = lister.await.unwrap();
+        assert_eq!(got, content);
+        assert!(
+            listings >= 10,
+            "only {listings} listings ran during the download (worst wait: {worst} windows)"
+        );
+        // As in the upload twin: a window here takes microseconds, so one or two can start
+        // before the listing queues.
+        assert!(worst <= 3, "a listing waited for {worst} windows");
+    }
+
     #[tokio::test]
     async fn cancel_between_windows_sends_nothing_and_mid_window_reaches_the_device() {
         let dir = tempfile::tempdir().unwrap();

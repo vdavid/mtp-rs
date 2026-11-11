@@ -1011,6 +1011,10 @@ impl MtpBackend for UsbBackend {
         self.partial_read(offset).is_ok()
     }
 
+    async fn let_queued_calls_in(&self) {
+        self.session.let_waiting_calls_in().await;
+    }
+
     async fn read_range(
         &self,
         obj: ObjectHandle,

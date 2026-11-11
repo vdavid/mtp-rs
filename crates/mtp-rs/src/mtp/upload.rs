@@ -2,7 +2,7 @@
 //! transactions.
 //!
 //! The policy lives here, backend-neutral, the way paced downloads live in [`super::stream`]:
-//! window sizes come from the same `Pacer`, and the window loop, the yield between windows, and
+//! window sizes come from the same `Pacer`, and the window loop, letting queued calls in between windows, and
 //! what a stop does are decided once for every backend. A backend provides
 //! [`MtpBackend::upload`] (one held-open transfer) and, where it can,
 //! [`MtpBackend::begin_windowed_upload`] and the [`UploadBody`] it returns (today the USB backend,
@@ -14,7 +14,7 @@
 //! waits between [`FileDownload::next_chunk`](crate::FileDownload::next_chunk) calls.
 
 use crate::mtp::backend::{MtpBackend, ProgressFn, UploadBody, UploadStream};
-use crate::mtp::stream::{Pacer, YieldNow};
+use crate::mtp::stream::Pacer;
 use crate::mtp::{
     DownloadPacing, Error, NewObjectInfo, ObjectHandle, Progress, StorageId, UploadError,
 };
@@ -114,6 +114,8 @@ enum Mode {
     },
     /// Windows into an object opened for editing.
     Windowed {
+        /// For [`MtpBackend::let_queued_calls_in`] between windows.
+        backend: Arc<dyn MtpBackend>,
         /// The open object while no window is in flight (a window owns it while it runs).
         body: Option<Box<dyn UploadBody>>,
         handle: ObjectHandle,
@@ -206,6 +208,7 @@ impl FileUpload {
                 .begin_windowed_upload(storage, parent, &info)
                 .await?;
             Mode::Windowed {
+                backend,
                 handle: body.handle(),
                 body: Some(body),
                 window: None,
@@ -454,6 +457,7 @@ impl FileUpload {
     async fn feed_windows(&mut self, mut chunk: Bytes) -> Result<(), UploadError> {
         let remaining = self.size - (self.sent - chunk.len() as u64);
         let Mode::Windowed {
+            backend,
             body,
             handle,
             window,
@@ -471,7 +475,7 @@ impl FileUpload {
                     .expect("no window in flight, so the body is here");
                 if open.acknowledged() > 0 {
                     // Let a call that queued for the device during the last window run first.
-                    YieldNow::default().await;
+                    backend.let_queued_calls_in().await;
                 }
                 let len = pacer.next_window(remaining - offset_into_rest);
                 let (tx, rx) = mpsc::channel(0);

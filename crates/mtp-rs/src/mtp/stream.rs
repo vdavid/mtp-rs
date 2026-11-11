@@ -208,7 +208,7 @@ pub struct FileDownload {
     created: Option<DateTime>,
     pacer: Pacer,
     current: Option<ActiveRead>,
-    /// Whether any read has started, so the yield between windows skips the first.
+    /// Whether any read has started, so letting queued calls in skips the first window.
     started: bool,
     done: bool,
 }
@@ -424,7 +424,7 @@ impl FileDownload {
     /// Start the next read: a window, or a held-open transfer for the rest of the range when the
     /// pacing asks for one or the device can't read partially from here.
     ///
-    /// The read's `device_time` starts at zero: the time to start it (the yield, and on WPD a
+    /// The read's `device_time` starts at zero: the time to start it (letting queued calls in, and on WPD a
     /// stream reopen and seek, which re-reads the prefix on a forward-only stream) isn't the
     /// transfer rate, and counting it shrank every window after an interleaved call (#61).
     async fn start_next_read(&mut self) -> Result<(), Error> {
@@ -433,7 +433,7 @@ impl FileDownload {
         let read = if windowed {
             if self.started {
                 // Let a call that queued for the device during the last window run first.
-                YieldNow::default().await;
+                self.backend.let_queued_calls_in().await;
             }
             let len = self.pacer.next_window(remaining);
             let body = self
