@@ -1961,6 +1961,11 @@ mod destructive {
     /// (bytes, default 256 MiB) tune it. Any file the test made that's still listed at the end is
     /// deleted.
     ///
+    /// Uploads go out in windows where the device supports it (the default pacing);
+    /// `MTP_UPLOAD_PACING` picks another (see [`upload_pacing_from_env`]). After a windowed stop
+    /// the partial object must hold a clean prefix of the file (the windows the phone
+    /// acknowledged, never the stopped window's tail), which the test reads back and checks.
+    ///
     /// ```sh
     /// MTP_UPLOAD_STOP=drop cargo test -p mtp-rs --test integration upload_stopped -- --ignored --nocapture
     /// ```
@@ -1990,9 +1995,13 @@ mod destructive {
             .unwrap_or(256 * 1024 * 1024);
         let prefix = format!("mtp-rs-upload-stop-{}-", std::process::id());
 
-        let Some((_device, storage, folder)) = setup_with_writable_folder().await else {
+        let Some((device, storage, folder)) = setup_with_writable_folder().await else {
             return;
         };
+        let pacing = upload_pacing_from_env();
+        let windowed = device.capabilities().supports_windowed_upload
+            && pacing != mtp_rs::UploadPacing::HeldOpen;
+        tlog!("Pacing {pacing:?}, windowed: {windowed}");
         tlog!(
             "{} runs, {} MB each, stopping by {}",
             runs,
@@ -2022,7 +2031,9 @@ mod destructive {
                     chunk_size: 1024 * 1024,
                 };
                 // The source stalls at `stop_at`; the timeout then drops the future there.
-                let upload = storage.upload(Some(folder), info, source);
+                let upload = storage.upload_with_pacing(Some(folder), info, source, pacing, |_| {
+                    ControlFlow::Continue(())
+                });
                 match tokio::time::timeout(std::time::Duration::from_secs(3), upload).await {
                     Ok(result) => format!("finished on its own: {:?}", result.map(|_| ())),
                     Err(_) => "dropped".to_string(),
@@ -2034,8 +2045,10 @@ mod destructive {
                     chunk_size: 1024 * 1024,
                 };
                 // The source is always ready, so the upload only yields while a USB transfer is
-                // in flight: that's where the timeout drops it.
-                let upload = storage.upload(Some(folder), info, source);
+                // in flight (or between windows): that's where the timeout drops it.
+                let upload = storage.upload_with_pacing(Some(folder), info, source, pacing, |_| {
+                    ControlFlow::Continue(())
+                });
                 match tokio::time::timeout(stop_after, upload).await {
                     Ok(result) => format!("finished on its own: {:?}", result.map(|_| ())),
                     Err(_) => "dropped mid-transfer".to_string(),
@@ -2048,7 +2061,7 @@ mod destructive {
                 };
                 let mut broke_at = None;
                 let result = storage
-                    .upload_with_progress(Some(folder), info, source, |p| {
+                    .upload_with_pacing(Some(folder), info, source, pacing, |p| {
                         if p.bytes_transferred >= stop_at {
                             broke_at.get_or_insert_with(Instant::now);
                             ControlFlow::Break(())
@@ -2088,11 +2101,33 @@ mod destructive {
                     let (info, _) = timed("object info", storage.get_object_info(obj.handle)).await;
                     if let Some(Ok(info)) = info {
                         tlog!("  partial object info: {} bytes", info.size);
+                        if windowed {
+                            // The acknowledged windows only: a clean prefix, no stopped tail.
+                            let (clean, _) = timed(
+                                "read the partial back",
+                                holds_pattern_prefix(&storage, obj.handle, info.size),
+                            )
+                            .await;
+                            if !matches!(clean, Some(Ok(true))) {
+                                failures.push(format!(
+                                    "run {run}: the partial isn't a clean prefix: {clean:?}"
+                                ));
+                            }
+                            if info.size > stop_at && !timeout_mode {
+                                failures.push(format!(
+                                    "run {run}: {} bytes kept, past the stop at {stop_at}",
+                                    info.size
+                                ));
+                            }
+                        }
                     }
                     let (deleted, _) = timed("delete partial", storage.delete(obj.handle)).await;
                     if !matches!(deleted, Some(Ok(()))) {
                         failures.push(format!("run {run}: deleting the partial failed"));
                     }
+                }
+                None if windowed => {
+                    failures.push(format!("run {run}: a windowed stop must keep the object"));
                 }
                 None => tlog!("  no partial object listed"),
             }
@@ -2113,6 +2148,185 @@ mod destructive {
 
         assert!(failures.is_empty(), "{failures:#?}");
         tlog!("Upload stop test PASSED");
+    }
+
+    /// `MTP_UPLOAD_PACING`: `held` for one `SendObject`, `fixed:<bytes>` for fixed windows,
+    /// `time:<ms>` for windows of about that long, unset for the default.
+    fn upload_pacing_from_env() -> mtp_rs::UploadPacing {
+        let value = std::env::var("MTP_UPLOAD_PACING").unwrap_or_default();
+        let value = value.trim();
+        if value == "held" {
+            mtp_rs::UploadPacing::HeldOpen
+        } else if let Some(bytes) = value.strip_prefix("fixed:") {
+            mtp_rs::UploadPacing::FixedWindow(bytes.parse().expect("fixed:<bytes>"))
+        } else if let Some(ms) = value.strip_prefix("time:") {
+            mtp_rs::UploadPacing::MaxWindowTime(std::time::Duration::from_millis(
+                ms.parse().expect("time:<ms>"),
+            ))
+        } else {
+            mtp_rs::UploadPacing::default()
+        }
+    }
+
+    /// Whether the object holds exactly `len` bytes of the [`fill_pattern`] from offset 0.
+    async fn holds_pattern_prefix(
+        storage: &mtp_rs::mtp::Storage,
+        handle: ObjectHandle,
+        len: u64,
+    ) -> Result<bool, Error> {
+        let mut download = storage.download(handle, ByteRange::Full).await?;
+        let mut offset = 0u64;
+        let mut want = Vec::new();
+        while let Some(chunk) = download.next_chunk().await {
+            let chunk = chunk?;
+            want.resize(chunk.len(), 0);
+            fill_pattern(&mut want, offset);
+            if want != chunk[..] {
+                return Ok(false);
+            }
+            offset += chunk.len() as u64;
+        }
+        Ok(offset == len)
+    }
+
+    /// A windowed upload arrives whole, and another task's calls get in between windows (#62).
+    ///
+    /// Uploads a generated file (`MTP_PACED_UPLOAD_SIZE` bytes, default 1 GiB) twice: held open,
+    /// then with `MTP_UPLOAD_PACING` (default: windows of about 2 s), while a second task lists
+    /// the folder every 250 ms. Prints the throughput and how long each listing waited, reads
+    /// each upload back against the pattern, and prints the date the phone gave it. Skips the
+    /// comparison on a device without windowed uploads. `MTP_PACED_UPLOAD_RUNS` (default 1)
+    /// repeats the windowed half.
+    ///
+    /// ```sh
+    /// cargo test -p mtp-rs --release --test integration paced_upload -- --ignored --nocapture
+    /// ```
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore]
+    #[serial]
+    async fn test_paced_upload_round_trip_with_listings() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let size = std::env::var("MTP_PACED_UPLOAD_SIZE")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|&s| s > 0)
+            .unwrap_or(1024 * 1024 * 1024);
+        let runs = std::env::var("MTP_PACED_UPLOAD_RUNS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(1);
+        let Some((device, storage, folder)) = setup_with_writable_folder().await else {
+            return;
+        };
+        if !device.capabilities().supports_windowed_upload {
+            tlog!("Device has no windowed uploads (no 0x95C2-0x95C5), skipping");
+            return;
+        }
+        let prefix = format!("mtp-rs-paced-upload-{}-", std::process::id());
+        let sent_date = mtp_rs::DateTime::new(2020, 1, 2, 3, 4, 5).unwrap();
+        let windowed = upload_pacing_from_env();
+        let mut pacings = vec![mtp_rs::UploadPacing::HeldOpen];
+        pacings.extend(std::iter::repeat_n(windowed, runs as usize));
+        let mut failures = Vec::new();
+
+        for (i, pacing) in pacings.into_iter().enumerate() {
+            let name = format!("{prefix}{i}.bin");
+            let done = Arc::new(AtomicBool::new(false));
+            let waits = Arc::new(Mutex::new(Vec::<f64>::new()));
+            let lister = {
+                let lister_storage = device.storages().await.unwrap().remove(0);
+                let (done, waits) = (Arc::clone(&done), Arc::clone(&waits));
+                tokio::spawn(async move {
+                    while !done.load(Ordering::Relaxed) {
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        let t = Instant::now();
+                        if lister_storage.list_objects(Some(folder)).await.is_err() {
+                            break;
+                        }
+                        waits.lock().unwrap().push(t.elapsed().as_secs_f64());
+                    }
+                })
+            };
+            let source = PatternStream {
+                offset: 0,
+                total: size,
+                chunk_size: 1024 * 1024,
+            };
+            let info = NewObjectInfo::file(&name, size).with_modified(sent_date);
+            let started = Instant::now();
+            let upload = storage.upload_with_pacing(Some(folder), info, source, pacing, |_| {
+                std::ops::ControlFlow::Continue(())
+            });
+            let result = tokio::time::timeout(std::time::Duration::from_secs(600), upload).await;
+            let took = started.elapsed();
+            done.store(true, Ordering::Relaxed);
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(60), lister).await;
+            let handle = match result {
+                Ok(Ok(h)) => h,
+                Ok(Err(e)) => {
+                    failures.push(format!("{pacing:?}: upload failed: {e:?}"));
+                    break;
+                }
+                Err(_) => {
+                    failures.push(format!("{pacing:?}: upload hung"));
+                    break;
+                }
+            };
+            let mut waits = waits.lock().unwrap().clone();
+            waits.sort_by(f64::total_cmp);
+            let median = waits.get(waits.len() / 2).copied().unwrap_or(0.0);
+            let max = waits.last().copied().unwrap_or(0.0);
+            tlog!(
+                "{pacing:?}: {:.0} MB/s ({:.2} s); {} listings, waited median {:.0} ms, max {:.0} ms",
+                size as f64 / 1e6 / took.as_secs_f64(),
+                took.as_secs_f64(),
+                waits.len(),
+                median * 1000.0,
+                max * 1000.0
+            );
+            if pacing != mtp_rs::UploadPacing::HeldOpen && max > 6.0 {
+                failures.push(format!("{pacing:?}: a listing waited {max:.1} s"));
+            }
+            match storage.get_object_info(handle).await {
+                Ok(info) => {
+                    tlog!(
+                        "  read back: size {}, modified {:?} (sent {sent_date:?})",
+                        info.size,
+                        info.modified
+                    );
+                    if info.size != size {
+                        failures.push(format!("{pacing:?}: size {} not {size}", info.size));
+                    }
+                }
+                Err(e) => failures.push(format!("{pacing:?}: object info: {e:?}")),
+            }
+            let listed = storage.list_objects(Some(folder)).await.unwrap_or_default();
+            if !listed
+                .iter()
+                .any(|o| o.handle == handle && o.filename == name)
+            {
+                failures.push(format!("{pacing:?}: the handle changed after the upload"));
+            }
+            match holds_pattern_prefix(&storage, handle, size).await {
+                Ok(true) => tlog!("  content matches"),
+                other => failures.push(format!("{pacing:?}: content differs: {other:?}")),
+            }
+            if let Err(e) = storage.delete(handle).await {
+                failures.push(format!("{pacing:?}: delete: {e:?}"));
+            }
+        }
+
+        if let Ok(objects) = storage.list_objects(Some(folder)).await {
+            for obj in objects
+                .into_iter()
+                .filter(|o| o.filename.starts_with(&prefix))
+            {
+                let _ = storage.delete(obj.handle).await;
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     /// Small uploads while another task lists the same folder in a loop: no listing may land

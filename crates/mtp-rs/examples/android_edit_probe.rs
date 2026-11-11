@@ -23,6 +23,8 @@
 //!   upload partway and look at what's left and whether the session still works (`abandon`
 //!   truncates to the last whole window and ends the edit, as a host giving up would)
 //! - `check`: open a fresh session and describe every `mtprs-probe-*` object (after `stop exit`)
+//! - `setdate`: whether `SetObjectPropValue(DateModified)` sets a date afterwards, on a windowed
+//!   and on a held-open object (AOSP's `setObjectProperty` only renames)
 //! - `cleanup`: delete every `mtprs-probe-*` object in `Download`
 //!
 //! Options (anywhere after the command): `--serial SERIAL` (the device to open; required when more
@@ -117,10 +119,12 @@ async fn run(mut args: Vec<String>) -> R<()> {
             }
         }
         "check" => check(&ctx).await?,
+        "setdate" => setdate(&ctx).await?,
         "cleanup" => cleanup(&ctx).await?,
         _ => {
             return Err(
-                "command: info | combos | bench | interleave | stop | check | cleanup".into(),
+                "command: info | combos | bench | interleave | stop | check | setdate | cleanup"
+                    .into(),
             )
         }
     }
@@ -688,6 +692,35 @@ async fn check(ctx: &Ctx) -> R<()> {
             );
             describe(ctx, h, "  after end").await;
         }
+    }
+    Ok(())
+}
+
+async fn setdate(ctx: &Ctx) -> R<()> {
+    let data = Bytes::from(vec![7u8; 4096]);
+    let s = &ctx.session;
+    let w = begin_upload(ctx, &format!("{PREFIX}setdate-win.{}", ctx.ext)).await?;
+    s.send_partial_object(w, 0, data.len() as u32, one(data.clone()))
+        .await?;
+    s.end_edit_object(w).await?;
+    let h = send_info(ctx, &format!("{PREFIX}setdate-held.{}", ctx.ext), 4096).await?;
+    s.send_object_stream(4096, one(data.clone())).await?;
+    for (label, handle) in [("windowed", w), ("held-open", h)] {
+        describe(ctx, handle, &format!("{label} before")).await;
+        let value = mtp_rs::ptp::PropertyValue::String("20210304T050607".into()).to_bytes()?;
+        let r = s
+            .set_object_prop_value(
+                handle,
+                mtp_rs::ptp::ObjectPropertyCode::DateModified,
+                &value,
+            )
+            .await;
+        println!(
+            "{label}: SetObjectPropValue(DateModified, 2021-03-04 05:06:07): {}",
+            show(&r)
+        );
+        describe(ctx, handle, &format!("{label} after")).await;
+        delete(ctx, handle).await;
     }
     Ok(())
 }
