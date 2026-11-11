@@ -20,8 +20,8 @@ impl MtpRsBackend {
     /// Connect to the first MTP device, get its first storage,
     /// and create a temporary benchmark folder (e.g. "mtp-bench-tmp") in the Download folder.
     /// The Download folder is the safest target on Android.
-    pub async fn connect() -> Result<Self, Box<dyn std::error::Error>> {
-        Self::with_device(MtpDevice::open_first().await?).await
+    pub async fn connect(serial: Option<&str>) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::with_device(open_device(serial).await?).await
     }
 
     /// [`connect`](Self::connect) on an already open device.
@@ -210,6 +210,31 @@ impl MtpRsBackend {
     }
 }
 
+/// Open the device with this serial, or with no serial the only MTP device connected. Several
+/// devices and no serial is an error rather than a pick: opening the wrong phone could disturb
+/// whatever else is using it.
+pub async fn open_device(serial: Option<&str>) -> Result<MtpDevice, Box<dyn std::error::Error>> {
+    match serial {
+        Some(s) => Ok(MtpDevice::open_by_serial(s).await?),
+        None => {
+            let listed = MtpDevice::list_devices()?;
+            check_single_device(listed.len())?;
+            Ok(MtpDevice::open_first().await?)
+        }
+    }
+}
+
+/// Without `--serial`, exactly one device must be connected.
+pub fn check_single_device(count: usize) -> Result<(), String> {
+    match count {
+        0 => Err("No MTP device found".into()),
+        1 => Ok(()),
+        n => Err(format!(
+            "{n} MTP devices connected; pick one with --serial (`mtp-rs devices` lists them)"
+        )),
+    }
+}
+
 /// What one [`MtpRsBackend::download_with_mid_list`] run measured.
 #[derive(Debug, Clone, Copy)]
 pub struct MidListTiming {
@@ -295,6 +320,13 @@ mod tests {
                 .all(|c| !c.is_empty() && c.len() <= FILL_CHUNK));
             assert!(chunks.iter().all(|c| c.iter().all(|&b| b == FILL_BYTE)));
         }
+    }
+
+    #[test]
+    fn without_a_serial_only_a_lone_device_is_opened() {
+        assert!(check_single_device(0).is_err());
+        assert!(check_single_device(1).is_ok());
+        assert!(check_single_device(2).unwrap_err().contains("--serial"));
     }
 
     /// A virtual device with a `Download` folder, like the phone the bench expects.

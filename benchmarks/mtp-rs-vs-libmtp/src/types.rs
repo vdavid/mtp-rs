@@ -276,6 +276,9 @@ pub struct BenchmarkConfig {
     pub operations: Vec<Operation>,
     /// Which backends to benchmark.
     pub backends: Vec<BackendName>,
+    /// The device to benchmark, by USB serial. `None` needs exactly one device connected.
+    #[serde(default)]
+    pub serial: Option<String>,
 }
 
 impl Default for BenchmarkConfig {
@@ -287,6 +290,7 @@ impl Default for BenchmarkConfig {
             list_during_sizes: parse_sizes(DEFAULT_LIST_DURING_SIZES).expect("default sizes parse"),
             operations: vec![Operation::Download, Operation::Upload, Operation::ListFiles],
             backends: vec![BackendName::MtpRs, BackendName::Libmtp],
+            serial: None,
         }
     }
 }

@@ -22,17 +22,48 @@ pub struct LibmtpBackend {
 }
 
 impl LibmtpBackend {
-    /// Connect to the first MTP device and create a temporary benchmark folder
-    /// ("mtp-bench-tmp") under the root of the default storage.
-    pub fn connect() -> Result<Self, Box<dyn std::error::Error>> {
+    /// Connect to the MTP device with this serial (or the only one, when `serial` is `None`) and
+    /// create a temporary benchmark folder ("mtp-bench-tmp") under the root of the default
+    /// storage.
+    ///
+    /// libmtp's raw device list has no serial without opening each device, and opening another
+    /// phone could disturb whoever uses it. So the serial is resolved to a USB vendor and product
+    /// ID through mtp-rs's listing (which opens nothing), and exactly one raw device must match
+    /// them. After opening, the device's own serial is checked against the one asked for.
+    pub fn connect(serial: Option<&str>) -> Result<Self, Box<dyn std::error::Error>> {
         let raw_devices =
             detect_raw_devices().map_err(|e| format!("Failed to detect raw devices: {:?}", e))?;
 
-        let raw = raw_devices.first().ok_or("No MTP devices found")?;
+        let ids: Vec<(u16, u16)> = raw_devices
+            .iter()
+            .map(|r| {
+                let e = r.device_entry();
+                (e.vendor_id, e.product_id)
+            })
+            .collect();
+        let wanted = match serial {
+            Some(s) => {
+                let listed = mtp_rs::mtp::MtpDevice::list_devices()?;
+                let d = listed
+                    .iter()
+                    .find(|d| d.serial_number.as_deref() == Some(s))
+                    .ok_or_else(|| format!("no MTP device with serial {s}"))?;
+                Some((d.vendor_id, d.product_id))
+            }
+            None => None,
+        };
+        let index = pick_raw_device(&ids, wanted)?;
+        let raw = &raw_devices[index];
 
         let mut device = raw
             .open_uncached()
             .ok_or("Failed to open MTP device (open_uncached returned None)")?;
+        if let Some(s) = serial {
+            let got = device.serial_number().unwrap_or_default();
+            if got != s {
+                return Err(format!("libmtp opened serial '{got}', expected '{s}'").into());
+            }
+        }
 
         device
             .update_storage(StorageSort::NotSorted)
@@ -138,5 +169,52 @@ impl LibmtpBackend {
             .model_name()
             .unwrap_or_else(|_| "Unknown".to_string());
         format!("{} {} (libmtp)", manufacturer, model)
+    }
+}
+
+/// Which raw device to open: the only one matching `wanted` (vendor ID, product ID), or with no
+/// `wanted`, the only one there is. Never a guess between several.
+fn pick_raw_device(
+    ids: &[(u16, u16)],
+    wanted: Option<(u16, u16)>,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let matches: Vec<usize> = ids
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| wanted.is_none_or(|w| **id == w))
+        .map(|(i, _)| i)
+        .collect();
+    match (matches.as_slice(), wanted) {
+        ([i], _) => Ok(*i),
+        ([], Some((v, p))) => Err(format!("libmtp sees no device {v:04x}:{p:04x}").into()),
+        ([], None) => Err("No MTP devices found".into()),
+        (_, Some((v, p))) => Err(format!(
+            "libmtp sees {} devices {v:04x}:{p:04x} and can't tell them apart without opening them",
+            matches.len()
+        )
+        .into()),
+        (_, None) => Err(format!(
+            "{} MTP devices connected; pick one with --serial",
+            matches.len()
+        )
+        .into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_raw_device;
+
+    const PIXEL: (u16, u16) = (0x18d1, 0x4ee1);
+    const S23: (u16, u16) = (0x04e8, 0x6860);
+
+    #[test]
+    fn picks_by_usb_id_and_never_guesses() {
+        assert_eq!(pick_raw_device(&[S23, PIXEL], Some(PIXEL)).unwrap(), 1);
+        assert_eq!(pick_raw_device(&[PIXEL], None).unwrap(), 0);
+        assert!(pick_raw_device(&[S23, PIXEL], None).is_err());
+        assert!(pick_raw_device(&[S23], Some(PIXEL)).is_err());
+        assert!(pick_raw_device(&[PIXEL, PIXEL], Some(PIXEL)).is_err());
+        assert!(pick_raw_device(&[], None).is_err());
     }
 }

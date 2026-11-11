@@ -37,16 +37,30 @@ pub async fn run_benchmarks(
                 let num_runs = config.num_runs;
                 let warmup_runs = config.warmup_runs;
 
+                let serial = config.serial.clone();
                 let result = match backend {
                     BackendName::MtpRs => {
-                        run_mtp_rs_scenario(operation, file_size, num_runs, warmup_runs).await?
+                        run_mtp_rs_scenario(
+                            serial.as_deref(),
+                            operation,
+                            file_size,
+                            num_runs,
+                            warmup_runs,
+                        )
+                        .await?
                     }
                     BackendName::Libmtp => {
                         // Run the entire libmtp scenario on a blocking thread since
                         // libmtp-rs types are not Send and all calls are synchronous.
                         let r: Result<BenchmarkResult, Box<dyn std::error::Error + Send + Sync>> =
                             tokio::task::spawn_blocking(move || {
-                                run_libmtp_scenario(operation, file_size, num_runs, warmup_runs)
+                                run_libmtp_scenario(
+                                    serial.as_deref(),
+                                    operation,
+                                    file_size,
+                                    num_runs,
+                                    warmup_runs,
+                                )
                             })
                             .await?;
                         r.map_err(|e| -> Box<dyn std::error::Error> { e })?
@@ -68,6 +82,7 @@ pub async fn run_benchmarks(
 
 /// Run a single scenario with the mtp-rs (async) backend.
 async fn run_mtp_rs_scenario(
+    serial: Option<&str>,
     operation: Operation,
     file_size: u64,
     num_runs: usize,
@@ -78,7 +93,7 @@ async fn run_mtp_rs_scenario(
     let mut list_latencies = Vec::new();
 
     eprintln!("  Connecting (mtp-rs)...");
-    let backend = MtpRsBackend::connect().await?;
+    let backend = MtpRsBackend::connect(serial).await?;
     eprintln!("  Device: {}", backend.device_description());
 
     // The mid-download listing reads the same file every run (reads don't change it), so it's
@@ -189,6 +204,7 @@ async fn run_mtp_rs_scenario(
 /// Run a single scenario with the libmtp (sync) backend.
 /// This function is meant to be called from `spawn_blocking`.
 fn run_libmtp_scenario(
+    serial: Option<&str>,
     operation: Operation,
     file_size: u64,
     num_runs: usize,
@@ -199,7 +215,8 @@ fn run_libmtp_scenario(
     let mut durations = Vec::with_capacity(num_runs);
 
     eprintln!("  Connecting (libmtp)...");
-    let backend = LibmtpBackend::connect().map_err(|e| format!("libmtp connect failed: {e}"))?;
+    let backend =
+        LibmtpBackend::connect(serial).map_err(|e| format!("libmtp connect failed: {e}"))?;
     eprintln!("  Device: {}", backend.device_description());
 
     for i in 0..total_iterations {

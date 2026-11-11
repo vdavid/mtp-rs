@@ -50,6 +50,11 @@ struct Cli {
     /// Output format: table, markdown, csv, json.
     #[arg(long, default_value = "table")]
     output: String,
+
+    /// The device to benchmark, by USB serial (`mtp-rs devices` lists them). Needed when more
+    /// than one MTP device is connected; both backends refuse to guess.
+    #[arg(long)]
+    serial: Option<String>,
 }
 
 /// `windowed` expands to one operation per entry in `windows_mib`, and `list_during` to held
@@ -163,6 +168,7 @@ async fn main() {
         list_during_sizes,
         operations,
         backends,
+        serial: cli.serial.clone(),
     };
 
     // Print configuration summary to stderr (keeps stdout clean for machine-readable output).
@@ -214,7 +220,7 @@ async fn main() {
     eprintln!("Output:     {}", cli.output);
     eprintln!();
 
-    let info = RunInfo::collect().await;
+    let info = RunInfo::collect(config.serial.as_deref()).await;
     for line in info.lines() {
         eprintln!("{line}");
     }
@@ -305,5 +311,8 @@ mod tests {
             vec![4_000_000_000]
         );
         assert_eq!(parse_windows(&cli.windows).unwrap(), vec![8]);
+        assert_eq!(cli.serial, None);
+        let cli = Cli::parse_from(["mtp-bench", "--serial", "46061FDAS000A4"]);
+        assert_eq!(cli.serial.as_deref(), Some("46061FDAS000A4"));
     }
 }

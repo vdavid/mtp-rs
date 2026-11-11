@@ -44,10 +44,10 @@ pub struct RunInfo {
 }
 
 impl RunInfo {
-    /// Collect everything, opening the first device briefly to read its identity and link speed.
-    /// A failure to reach the device leaves those fields as `unknown`; the benchmark itself
-    /// reports the real error when it connects.
-    pub async fn collect() -> Self {
+    /// Collect everything, opening the device (by `serial`, else the only one) briefly to read
+    /// its identity and link speed. A failure to reach the device leaves those fields as
+    /// `unknown`; the benchmark itself reports the real error when it connects.
+    pub async fn collect(serial: Option<&str>) -> Self {
         let mut info = RunInfo {
             date: chrono::Local::now()
                 .format("%Y-%m-%d %H:%M %:z")
@@ -61,7 +61,7 @@ impl RunInfo {
             device_firmware: "unknown".to_string(),
             usb_speed: "unknown".to_string(),
         };
-        match probe_device().await {
+        match probe_device(serial).await {
             Ok((device, firmware, speed)) => {
                 info.device = device;
                 info.device_firmware = firmware;
@@ -88,11 +88,13 @@ impl RunInfo {
     }
 }
 
-/// Open the device `MtpDevice::open_first` picks and match it to its listing entry, which is
-/// where the link speed lives.
-async fn probe_device() -> Result<(String, String, String), mtp_rs::Error> {
+/// Open the device the benchmark will use and match it to its listing entry, which is where the
+/// link speed lives.
+async fn probe_device(
+    serial: Option<&str>,
+) -> Result<(String, String, String), Box<dyn std::error::Error>> {
     let listed = MtpDevice::list_devices()?;
-    let device = MtpDevice::open_first().await?;
+    let device = crate::mtp_rs_backend::open_device(serial).await?;
     let di = device.device_info();
     let name = format!("{} {}", di.manufacturer, di.model);
     let firmware = di.device_version.clone();

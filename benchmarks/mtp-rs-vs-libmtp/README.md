@@ -33,6 +33,11 @@ This runs all operations (download, upload, list) at all default sizes (1 MB, 10
 | `--windows` | `8` | Comma-separated window sizes in MiB for `windowed` and `list_during` |
 | `--backends` | `mtp-rs,libmtp` | Comma-separated backends to test |
 | `--output` | `table` | Output format: `table`, `markdown`, `csv`, or `json` |
+| `--serial` | none | The device to benchmark, by USB serial (`mtp-rs devices` lists them). Required when more than one MTP device is connected: neither backend guesses |
+
+### Picking the device
+
+With `--serial`, mtp-rs opens that device by serial. libmtp's raw device list has no serial without opening each device, and opening another phone could disturb whoever is using it, so the bench turns the serial into a USB vendor and product ID through mtp-rs's listing (which opens nothing) and opens the one raw device with that ID. Two connected devices of the same model can't be told apart this way, and the bench refuses rather than guess; after opening, it checks the device's serial too. Without `--serial`, both backends need exactly one MTP device connected.
 
 ### Why these sizes
 
