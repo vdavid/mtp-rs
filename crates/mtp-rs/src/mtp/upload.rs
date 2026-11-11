@@ -146,7 +146,9 @@ struct Window {
 /// `true` and lets other work in while it's `false`. A window opens with the first chunk after
 /// the last one ended and closes in the `write_chunk` call that hands over its last byte, so
 /// calls on the device run straight after that call returns. A held-open upload holds the device
-/// from its first chunk to `finish`.
+/// from its first chunk to `finish`. While `holds_session()` is `true` the device is waiting
+/// mid-transfer for the next chunk, so keep them coming (and don't wait on a lock that a call on
+/// this device holds: it can't run until the transfer ends).
 ///
 /// # Stopping
 ///
