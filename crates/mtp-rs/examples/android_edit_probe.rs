@@ -19,19 +19,22 @@
 //!   per window size (`1M`, `8M`, `128M`, ...), each read back and compared byte for byte
 //! - `interleave <file> <window|held>`: an upload while a second task lists `Download`, reads an
 //!   `ObjectInfo`, and downloads a small file every 250 ms, with each call's latency
-//! - `stop <noend-close|noend-drop|cancel|drop|exit> <file> <window> [runs]`: stop an upload
-//!   partway and look at what's left and whether the session still works
+//! - `stop <noend-close|noend-drop|cancel|abandon|drop|exit> <file> <window> [runs]`: stop an
+//!   upload partway and look at what's left and whether the session still works (`abandon`
+//!   truncates to the last whole window and ends the edit, as a host giving up would)
 //! - `check`: open a fresh session and describe every `mtprs-probe-*` object (after `stop exit`)
 //! - `cleanup`: delete every `mtprs-probe-*` object in `Download`
 //!
-//! Options (anywhere after the command): `--ext EXT` (file extension, default `bin`),
-//! `--check-every N` (`GetObjectInfo` on the handle every N windows, default 0 = only at the end).
+//! Options (anywhere after the command): `--serial SERIAL` (the device to open; required when more
+//! than one MTP device is connected; the model is printed before anything is written),
+//! `--ext EXT` (file extension, default `bin`), `--check-every N` (`GetObjectInfo` on the handle
+//! every N windows, default 0 = only at the end).
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -45,6 +48,9 @@ type R<T> = Result<T, Box<dyn std::error::Error>>;
 
 const CHUNK: usize = 1024 * 1024;
 const PREFIX: &str = "mtprs-probe-";
+
+/// `--serial`: the device to open, kept for the reopens inside `stop`.
+static SERIAL: OnceLock<Option<String>> = OnceLock::new();
 
 struct Ctx {
     // Kept so the USB interface stays claimed for as long as the session lives.
@@ -71,6 +77,9 @@ async fn run(mut args: Vec<String>) -> R<()> {
         .map(|s| s.parse())
         .transpose()?
         .unwrap_or(0);
+    SERIAL
+        .set(take_opt(&mut args, "--serial"))
+        .map_err(|_| "serial set twice")?;
     let cmd = args.first().cloned().unwrap_or_default();
     let started = Instant::now();
     let mut ctx = open(ext, check_every).await?;
@@ -481,11 +490,14 @@ async fn stop(ctx: Ctx, mode: &str, file: &Path, window: u64) -> R<Ctx> {
             if let Some(h) = h {
                 describe(&ctx, h, "after reopen").await;
                 let r = ctx.session.begin_edit_object(h).await;
-                println!("BeginEditObject again: {}", show(&r));
-                if r.is_ok() {
-                    let r = ctx.session.end_edit_object(h).await;
-                    println!("EndEditObject: {}", show(&r));
-                }
+                println!(
+                    "BeginEditObject again: {} (GeneralError = the old edit is still open)",
+                    show(&r)
+                );
+                // Either way an edit is open now: ours, or the old session's. End it from here.
+                let r = ctx.session.end_edit_object(h).await;
+                println!("EndEditObject from the new session: {}", show(&r));
+                describe(&ctx, h, "after end").await;
                 verify_prefix(&ctx, h, file).await;
                 delete(&ctx, h).await;
             }
@@ -510,6 +522,53 @@ async fn stop(ctx: Ctx, mode: &str, file: &Path, window: u64) -> R<Ctx> {
                 t.elapsed()
             );
             after_stop(&ctx, handle, file, offset).await;
+            Ok(ctx)
+        }
+        "abandon" => {
+            // Stop mid-window like `cancel`, then end the edit the way a host that gives up
+            // would: truncate to the last whole window (dropping the stopped window's tail),
+            // then `EndEditObject`. The object should hold exactly the whole windows.
+            let sent = Arc::new(AtomicU64::new(0));
+            let src = failing_after(
+                file_stream(file, offset, window)?,
+                stop_after,
+                Arc::clone(&sent),
+            );
+            let r = s
+                .send_partial_object(handle, offset, window as u32, src)
+                .await;
+            println!(
+                "SendPartialObject stopped after {} bytes: {}",
+                sent.load(Ordering::Relaxed),
+                show(&r)
+            );
+            describe(&ctx, handle, "after stop").await;
+            let t = Instant::now();
+            let r = s.truncate_object(handle, offset).await;
+            println!(
+                "TruncateObject({offset}): {} ({:.1?})",
+                show(&r),
+                t.elapsed()
+            );
+            describe(&ctx, handle, "after truncate").await;
+            let t = Instant::now();
+            let r = s.end_edit_object(handle).await;
+            println!("EndEditObject: {} ({:.1?})", show(&r), t.elapsed());
+            describe(&ctx, handle, "after end").await;
+            match find(&ctx, &name).await {
+                Ok(found) => println!("listing shows {found:?} (handle {handle:?})"),
+                Err(e) => println!("listing failed: {e}"),
+            }
+            verify_prefix(&ctx, handle, file).await;
+            let r = s.begin_edit_object(handle).await;
+            println!(
+                "BeginEditObject after end: {} (OK = the edit was closed)",
+                show(&r)
+            );
+            if r.is_ok() {
+                let _ = s.end_edit_object(handle).await;
+            }
+            delete(&ctx, handle).await;
             Ok(ctx)
         }
         "drop" => {
@@ -868,9 +927,31 @@ async fn open(ext: String, check_every: usize) -> R<Ctx> {
 }
 
 async fn open_once(ext: String, check_every: usize) -> R<Ctx> {
-    let device = PtpDevice::open_first().await?;
+    let serial = SERIAL.get().cloned().flatten();
+    let device = match &serial {
+        Some(s) => PtpDevice::open_by_serial(s).await?,
+        None => {
+            // Never guess between phones: another one may be busy with something else.
+            let n = PtpDevice::list_devices()?.len();
+            if n > 1 {
+                return Err(format!("{n} MTP devices connected; pick one with --serial").into());
+            }
+            PtpDevice::open_first().await?
+        }
+    };
     // Sets drain-on-cancel for Android, so a stopped data phase ends with a ZLP.
-    device.get_device_info().await?;
+    // `open_by_serial` matched the USB serial. `DeviceInfo`'s serial can differ from it (a
+    // Galaxy S23 Ultra reports a 32-digit hex string there), so print both and the model before
+    // anything is written.
+    let info = device.get_device_info().await?;
+    println!(
+        "device: {} {} (USB serial {}, DeviceInfo serial {}, firmware {})",
+        info.manufacturer,
+        info.model,
+        serial.as_deref().unwrap_or("not given"),
+        info.serial_number,
+        info.device_version
+    );
     let session = Arc::new(device.open_session().await?);
     let storage = *session
         .get_storage_ids()

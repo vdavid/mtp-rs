@@ -5,7 +5,7 @@ session is free between windows the way paced downloads free it (AGENTS.md § Pa
 evidence and the options; the design decision is open.
 
 Hardware for every claim below unless it says otherwise: Pixel 9 Pro XL, Android 17 (`CP3A.261005.005`),
-macOS/nusb, USB 3 (5 Gb/s), 2026-11-11. The probe is `crates/mtp-rs/examples/android_edit_probe.rs`; its header lists
+macOS/nusb, USB 3 (5 Gb/s), 2026-11-11. § Galaxy S23 Ultra repeats the probe on Samsung's server. The probe is `crates/mtp-rs/examples/android_edit_probe.rs`; its header lists
 the commands. Each claim says how many runs it rests on.
 
 ## What we added
@@ -124,6 +124,63 @@ session lock lets the uploader take it straight back (seen in the race check bel
   out after 30 s and the phone stopped answering: spaced reopens over 2 min all timed out. Same wedge as the first
   day's case B. Needs a replug.
 
+## Galaxy S23 Ultra (Samsung's server)
+
+Hardware: Galaxy S23 Ultra SM-S918B, firmware `S918BXXUAGZIF`, macOS/nusb, USB 3, 2026-11-11, the same probe
+(`--serial R5CWA2C1VKB`, with the Pixel on the same host left untouched). Samsung's MTP server is closed source, so
+this is the only evidence for it. **It behaved like AOSP in every case tried**; the differences are a faster link and
+the dates.
+
+- **`DeviceInfo`** (1 run): `microsoft.com: 1.0; samsung.com/kies: 6.0; samsung.com/devicestatus: 0;`, no
+  `android.com`, lists 0x95C1–0x95C5 (plus 0x9501–0x9503, 0x9801–0x9805, 0x9811). Its `DeviceInfo` serial is a
+  32-digit hex string, not the USB serial, so a host matching devices by serial must use the USB one. The first open
+  after a quiet spell saw zero storages once and worked 5 s later (§ Android gotchas in `docs/debugging.md`).
+- **Working shape** (combos case B, 4 runs, `.bin`, `.mp4`, `.jpg`, plus every windowed upload below, 40+): same
+  answers as the Pixel. Header-only `SendObject` 3–49 ms, `BeginEditObject` 2–4 ms, `EndEditObject` 9–49 ms
+  (usually ~12). Second begin `GeneralError`, rewrite inside the file and `TruncateObject` work, truncate visible at
+  once, and response parameter 1 of `SendPartialObject` has the same bug (1,032,204 for 1 MiB, 0 for a 1-byte write),
+  so the server is AOSP-derived here.
+- **`SendObject` can't be skipped** (cases A and D, 1 run each): `BeginEditObject` `GeneralError`, ghost object listed
+  with size 0 and date 1970-01-01, `GetObject` `GeneralError`, `DeleteObject` 0x2012, and `EndEditObject` on it
+  `GeneralError`. Same as the Pixel, so presumably gone at the next MTP restart. The two from this run
+  (`mtprs-probe-combo-a.bin`, `-d.bin`) were still listed when the session ended; not yet checked after a replug.
+- **Window cost** (1 GiB, three bench runs, window sizes in three orders, every upload read back and compared byte for
+  byte): held open 341, 342, 341 MB/s (3.15 s). 1 MiB windows 236, 232, 232 MB/s, median 4.2 ms against 3.1 ms of
+  data, so **~1.3 ms fixed cost per window**. 8 MiB 313, 311, 316 MB/s (~2 ms per window). 32 MiB 328, 331, 293.
+  128 MiB 342, 336, 337 (no measurable cost). Far steadier than the Pixel: the slowest 8 MiB window was ~2.5× the
+  median, and no window stalled for a second. At this speed a 2 s window is ~680 MiB.
+- **Calls between windows** (`interleave`, 1 run each; idle: listing 612 entries 1.5 ms, info 1.2 ms, 10 KB download
+  10–14 ms): held open, one round in 3.25 s and its listing waited **1.98 s**. 32 MiB windows: 8 rounds, listing
+  median 47 ms (max 62), download median 106 ms (max 114), upload 325 MB/s. 128 MiB: 6 rounds, listing median 146 ms
+  (max 153), download max 397 ms, upload 334 MB/s. A call waits for the window in flight, never longer.
+- **Read-back**: same handle before, during, and after every windowed upload (40+), and in a fresh listing after
+  `EndEditObject` (combos, 4 runs, including `.mp4` and `.jpg`). `--check-every 1` over two 1 GiB `.mp4` uploads in
+  8 MiB windows: `GetObjectInfo` answered with the written size after each of 256 windows, **no re-key**. Size and
+  content right in every run. No on-phone SHA-256 (no adb on this phone); the byte-for-byte read-back covers it.
+- **Dates differ from the Pixel: Samsung ignores the `DateModified` sent in `SendObjectInfo` for every upload**, held
+  open included (5 held-open uploads, all windowed ones): the object reads the time of the upload. On the Pixel a
+  held-open upload keeps the sent date. So setting a date needs `SetObjectPropValue(DateModified)` on both phones
+  (not tried on either), and Samsung's held-open uploads already lose the date today.
+- **No `EndEditObject`, then `CloseSession` and a new session** (3 runs) or the session dropped with no close (3 runs):
+  same handle, exactly the 64 MiB of the whole windows, `BeginEditObject` from the new session `GeneralError` (the edit
+  is still open), `EndEditObject` from it OK (3 of 3). The three `CloseSession` runs deleted their objects without
+  ending the edit, so three edits stay open in the server until MTP restarts.
+- **Cancel mid-window** (source error, 32 MiB windows, 10 runs): `send_partial_object` returned 48–56 ms after the
+  stop, the next operation took 0.3–0.8 ms, the edit stayed open, a resume at the edit's size worked, and the file
+  ended at 81,805,300 bytes (10 of 10, the Pixel's exact number): the stopped window's tail stays on disk. While the
+  edit is open, `GetObjectInfo` reports the edit's size (64 MiB), not the bytes on disk.
+- **Truncate, then end** (the abandoned upload, new `stop abandon`, 5 runs): stop mid-window, `TruncateObject` to the
+  edit's size (3–8 ms), `EndEditObject` (5–12 ms). The object kept its handle and held exactly the 64 MiB of whole
+  windows, equal to the file's first bytes, and a new `BeginEditObject` succeeded, so the edit was closed (5 of 5).
+- **Dropped future mid-window** (64 MiB windows so the 100 ms drop lands inside one, 10 runs, all mid-window: 26–34 MB
+  of the window on disk): next operation 2.7–12 ms, edit open, resume worked, same leftover tail.
+- **Process exit mid-window** (64 MiB windows, 3 runs): the next process's `GetDeviceInfo` got `GeneralError` once and
+  the open 5 s later worked (3 of 3, the Pixel's signature); the edit was open with the whole windows' size, and
+  `EndEditObject` from the new process committed it with the tail included (163–168 MB). A `SendObjectInfo` for a name
+  that already exists answers `GeneralError` (1 run, harmless).
+- **No stop mode wedged the phone** (34 runs), and nothing needed the reset. The session answered after every
+  experiment.
+
 ## Desk research
 
 - **No other partial write op** (read from source): MTP 1.1 has `GetPartialObject` only. Microsoft's extensions
@@ -133,7 +190,7 @@ session lock lets the uploader take it straight back (seen in the race check bel
   wrapper, so their shapes are undocumented. Nothing for Nikon, Sony, Olympus, or Panasonic.
 - **Samsung** (read from a public `mtp-detect` dump, Galaxy S23 Ultra SM-S918B, firmware S918BXXU8CYB4, 2025-03,
   https://forums.opensuse.org/t/no-mtp-compatible-devices-found/183573): no `android.com`, lists 0x95C1–0x95C5. Its
-  server is closed, so the behavior above is unverified there. We have an S23 Ultra to test on.
+  server is closed; § Galaxy S23 Ultra has the hardware results.
 - **Xiaomi** (read from a public dump, Redmi Note 13 Pro+ 5G, 2026-04,
   https://discuss.cachyos.org/t/…xiaomi-13pro/27433): `android.com`, 0x95C1–0x95C5. HyperOS source isn't public.
 - **libmtp** checks per operation (`ptp_operation_issupported`); `LIBMTP_DEVICECAP_EditObjects` needs 0x95C3–0x95C5.
@@ -155,21 +212,23 @@ session lock lets the uploader take it straight back (seen in the race check bel
    - `UploadError::partial` becomes `Some(handle)` on Android for a windowed upload: the file holds a clean prefix, so
      the caller can delete it or resume. The library doesn't delete it. That's the opposite of today's held-open
      Android upload (`None`), so it needs a changelog line and a consumer heads-up (Cmdr).
-   - Set `DateModified` after the last window if the caller asked for one (to verify on hardware).
+   - Set `DateModified` after the last window if the caller asked for one (to verify on hardware). Samsung drops the
+     sent date on held-open uploads too, so the same call would fix those.
    - Cancel between windows sends nothing; mid-window it takes the existing ZLP path (10 of 10 clean).
 2. **Resumable uploads across sessions** fall out of the same ops: an edit survives the session, and a new host can
    `EndEditObject` it, or `BeginEditObject` a committed prefix and append. Could be a later API
    (`upload_from(handle, offset)`), not part of the first cut.
 3. **WPD**: keep `CreateObjectWithPropertiesAndData` + `Commit`. Passthrough edit ops would need the driver's cache
    refreshed after `EndEditObject`; a probe could tell, but it's a second project.
-4. **Devices without the edit ops** (cameras, Garmin, Kindle, Switch homebrew, and Samsung until tested): one
+4. **Devices without the edit ops** (cameras, Garmin, Kindle, Switch homebrew): one
    `SendObject` per file, so the session stays held for each file. The consumer can free it between files of a
    multi-file copy; `holds_session()`-style hints on uploads would help Cmdr schedule. Document the rest.
 
 **Recommendation**: build option 1, opt-out like `use_object_prop_list(false)`, and make it the default on devices
-listing 0x95C2–0x95C5 once the Galaxy S23 Ultra and the POCO run the same probe clean. The cost is small (a few ms per
-window, 2 s windows lose under 1%), the session frees within one window, the handle is stable, and every stop mode was
-clean in 27 runs. The two risks are both host-side rules (never send a window the server refuses unread; always end the
+listing 0x95C2–0x95C5. The Galaxy S23 Ultra ran the probe clean (34 stop runs, no wedge, identical answers); the POCO
+hasn't yet, and it's the one HyperOS data point left. The cost is small (a few ms per window on the Pixel, ~1–2 ms on
+the S23; 2 s windows lose under 1%), the session frees within one window, the handle is stable, and every stop mode was
+clean in 61 runs across both phones. The two risks are both host-side rules (never send a window the server refuses unread; always end the
 edit), and both are testable on the virtual device if it models the edit ops.
 
 ## Open decisions
