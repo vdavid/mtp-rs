@@ -333,7 +333,9 @@ pub struct JsonReport {
 
 /// Merge saved JSON reports (from runs split into chunks) into one: their results in order,
 /// the first one's context, with its end load taken from the last. Refuses reports from
-/// different code, devices, or links, since one table would then mix them.
+/// different versions, devices, links, or OSes, since one table would then mix them. Reports
+/// from different code commits merge with a warning, and the header lists every commit, so a
+/// reader sees the mix: a fix to the bench's own plumbing between chunks shouldn't cost a rerun.
 pub fn merge_reports(reports: Vec<JsonReport>) -> Result<(RunInfo, Vec<BenchmarkResult>), String> {
     let mut reports = reports.into_iter();
     let first = reports.next().ok_or("no reports to merge")?;
@@ -347,7 +349,13 @@ pub fn merge_reports(reports: Vec<JsonReport>) -> Result<(RunInfo, Vec<Benchmark
                 Err(format!("reports differ in {what}: '{a}' and '{b}'"))
             }
         };
-        same(&info.git_rev, &r.run.git_rev, "git commit")?;
+        if !info.git_rev.split(", ").any(|rev| rev == r.run.git_rev) {
+            eprintln!(
+                "Warning: merging reports from different commits ({} and {})",
+                info.git_rev, r.run.git_rev
+            );
+            info.git_rev = format!("{}, {}", info.git_rev, r.run.git_rev);
+        }
         same(
             &info.mtp_rs_version,
             &r.run.mtp_rs_version,
@@ -540,6 +548,14 @@ mod tests {
         let err = merge_reports(vec![chunk(sample_results(), "2.0"), other]).unwrap_err();
         assert!(err.contains("device"), "{err}");
         assert!(merge_reports(vec![]).is_err());
+
+        // A different commit merges, and the header names both.
+        let mut later = chunk(sample_results(), "2.0");
+        later.run.git_rev = "def456".into();
+        let mut first = chunk(sample_results(), "2.0");
+        first.run.git_rev = "abc123".into();
+        let (merged, _) = merge_reports(vec![first, later]).unwrap();
+        assert_eq!(merged.git_rev, "abc123, def456");
     }
 
     #[test]

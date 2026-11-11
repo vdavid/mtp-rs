@@ -176,13 +176,43 @@ fn host_os() -> String {
 }
 
 /// The checkout's commit, from the bench crate's own directory so it works from any cwd.
+///
+/// It's the last commit that touched code (the library, the bench's sources, or the lockfile),
+/// so committing saved results or docs between chunks of one run doesn't change it.
 fn git_rev() -> String {
     let dir = env!("CARGO_MANIFEST_DIR");
-    let Some(rev) = command_output("git", &["-C", dir, "rev-parse", "--short=12", "HEAD"]) else {
+    let root = format!("{dir}/../..");
+    let code = [
+        "crates/mtp-rs",
+        "benchmarks/mtp-rs-vs-libmtp/src",
+        "benchmarks/mtp-rs-vs-libmtp/Cargo.toml",
+        "Cargo.toml",
+        "Cargo.lock",
+    ];
+    let mut log = vec![
+        "-C",
+        root.as_str(),
+        "log",
+        "-1",
+        "--format=%h",
+        "--abbrev=12",
+        "--",
+    ];
+    log.extend(code);
+    let Some(rev) = command_output("git", &log) else {
         return "unknown".to_string();
     };
+    let mut status = vec![
+        "-C",
+        root.as_str(),
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+        "--",
+    ];
+    status.extend(code);
     let dirty = Command::new("git")
-        .args(["-C", dir, "status", "--porcelain", "--untracked-files=no"])
+        .args(&status)
         .output()
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false);
