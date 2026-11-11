@@ -60,6 +60,12 @@ struct Cli {
     /// format, opening no device. For a long run split into chunks.
     #[arg(long)]
     render: Option<String>,
+
+    /// Also write the JSON report to this file. Safer than `--output json > file`: libmtp
+    /// prints its device detection to stdout, which C buffers until exit, so it lands after the
+    /// JSON there.
+    #[arg(long)]
+    save: Option<String>,
 }
 
 /// `windowed` expands to one operation per entry in `windows_mib`, and `list_during` to held
@@ -288,6 +294,15 @@ async fn main() {
     if results.is_empty() {
         eprintln!("No results collected.");
         return;
+    }
+
+    if let Some(path) = &cli.save {
+        let saved = report::render_json(&info, &results)
+            .map_err(|e| e.to_string())
+            .and_then(|json| std::fs::write(path, json).map_err(|e| e.to_string()));
+        if let Err(e) = saved {
+            eprintln!("Couldn't save the report to {path}: {e}");
+        }
     }
 
     eprintln!("\n=== Results ===\n");
