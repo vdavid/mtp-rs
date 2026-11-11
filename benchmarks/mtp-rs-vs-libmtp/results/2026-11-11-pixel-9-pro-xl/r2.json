@@ -1,15 +1,15 @@
 {
   "run": {
-    "date": "2026-11-11 17:30 +01:00",
+    "date": "2026-11-11 23:48 +01:00",
     "os": "macOS 27.0.1",
     "mtp_rs_version": "0.38.1",
-    "git_rev": "5a007e8c5f2e",
+    "git_rev": "255621b1c982",
     "libmtp_version": "1.1.23",
     "device": "Google Pixel 9 Pro XL",
     "device_firmware": "1.0",
     "usb_speed": "USB 3.2 Gen 1 (5 Gbit/s)",
-    "load_start": "3.78 4.35 5.67 (16 cores)",
-    "load_end": "6.86 5.25 5.80 (16 cores)"
+    "load_start": "4.12 4.55 7.48 (16 cores)",
+    "load_end": "15.43 13.63 11.07 (16 cores)"
   },
   "results": [
     {
@@ -18,44 +18,44 @@
       "file_size_bytes": 1000000000,
       "durations": [
         {
-          "secs": 5,
-          "nanos": 169450250
+          "secs": 3,
+          "nanos": 956953000
         },
         {
           "secs": 4,
-          "nanos": 254882083
+          "nanos": 65287958
         },
         {
           "secs": 4,
-          "nanos": 2863625
+          "nanos": 174391958
         },
         {
           "secs": 3,
-          "nanos": 841773667
+          "nanos": 788048708
         },
         {
           "secs": 4,
-          "nanos": 446533125
+          "nanos": 140303292
+        },
+        {
+          "secs": 3,
+          "nanos": 879485584
         },
         {
           "secs": 4,
-          "nanos": 224592625
+          "nanos": 602535583
         },
         {
           "secs": 4,
-          "nanos": 161790292
+          "nanos": 222423750
         },
         {
           "secs": 4,
-          "nanos": 9443167
+          "nanos": 146838417
         },
         {
-          "secs": 4,
-          "nanos": 250933916
-        },
-        {
-          "secs": 4,
-          "nanos": 75978375
+          "secs": 3,
+          "nanos": 883369500
         }
       ]
     }

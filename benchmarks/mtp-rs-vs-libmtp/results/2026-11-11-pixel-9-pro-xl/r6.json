@@ -1,0 +1,102 @@
+{
+  "run": {
+    "date": "2026-11-11 23:45 +01:00",
+    "os": "macOS 27.0.1",
+    "mtp_rs_version": "0.38.1",
+    "git_rev": "255621b1c982",
+    "libmtp_version": "1.1.23",
+    "device": "Google Pixel 9 Pro XL",
+    "device_firmware": "1.0",
+    "usb_speed": "USB 3.2 Gen 1 (5 Gbit/s)",
+    "load_start": "3.74 5.14 8.38 (16 cores)",
+    "load_end": "3.85 4.53 7.52 (16 cores)"
+  },
+  "results": [
+    {
+      "backend": "MtpRs",
+      "operation": {
+        "DownloadWindowed": {
+          "window_mib": 8
+        }
+      },
+      "file_size_bytes": 1000000000,
+      "durations": [
+        {
+          "secs": 4,
+          "nanos": 887552625
+        },
+        {
+          "secs": 5,
+          "nanos": 392470708
+        },
+        {
+          "secs": 7,
+          "nanos": 32855417
+        },
+        {
+          "secs": 6,
+          "nanos": 305743208
+        },
+        {
+          "secs": 5,
+          "nanos": 209882291
+        },
+        {
+          "secs": 4,
+          "nanos": 635693542
+        },
+        {
+          "secs": 5,
+          "nanos": 120422083
+        },
+        {
+          "secs": 5,
+          "nanos": 186711708
+        }
+      ]
+    },
+    {
+      "backend": "MtpRs",
+      "operation": {
+        "DownloadWindowed": {
+          "window_mib": 32
+        }
+      },
+      "file_size_bytes": 1000000000,
+      "durations": [
+        {
+          "secs": 4,
+          "nanos": 112544042
+        },
+        {
+          "secs": 4,
+          "nanos": 139317709
+        },
+        {
+          "secs": 4,
+          "nanos": 247861750
+        },
+        {
+          "secs": 3,
+          "nanos": 919562833
+        },
+        {
+          "secs": 3,
+          "nanos": 972205250
+        },
+        {
+          "secs": 3,
+          "nanos": 901552166
+        },
+        {
+          "secs": 4,
+          "nanos": 224392916
+        },
+        {
+          "secs": 3,
+          "nanos": 625052833
+        }
+      ]
+    }
+  ]
+}

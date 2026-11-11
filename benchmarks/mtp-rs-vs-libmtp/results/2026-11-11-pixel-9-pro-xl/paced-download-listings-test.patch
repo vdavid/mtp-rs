@@ -1,0 +1,144 @@
+diff --git a/crates/mtp-rs/tests/integration.rs b/crates/mtp-rs/tests/integration.rs
+index 445ec8d..1a5eb38 100644
+--- a/crates/mtp-rs/tests/integration.rs
++++ b/crates/mtp-rs/tests/integration.rs
+@@ -2358,6 +2358,139 @@ mod destructive {
+         assert!(failures.is_empty(), "{failures:#?}");
+     }
+ 
++    /// A paced download lets another task's listings in between windows, one window's wait at
++    /// most, on a multi-thread runtime (#62, #65). The download-side twin of
++    /// `test_paced_upload_round_trip_with_listings`.
++    ///
++    /// Uploads a generated file (`MTP_PACED_DOWNLOAD_SIZE` bytes, default 1 GiB) held open, then
++    /// downloads it held open and with the default pacing while a second task lists the folder
++    /// every 250 ms. Prints the throughput and how long each listing waited, and checks every
++    /// downloaded byte against the pattern. `MTP_PACED_DOWNLOAD_RUNS` (default 1) repeats the
++    /// paced half.
++    ///
++    /// ```sh
++    /// cargo test -p mtp-rs --release --test integration paced_download_with_listings -- --ignored --nocapture
++    /// ```
++    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++    #[ignore]
++    #[serial]
++    async fn test_paced_download_with_listings_from_another_task() {
++        use std::sync::atomic::{AtomicBool, Ordering};
++        use std::sync::{Arc, Mutex};
++
++        let size = std::env::var("MTP_PACED_DOWNLOAD_SIZE")
++            .ok()
++            .and_then(|v| v.trim().parse::<u64>().ok())
++            .filter(|&s| s > 0)
++            .unwrap_or(1024 * 1024 * 1024);
++        let runs = std::env::var("MTP_PACED_DOWNLOAD_RUNS")
++            .ok()
++            .and_then(|v| v.trim().parse::<u32>().ok())
++            .unwrap_or(1);
++        let Some((device, storage, folder)) = setup_with_writable_folder().await else {
++            return;
++        };
++        let name = format!("mtp-rs-paced-download-{}.bin", std::process::id());
++        let source = PatternStream {
++            offset: 0,
++            total: size,
++            chunk_size: 1024 * 1024,
++        };
++        let handle = match storage
++            .upload_with_pacing(
++                Some(folder),
++                NewObjectInfo::file(&name, size),
++                source,
++                mtp_rs::UploadPacing::HeldOpen,
++                |_| std::ops::ControlFlow::Continue(()),
++            )
++            .await
++        {
++            Ok(h) => h,
++            Err(e) => panic!("upload of the test file failed: {e:?}"),
++        };
++        let mut pacings = vec![DownloadPacing::HeldOpen];
++        pacings.extend(std::iter::repeat_n(
++            DownloadPacing::default(),
++            runs as usize,
++        ));
++        let mut failures = Vec::new();
++
++        for pacing in pacings {
++            let done = Arc::new(AtomicBool::new(false));
++            let waits = Arc::new(Mutex::new(Vec::<f64>::new()));
++            let lister = {
++                let lister_storage = device.storages().await.unwrap().remove(0);
++                let (done, waits) = (Arc::clone(&done), Arc::clone(&waits));
++                tokio::spawn(async move {
++                    while !done.load(Ordering::Relaxed) {
++                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
++                        let t = Instant::now();
++                        if lister_storage.list_objects(Some(folder)).await.is_err() {
++                            break;
++                        }
++                        waits.lock().unwrap().push(t.elapsed().as_secs_f64());
++                    }
++                })
++            };
++            let started = Instant::now();
++            let download = async {
++                let mut download = storage
++                    .download_with_pacing(handle, ByteRange::Full, pacing)
++                    .await?;
++                let mut offset = 0u64;
++                let mut want = Vec::new();
++                while let Some(chunk) = download.next_chunk().await {
++                    let chunk = chunk?;
++                    want.resize(chunk.len(), 0);
++                    fill_pattern(&mut want, offset);
++                    if want != chunk[..] {
++                        return Ok::<_, Error>(Err(format!("bytes differ near offset {offset}")));
++                    }
++                    offset += chunk.len() as u64;
++                }
++                Ok(Ok(offset))
++            };
++            let result = tokio::time::timeout(std::time::Duration::from_secs(600), download).await;
++            let took = started.elapsed();
++            done.store(true, Ordering::Relaxed);
++            let _ = tokio::time::timeout(std::time::Duration::from_secs(60), lister).await;
++            match result {
++                Ok(Ok(Ok(len))) if len == size => {}
++                Ok(Ok(Ok(len))) => failures.push(format!("{pacing:?}: {len} bytes, not {size}")),
++                Ok(Ok(Err(e))) => failures.push(format!("{pacing:?}: {e}")),
++                Ok(Err(e)) => {
++                    failures.push(format!("{pacing:?}: download failed: {e:?}"));
++                    break;
++                }
++                Err(_) => {
++                    failures.push(format!("{pacing:?}: download hung"));
++                    break;
++                }
++            }
++            let mut waits = waits.lock().unwrap().clone();
++            waits.sort_by(f64::total_cmp);
++            let median = waits.get(waits.len() / 2).copied().unwrap_or(0.0);
++            let max = waits.last().copied().unwrap_or(0.0);
++            tlog!(
++                "{pacing:?}: {:.0} MB/s ({:.2} s); {} listings, waited median {:.0} ms, max {:.0} ms",
++                size as f64 / 1e6 / took.as_secs_f64(),
++                took.as_secs_f64(),
++                waits.len(),
++                median * 1000.0,
++                max * 1000.0
++            );
++            if pacing != DownloadPacing::HeldOpen && max > 6.0 {
++                failures.push(format!("{pacing:?}: a listing waited {max:.1} s"));
++            }
++        }
++
++        if let Err(e) = storage.delete(handle).await {
++            failures.push(format!("delete: {e:?}"));
++        }
++        assert!(failures.is_empty(), "{failures:#?}");
++    }
++
+     /// Small uploads while another task lists the same folder in a loop: no listing may land
+     /// between an upload's `SendObjectInfo` and `SendObject`, since Android forgets the info and
+     /// refuses the data (#62, AGENTS.md § Streaming uploads). Stops at the first failed upload.

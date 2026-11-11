@@ -1,0 +1,154 @@
+{
+  "run": {
+    "date": "2026-11-11 23:52 +01:00",
+    "os": "macOS 27.0.1",
+    "mtp_rs_version": "0.38.1",
+    "git_rev": "255621b1c982",
+    "libmtp_version": "1.1.23",
+    "device": "Google Pixel 9 Pro XL",
+    "device_firmware": "1.0",
+    "usb_speed": "USB 3.2 Gen 1 (5 Gbit/s)",
+    "load_start": "5.35 10.11 10.01 (16 cores)",
+    "load_end": "9.03 7.98 8.84 (16 cores)"
+  },
+  "results": [
+    {
+      "backend": "MtpRs",
+      "operation": {
+        "ListDuringDownload": {
+          "pacing": "HeldOpen"
+        }
+      },
+      "file_size_bytes": 4000000000,
+      "durations": [
+        {
+          "secs": 16,
+          "nanos": 721350375
+        },
+        {
+          "secs": 16,
+          "nanos": 799055208
+        },
+        {
+          "secs": 16,
+          "nanos": 569112667
+        },
+        {
+          "secs": 16,
+          "nanos": 198937500
+        },
+        {
+          "secs": 15,
+          "nanos": 582943625
+        },
+        {
+          "secs": 16,
+          "nanos": 364100167
+        },
+        {
+          "secs": 14,
+          "nanos": 880002167
+        }
+      ],
+      "list_latencies": [
+        {
+          "secs": 9,
+          "nanos": 574870375
+        },
+        {
+          "secs": 8,
+          "nanos": 415582416
+        },
+        {
+          "secs": 8,
+          "nanos": 403334208
+        },
+        {
+          "secs": 7,
+          "nanos": 810873250
+        },
+        {
+          "secs": 8,
+          "nanos": 317357750
+        },
+        {
+          "secs": 8,
+          "nanos": 27654875
+        },
+        {
+          "secs": 7,
+          "nanos": 393747583
+        }
+      ]
+    },
+    {
+      "backend": "MtpRs",
+      "operation": {
+        "ListDuringDownload": {
+          "pacing": "Default"
+        }
+      },
+      "file_size_bytes": 4000000000,
+      "durations": [
+        {
+          "secs": 15,
+          "nanos": 900821750
+        },
+        {
+          "secs": 16,
+          "nanos": 26261792
+        },
+        {
+          "secs": 15,
+          "nanos": 301670750
+        },
+        {
+          "secs": 15,
+          "nanos": 360394167
+        },
+        {
+          "secs": 20,
+          "nanos": 93847583
+        },
+        {
+          "secs": 17,
+          "nanos": 876004167
+        },
+        {
+          "secs": 16,
+          "nanos": 468539292
+        }
+      ],
+      "list_latencies": [
+        {
+          "secs": 1,
+          "nanos": 386246125
+        },
+        {
+          "secs": 0,
+          "nanos": 883302041
+        },
+        {
+          "secs": 0,
+          "nanos": 272202375
+        },
+        {
+          "secs": 1,
+          "nanos": 354718959
+        },
+        {
+          "secs": 0,
+          "nanos": 737296250
+        },
+        {
+          "secs": 1,
+          "nanos": 252346625
+        },
+        {
+          "secs": 1,
+          "nanos": 202787125
+        }
+      ]
+    }
+  ]
+}

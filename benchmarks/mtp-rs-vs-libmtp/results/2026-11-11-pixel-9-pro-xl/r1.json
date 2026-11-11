@@ -1,15 +1,15 @@
 {
   "run": {
-    "date": "2026-11-11 17:24 +01:00",
+    "date": "2026-11-11 23:07 +01:00",
     "os": "macOS 27.0.1",
     "mtp_rs_version": "0.38.1",
-    "git_rev": "5a007e8c5f2e",
+    "git_rev": "255621b1c982",
     "libmtp_version": "1.1.23",
     "device": "Google Pixel 9 Pro XL",
     "device_firmware": "1.0",
     "usb_speed": "USB 3.2 Gen 1 (5 Gbit/s)",
-    "load_start": "3.15 3.69 6.09 (16 cores)",
-    "load_end": "2.88 3.54 5.73 (16 cores)"
+    "load_start": "2.68 3.85 4.48 (16 cores)",
+    "load_end": "3.42 3.79 4.38 (16 cores)"
   },
   "results": [
     {
@@ -19,43 +19,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 12695708
+          "nanos": 12925209
         },
         {
           "secs": 0,
-          "nanos": 14765458
+          "nanos": 13697917
         },
         {
           "secs": 0,
-          "nanos": 15263958
+          "nanos": 14748458
         },
         {
           "secs": 0,
-          "nanos": 13974292
+          "nanos": 13697500
         },
         {
           "secs": 0,
-          "nanos": 16462375
+          "nanos": 14712250
         },
         {
           "secs": 0,
-          "nanos": 18495667
+          "nanos": 15151916
         },
         {
           "secs": 0,
-          "nanos": 14685542
+          "nanos": 15168959
         },
         {
           "secs": 0,
-          "nanos": 14612375
+          "nanos": 12565125
         },
         {
           "secs": 0,
-          "nanos": 16060042
+          "nanos": 14876000
         },
         {
           "secs": 0,
-          "nanos": 15029167
+          "nanos": 19573458
         }
       ]
     },
@@ -66,43 +66,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 15383917
+          "nanos": 16117792
         },
         {
           "secs": 0,
-          "nanos": 15615042
+          "nanos": 16778250
         },
         {
           "secs": 0,
-          "nanos": 25953417
+          "nanos": 17986625
         },
         {
           "secs": 0,
-          "nanos": 15099708
+          "nanos": 16372417
         },
         {
           "secs": 0,
-          "nanos": 18377291
+          "nanos": 26419458
         },
         {
           "secs": 0,
-          "nanos": 15862375
+          "nanos": 22733708
         },
         {
           "secs": 0,
-          "nanos": 19715167
+          "nanos": 19033125
         },
         {
           "secs": 0,
-          "nanos": 15420791
+          "nanos": 15841916
         },
         {
           "secs": 0,
-          "nanos": 16492917
+          "nanos": 15991750
         },
         {
           "secs": 0,
-          "nanos": 15903459
+          "nanos": 25417375
         }
       ]
     },
@@ -113,43 +113,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 56333417
+          "nanos": 65181875
         },
         {
           "secs": 0,
-          "nanos": 54374042
+          "nanos": 62103541
         },
         {
           "secs": 0,
-          "nanos": 61087083
+          "nanos": 57445792
         },
         {
           "secs": 0,
-          "nanos": 56781208
+          "nanos": 51381458
         },
         {
           "secs": 0,
-          "nanos": 66971958
+          "nanos": 55342083
         },
         {
           "secs": 0,
-          "nanos": 57480500
+          "nanos": 53709375
         },
         {
           "secs": 0,
-          "nanos": 61825083
+          "nanos": 59570000
         },
         {
           "secs": 0,
-          "nanos": 57642042
+          "nanos": 52370167
         },
         {
           "secs": 0,
-          "nanos": 56339916
+          "nanos": 62661417
         },
         {
           "secs": 0,
-          "nanos": 58986417
+          "nanos": 70903792
         }
       ]
     },
@@ -160,43 +160,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 78773167
+          "nanos": 75773208
         },
         {
           "secs": 0,
-          "nanos": 76877167
+          "nanos": 72651292
         },
         {
           "secs": 0,
-          "nanos": 78431542
+          "nanos": 70326167
         },
         {
           "secs": 0,
-          "nanos": 80219750
+          "nanos": 72325000
         },
         {
           "secs": 0,
-          "nanos": 86796083
+          "nanos": 74815125
         },
         {
           "secs": 0,
-          "nanos": 90752542
+          "nanos": 72788416
         },
         {
           "secs": 0,
-          "nanos": 78478958
+          "nanos": 99061125
         },
         {
           "secs": 0,
-          "nanos": 74605458
+          "nanos": 72470834
         },
         {
           "secs": 0,
-          "nanos": 75553584
+          "nanos": 93102792
         },
         {
           "secs": 0,
-          "nanos": 79374417
+          "nanos": 72620500
         }
       ]
     },
@@ -207,43 +207,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 460326458
+          "nanos": 406388625
         },
         {
           "secs": 0,
-          "nanos": 459903791
+          "nanos": 430055625
         },
         {
           "secs": 0,
-          "nanos": 451002208
+          "nanos": 453580583
         },
         {
           "secs": 0,
-          "nanos": 464636250
+          "nanos": 405895375
         },
         {
           "secs": 0,
-          "nanos": 467832875
+          "nanos": 428378750
         },
         {
           "secs": 0,
-          "nanos": 460941750
+          "nanos": 511639583
         },
         {
           "secs": 0,
-          "nanos": 459935542
+          "nanos": 416030542
         },
         {
           "secs": 0,
-          "nanos": 476845750
+          "nanos": 467070125
         },
         {
           "secs": 0,
-          "nanos": 448350083
+          "nanos": 401737750
         },
         {
           "secs": 0,
-          "nanos": 454105958
+          "nanos": 460321334
         }
       ]
     },
@@ -254,43 +254,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 596561291
+          "nanos": 628741625
         },
         {
           "secs": 0,
-          "nanos": 630113583
+          "nanos": 640063625
         },
         {
           "secs": 0,
-          "nanos": 628286166
+          "nanos": 629909291
         },
         {
           "secs": 0,
-          "nanos": 626522375
+          "nanos": 616724083
         },
         {
           "secs": 0,
-          "nanos": 629184708
+          "nanos": 631959625
         },
         {
           "secs": 0,
-          "nanos": 631339375
+          "nanos": 640486250
         },
         {
           "secs": 0,
-          "nanos": 614553708
+          "nanos": 659287834
         },
         {
           "secs": 0,
-          "nanos": 621582958
+          "nanos": 626380917
         },
         {
           "secs": 0,
-          "nanos": 685371000
+          "nanos": 635214833
         },
         {
           "secs": 0,
-          "nanos": 608337625
+          "nanos": 634482916
         }
       ]
     },
@@ -301,43 +301,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 64932083
+          "nanos": 62682459
         },
         {
           "secs": 0,
-          "nanos": 59831792
+          "nanos": 62630250
         },
         {
           "secs": 0,
-          "nanos": 107424083
+          "nanos": 62118792
         },
         {
           "secs": 0,
-          "nanos": 65366916
+          "nanos": 49400458
         },
         {
           "secs": 0,
-          "nanos": 52686333
+          "nanos": 60890833
         },
         {
           "secs": 0,
-          "nanos": 69761833
+          "nanos": 51191167
         },
         {
           "secs": 0,
-          "nanos": 51174042
+          "nanos": 55579042
         },
         {
           "secs": 0,
-          "nanos": 50406875
+          "nanos": 59991541
         },
         {
           "secs": 0,
-          "nanos": 55556000
+          "nanos": 59155250
         },
         {
           "secs": 0,
-          "nanos": 58099458
+          "nanos": 43109000
         }
       ]
     },
@@ -348,43 +348,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 59303542
+          "nanos": 55084167
         },
         {
           "secs": 0,
-          "nanos": 82316000
+          "nanos": 73561292
         },
         {
           "secs": 0,
-          "nanos": 73920708
+          "nanos": 61257750
         },
         {
           "secs": 0,
-          "nanos": 56483375
+          "nanos": 59301542
         },
         {
           "secs": 0,
-          "nanos": 63056041
+          "nanos": 64506708
         },
         {
           "secs": 0,
-          "nanos": 60445750
+          "nanos": 76755583
         },
         {
           "secs": 0,
-          "nanos": 71778375
+          "nanos": 65804500
         },
         {
           "secs": 0,
-          "nanos": 55852250
+          "nanos": 60332167
         },
         {
           "secs": 0,
-          "nanos": 73552541
+          "nanos": 70913750
         },
         {
           "secs": 0,
-          "nanos": 71345708
+          "nanos": 115620834
         }
       ]
     },
@@ -395,43 +395,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 107010584
+          "nanos": 96157167
         },
         {
           "secs": 0,
-          "nanos": 100920500
+          "nanos": 120160041
         },
         {
           "secs": 0,
-          "nanos": 145301875
+          "nanos": 99808958
         },
         {
           "secs": 0,
-          "nanos": 93238709
+          "nanos": 140955708
         },
         {
           "secs": 0,
-          "nanos": 93916209
+          "nanos": 107788125
         },
         {
           "secs": 0,
-          "nanos": 119355417
+          "nanos": 106016292
         },
         {
           "secs": 0,
-          "nanos": 107214542
+          "nanos": 106623834
         },
         {
           "secs": 0,
-          "nanos": 112109250
+          "nanos": 120760250
         },
         {
           "secs": 0,
-          "nanos": 90862375
+          "nanos": 100041583
         },
         {
           "secs": 0,
-          "nanos": 102606625
+          "nanos": 96716000
         }
       ]
     },
@@ -442,43 +442,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 135337917
+          "nanos": 120458750
         },
         {
           "secs": 0,
-          "nanos": 152547417
+          "nanos": 142368209
         },
         {
           "secs": 0,
-          "nanos": 143724167
+          "nanos": 143503792
         },
         {
           "secs": 0,
-          "nanos": 154322417
+          "nanos": 147942875
         },
         {
           "secs": 0,
-          "nanos": 126596375
+          "nanos": 144216708
         },
         {
           "secs": 0,
-          "nanos": 127406833
+          "nanos": 145819334
         },
         {
           "secs": 0,
-          "nanos": 131858417
+          "nanos": 134820500
         },
         {
           "secs": 0,
-          "nanos": 158056625
+          "nanos": 133125334
         },
         {
           "secs": 0,
-          "nanos": 137821041
+          "nanos": 142301375
         },
         {
           "secs": 0,
-          "nanos": 140105333
+          "nanos": 123307000
         }
       ]
     },
@@ -489,43 +489,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 498009125
+          "nanos": 372458291
         },
         {
           "secs": 0,
-          "nanos": 485804333
+          "nanos": 382871083
         },
         {
           "secs": 0,
-          "nanos": 418042959
+          "nanos": 399338833
         },
         {
           "secs": 0,
-          "nanos": 380179375
+          "nanos": 491162333
         },
         {
           "secs": 0,
-          "nanos": 394388791
+          "nanos": 365609000
         },
         {
           "secs": 0,
-          "nanos": 371293125
+          "nanos": 374634125
         },
         {
           "secs": 0,
-          "nanos": 401440417
+          "nanos": 402823916
         },
         {
           "secs": 0,
-          "nanos": 415921958
+          "nanos": 448116250
         },
         {
           "secs": 0,
-          "nanos": 393976333
+          "nanos": 385888167
         },
         {
           "secs": 0,
-          "nanos": 408551041
+          "nanos": 409332375
         }
       ]
     },
@@ -536,43 +536,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 676949000
+          "nanos": 628826916
         },
         {
           "secs": 0,
-          "nanos": 616567042
+          "nanos": 616998958
         },
         {
           "secs": 0,
-          "nanos": 617646416
+          "nanos": 673278250
         },
         {
           "secs": 0,
-          "nanos": 614521625
+          "nanos": 629951708
         },
         {
           "secs": 0,
-          "nanos": 612086834
+          "nanos": 633178333
         },
         {
           "secs": 0,
-          "nanos": 645541625
+          "nanos": 631980917
         },
         {
           "secs": 0,
-          "nanos": 636734042
+          "nanos": 644108709
         },
         {
           "secs": 0,
-          "nanos": 619399625
+          "nanos": 671593333
         },
         {
           "secs": 0,
-          "nanos": 613548084
+          "nanos": 641848500
         },
         {
           "secs": 0,
-          "nanos": 618698958
+          "nanos": 616009042
         }
       ]
     },
@@ -583,43 +583,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 20588500
+          "nanos": 21353250
         },
         {
           "secs": 0,
-          "nanos": 20723833
+          "nanos": 20218208
         },
         {
           "secs": 0,
-          "nanos": 20807667
+          "nanos": 20435667
         },
         {
           "secs": 0,
-          "nanos": 20446666
+          "nanos": 20441208
         },
         {
           "secs": 0,
-          "nanos": 19789541
+          "nanos": 20874667
         },
         {
           "secs": 0,
-          "nanos": 20100875
+          "nanos": 19758459
         },
         {
           "secs": 0,
-          "nanos": 20086083
+          "nanos": 19992416
         },
         {
           "secs": 0,
-          "nanos": 20400708
+          "nanos": 20995625
         },
         {
           "secs": 0,
-          "nanos": 20254375
+          "nanos": 20164875
         },
         {
           "secs": 0,
-          "nanos": 20878875
+          "nanos": 19846167
         }
       ]
     },
@@ -630,43 +630,43 @@
       "durations": [
         {
           "secs": 0,
-          "nanos": 31603959
+          "nanos": 30144792
         },
         {
           "secs": 0,
-          "nanos": 30992417
+          "nanos": 29531208
         },
         {
           "secs": 0,
-          "nanos": 30633459
+          "nanos": 30201625
         },
         {
           "secs": 0,
-          "nanos": 31268833
+          "nanos": 30119500
         },
         {
           "secs": 0,
-          "nanos": 28561750
+          "nanos": 31640500
         },
         {
           "secs": 0,
-          "nanos": 26322625
+          "nanos": 29753875
         },
         {
           "secs": 0,
-          "nanos": 25186333
+          "nanos": 30392584
         },
         {
           "secs": 0,
-          "nanos": 26656125
+          "nanos": 32767167
         },
         {
           "secs": 0,
-          "nanos": 28401584
+          "nanos": 31650208
         },
         {
           "secs": 0,
-          "nanos": 28943458
+          "nanos": 30323833
         }
       ]
     }
