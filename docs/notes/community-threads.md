@@ -114,6 +114,40 @@ Android 16 (BP2A.250605.031.A3).
   Fixed on the same branch: a hardware error fails the test once the device has answered earlier in the run
   (`should_skip` in `tests/integration.rs`); another app holding the device still skips.
 
+### #61: WPD paced downloads slow down with calls between windows (opened 2026-11-08, fixed in v0.38.1)
+
+Reporter: [@IoSonoPiero](https://github.com/IoSonoPiero), moving EyeCanSee to 0.38.0. POCO X6 Pro, Windows 11, a 1 GB
+MP4 with `MaxCancelDelay(500 ms)` while the user browses (listings, thumbnails, 3–4 MB photos), their own device lock
+around `holds_session()`. 0.37.3 took 61 s; 0.38.0 took 146 s with 20 calls between windows (8.3 s wait each), and fell
+to 0.7 MB/s with ~200 calls (thumbnails still to make). Linux and small files were fine. Their guess (the kept stream is
+released by every other request, and a forward-only stream re-reads the prefix) was right.
+
+- **Three causes**, reproduced on a Pixel 9 Pro XL under Windows 10: every call between windows made the next window
+  reopen the stream and re-read the prefix (14.6 s at 512 MiB, 28.6 s near the end); the pacer counted that as
+  transfer time, shrank the windows, and let in more calls (the spiral); and the worker's read-ahead hid device time
+  from the pacer, so with a consumer writing to disk 500 ms windows grew to ~6 s.
+- **Fix**: each window is one MTP partial read through WpdMtpDr's passthrough (`passthrough.rs`, research in
+  `docs/specs/wpd-partial-reads.md`), the speed clock starts after the window opens, and a read-ahead body reports
+  its own device time. See AGENTS.md § Paced downloads and § Windows WPD backend.
+- **David's Pixel numbers** (1 GiB, a listing, a 4 MB photo, and a thumbnail between windows): every 8th window 138 s
+  before, 33.8 s after (held open 28.9 s); every window, a stall then failure before, 60–70 s after. 20 cancels
+  mid-window, no wedge.
+- **Released in v0.38.1 on 2026-11-11** (CLI 0.11.9).
+- **Reporter-confirmed (posted 2026-11-11, run 2026-11-08 on `0528271`, same Windows code as 0.38.1)**: the probe found
+  0x95C1, `Seek` is `E_NOTIMPL`, and a 4 MB passthrough read took 0.15–0.16 s at any offset against 16.6 s (50%) and
+  30.7 s (99.6%) for a stream reopen. The 1 GB copy while browsing: 43.9 s (23 MB/s, 101 calls, at most 1.1 s wait)
+  with thumbnails to make, 33.3 s (30 MB/s) cached. SHA-256 matched. They called it fixed; David said he'd keep the
+  issue open until these numbers arrived, so it's ready to close.
+
+### #62: Keep the device browsable during uploads (opened 2026-11-08)
+
+Our own issue (David): paced downloads free the session between windows, but an upload is one `SendObject` (USB) or
+one `Commit` (WPD), so a big copy to a phone blocks every listing. Two fixes from the research shipped in v0.38.1: a
+stopped Android upload no longer times out the next call (AGENTS.md § Ending an upload that stopped partway), and
+`UploadError::partial` is `None` on Android, which deletes the half-written file. Another call landing between an
+upload's two phases is fixed on `main` too. Paced uploads through AOSP's edit ops (0x95C2–0x95C5) work on a Pixel;
+evidence and open design questions in `docs/specs/paced-uploads.md`.
+
 ## Closed and merged
 
 Ordered by close date, oldest first.
@@ -551,7 +585,7 @@ with "device busy", so any other request releases it first. Their evidence: 186 
 MB/s, SHA-256-identical to an Explorer copy; read-only suite 12/13 (`test_ptp_device` expected). Squash-merged as-is.
 Follow-up: the kept stream is also released after 1 s with no request (a paused copy shouldn't hold the phone), and
 the worker drops it before `CoUninitialize` when the request channel closes without a `Shutdown`.
-Open item: a rerun of the comparison on the POCO by @IoSonoPiero, since the request pattern changed.
+The rerun on the POCO this asked for became #61, where windows moved to the MTP passthrough.
 
 ### #52: WPD calls stall for 5–6 minutes after changes on the phone (opened 2026-10-28, closed 2026-11-01)
 
@@ -695,7 +729,7 @@ Cross-cutting summary of every quirk currently handled or known. Sorted by devic
 - [@ChristianSimonSU](https://github.com/ChristianSimonSU): Montblanc Digital Paper e-Ink report in #6 (2026-09-22).
   Tests on macOS via the CLI, and reports device-side behavior (what the device UI does with uploaded files), not just
   protocol results.
-- [@IoSonoPiero](https://github.com/IoSonoPiero): Pierluigi Montinaro. WPD object dates (#41, 2026-10-21), `GetObjectPropList` listings (#45, 2026-10-22), author of
+- [@IoSonoPiero](https://github.com/IoSonoPiero): Pierluigi Montinaro. WPD object dates (#41, 2026-10-21), `GetObjectPropList` listings (#45, 2026-10-22), WPD paced downloads (#61, 2026-11-08, confirmed the fix with numbers), author of
   [EyeCanSee](https://github.com/IoSonoPiero/eyecansee) (#51). Has a Xiaomi POCO X7 Pro and Samsungs, and runs both
   Fedora and Windows 11, and ran the full integration suite on both within hours of
   being asked, with a root-cause guess for the one failure. A strong tester for the WPD backend.

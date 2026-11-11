@@ -1,6 +1,6 @@
 # WPD partial reads through the MTP passthrough (#61)
 
-Status: implemented (`crates/mtp-rs/src/mtp/backend/wpd/passthrough.rs`; how it behaves now is in `AGENTS.md` § Windows WPD backend). This doc keeps the research and the probe (`crates/mtp-rs/examples/wpd_partial_probe.rs`, run on a Pixel 9 Pro XL on 2026-11-08, § Results). The shipped shape follows § If it works, with a cancel that reads the rest of the window, and the MTP handle checked once per object with a passthrough `GetObjectInfo`. End-to-end numbers through the public API: `crates/mtp-rs/examples/paced_with_calls.rs`, results in `AGENTS.md`.
+Status: implemented (`crates/mtp-rs/src/mtp/backend/wpd/passthrough.rs`; how it behaves now is in `AGENTS.md` § Windows WPD backend). This doc keeps the research and the probe (`crates/mtp-rs/examples/wpd_partial_probe.rs`, run on a Pixel 9 Pro XL and a POCO X6 Pro, § Results). The shipped shape follows § If it works, with a cancel that reads the rest of the window, and the MTP handle checked once per object with a passthrough `GetObjectInfo`. End-to-end numbers through the public API: `crates/mtp-rs/examples/paced_with_calls.rs`, results in `AGENTS.md`.
 Tags on claims: **[verified]** (we ran it), **[docs]** (Microsoft documentation or sample), **[code]** (someone
 else's working code), **[guess]** (reasoning, untested).
 
@@ -175,7 +175,7 @@ Keep the full output of every run. What each section means:
 9. **`--early-end`**: END after one chunk answering, and all three health checks passing, means a cancel can stop
    mid-window. Anything else means cancel drains the window first.
 
-Later: ask the #61 reporter to run the same probe on the POCO X6 Pro (Windows 11).
+The #61 reporter ran the same probe on a POCO X6 Pro (Windows 11): § Results (POCO X6 Pro).
 
 ## Results (Pixel 9 Pro XL, Windows 10 Pro 22H2, 2026-11-08) [verified]
 
@@ -192,7 +192,15 @@ Two probe runs on a 1 GiB random file in `Download/`, the second with `--early-e
 - **Throughput on the first 64 MiB**: one stream pass ran at 30 MiB/s. The passthrough in 8 MiB windows ran at 32.5–33.5 MiB/s, whatever the chunk size (driver-optimal 256 KiB, 1 MiB, or 4 MiB).
 - **A listing between two passthrough windows took 2.9 ms**, and the next window ran at full speed. There's no stream to release.
 - **An early `END_DATA_TRANSFER` after 256 KiB of a 16 MiB window failed with `ERROR_CANCELLED` (0x800704C7) after 313 ms**, but the session stayed healthy: the next `GetObjectInfo`, partial read, and stream read all worked. This is the driver cancelling the transfer itself, so on Android it may hit the same `io_cancel` race as our `CLASS_CANCEL` (#54). One run proves nothing about a race that wedged about one cancel in ten. Until a loop of early ENDs shows no wedge, cancel by reading the rest of the window (at most about one pacing target).
-- **Not covered yet**: the reporter's POCO X6 Pro, Samsung, a camera under WPD, and files over 4 GiB.
+- **Not covered yet**: Samsung, a camera under WPD, and files over 4 GiB.
+
+## Results (POCO X6 Pro, Windows 11, 2026-11-08) [verified by the #61 reporter]
+
+[@IoSonoPiero](https://github.com/IoSonoPiero) ran the probe and their app (EyeCanSee) on rev `0528271`, which has the same Windows code as 0.38.1, with a 1,011,699,062-byte MP4 in `Download/`. Posted on #61 on 2026-11-11.
+
+- **The driver lists 0x95C1, and 0x101B works too.** `IStream::Seek` returns `E_NOTIMPL` (0x80004001), as on the Pixel.
+- **A 4 MB window through the passthrough costs the same at any offset**: 0.16 s at 0%, 0.16 s at 50%, 0.15 s at 99.6%, against 0.14 s, 16.6 s, and 30.7 s for a stream reopen and discard. Bytes matched the stream every time.
+- **1 GB copy while browsing, `MaxCancelDelay(500 ms)`**: 43.9 s (23 MB/s; 101 calls between windows, average wait 0.55 s, at most 1.1 s) with grid thumbnails still to make, and 33.3 s (30 MB/s; 17 calls, average 0.33 s, at most 0.6 s) with them cached. The same runs on 0.38.0: 0.7 MB/s (stopped by hand at 465 MB after 664 s) and 146 s. On 0.37.3: 61 s. SHA-256 matched in every finished copy.
 
 ## If it works: the shape of the fix
 

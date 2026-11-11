@@ -942,7 +942,11 @@ semantics that differ from the USB/PTP backend, all hardware-verified on a Pixel
     every window 60–70 s, of which the calls themselves took 20–35 s, against a download that fell to
     2 MB/s and then failed with `ERROR_SEM_TIMEOUT` (0x80070079) before. Every result's SHA-256
     matched. 20 cancels mid-window, each followed by a listing: no wedge, the listing waited
-    ~370 ms (the rest of the 8 MiB window, then the listing).
+    ~370 ms (the rest of the 8 MiB window, then the listing). **Reporter-confirmed on a POCO X6 Pro**
+    (Windows 11, rev `0528271` = 0.38.1's Windows code, #61, 2026-11-11): a 4 MB passthrough read took
+    0.15–0.16 s at any offset, against 16.6 s at 50% and 30.7 s at 99.6% for a stream reopen; a 1 GB
+    copy while browsing took 43.9 s with thumbnails to make and 33.3 s cached (calls waited at most
+    1.1 s), against 146 s and a 0.7 MB/s stall on 0.38.0 and 61 s on 0.37.3. Details in the spec.
   - **After that `ERROR_SEM_TIMEOUT`, the Pixel served no data** (`0x80070141`, device not available)
     while listings still answered, until `pnputil /restart-device` on its USB composite device. Seen
     twice, both on the old stream path. Worth knowing when a Windows report says reads fail but
