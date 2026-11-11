@@ -25,10 +25,13 @@
 //! - `check`: open a fresh session and describe every `mtprs-probe-*` object (after `stop exit`)
 //! - `setdate`: whether `SetObjectPropValue(DateModified)` sets a date afterwards, on a windowed
 //!   and on a held-open object (AOSP's `setObjectProperty` only renames)
+//! - `dates`: every route we know to a windowed upload that keeps its date (#68), each on its own
+//!   object, all kept so the phone's file system can be checked afterwards; `cleanup` removes them
 //! - `cleanup`: delete every `mtprs-probe-*` object in `Download`
 //!
 //! Options (anywhere after the command): `--serial SERIAL` (the device to open; required when more
 //! than one MTP device is connected; the model is printed before anything is written),
+//! `--folder NAME` (work in this folder inside `Download` instead of `Download` itself),
 //! `--ext EXT` (file extension, default `bin`), `--check-every N` (`GetObjectInfo` on the handle
 //! every N windows, default 0 = only at the end).
 
@@ -53,6 +56,9 @@ const PREFIX: &str = "mtprs-probe-";
 
 /// `--serial`: the device to open, kept for the reopens inside `stop`.
 static SERIAL: OnceLock<Option<String>> = OnceLock::new();
+
+/// `--folder`: a folder inside `Download` to work in instead of `Download` itself.
+static FOLDER: OnceLock<Option<String>> = OnceLock::new();
 
 struct Ctx {
     // Kept so the USB interface stays claimed for as long as the session lives.
@@ -82,6 +88,9 @@ async fn run(mut args: Vec<String>) -> R<()> {
     SERIAL
         .set(take_opt(&mut args, "--serial"))
         .map_err(|_| "serial set twice")?;
+    FOLDER
+        .set(take_opt(&mut args, "--folder"))
+        .map_err(|_| "folder set twice")?;
     let cmd = args.first().cloned().unwrap_or_default();
     let started = Instant::now();
     let mut ctx = open(ext, check_every).await?;
@@ -120,10 +129,12 @@ async fn run(mut args: Vec<String>) -> R<()> {
         }
         "check" => check(&ctx).await?,
         "setdate" => setdate(&ctx).await?,
+        "dates" => dates(&ctx).await?,
         "cleanup" => cleanup(&ctx).await?,
         _ => {
             return Err(
-                "command: info | combos | bench | interleave | stop | check | setdate | cleanup"
+                "command: info | combos | bench | interleave | stop | check | setdate | dates \
+                 | cleanup"
                     .into(),
             )
         }
@@ -725,6 +736,101 @@ async fn setdate(ctx: &Ctx) -> R<()> {
     Ok(())
 }
 
+/// #68: every route we know to a windowed upload that ends with the sent date (2020-01-02
+/// 03:04:05, from [`send_info`]), each on its own object. Keeps them all, so the file system's
+/// mtime can be read on the phone afterwards (and again after the media scan); `cleanup` deletes
+/// them. Only sends what the phone reads: windows inside an edit this host opened, at offsets
+/// within it, and no `SendObject` after a refused `SendObjectInfo`.
+async fn dates(ctx: &Ctx) -> R<()> {
+    let window = 2 * CHUNK;
+    let data = Bytes::from(vec![7u8; window]);
+    let s = &ctx.session;
+    let set_date = |handle: ObjectHandle, value: &'static str| async move {
+        let bytes = mtp_rs::ptp::PropertyValue::String(value.into()).to_bytes()?;
+        let r = s
+            .set_object_prop_value(
+                handle,
+                mtp_rs::ptp::ObjectPropertyCode::DateModified,
+                &bytes,
+            )
+            .await;
+        println!("  SetObjectPropValue(DateModified, {value}): {}", show(&r));
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let windowed = |name: String| {
+        let data = data.clone();
+        async move {
+            let h = begin_upload(ctx, &name).await?;
+            for i in 0..2u64 {
+                s.send_partial_object(h, i * window as u64, window as u32, one(data.clone()))
+                    .await?;
+            }
+            s.end_edit_object(h).await?;
+            Ok::<_, Box<dyn std::error::Error>>(h)
+        }
+    };
+    let held = |name: String| {
+        let data = data.clone();
+        async move {
+            let h = send_info(ctx, &name, window as u64).await?;
+            s.send_object_stream(window as u64, one(data)).await?;
+            Ok::<_, Box<dyn std::error::Error>>(h)
+        }
+    };
+    let name = |n: &str| format!("{PREFIX}dates-{n}.{}", ctx.ext);
+
+    println!("\n--- 1: windowed, nothing after");
+    let h = windowed(name("1-windowed")).await?;
+    describe(ctx, h, "  after").await;
+
+    println!("\n--- 2: windowed, then SetObjectPropValue(DateModified)");
+    let h = windowed(name("2-setprop")).await?;
+    set_date(h, "20200102T030405").await?;
+    set_date(h, "20200102T020405Z").await?;
+    set_date(h, "20200102T030405+0100").await?;
+    describe(ctx, h, "  after").await;
+
+    println!("\n--- 3: windowed, then SendObjectInfo again for the same name");
+    let h = windowed(name("3-resend-info")).await?;
+    let r = send_info(ctx, &name("3-resend-info"), 0).await;
+    // Never followed by a SendObject: on OK it would truncate the file (`O_TRUNC`), and on a
+    // refusal the phone wouldn't read it.
+    println!("  second SendObjectInfo: {}", show(&r));
+    describe(ctx, h, "  after").await;
+
+    println!("\n--- 4: held open, nothing after (reference)");
+    let h = held(name("4-held")).await?;
+    describe(ctx, h, "  after").await;
+
+    println!("\n--- 5: held open, then BeginEditObject + EndEditObject with no write");
+    let h = held(name("5-held-edit")).await?;
+    println!("  begin: {}", show(&s.begin_edit_object(h).await));
+    println!("  end: {}", show(&s.end_edit_object(h).await));
+    describe(ctx, h, "  after").await;
+
+    println!("\n--- 6: held open, then an edit that truncates to the same size");
+    let h = held(name("6-held-truncate")).await?;
+    println!("  begin: {}", show(&s.begin_edit_object(h).await));
+    println!(
+        "  truncate to {window}: {}",
+        show(&s.truncate_object(h, window as u64).await)
+    );
+    println!("  end: {}", show(&s.end_edit_object(h).await));
+    describe(ctx, h, "  after").await;
+
+    println!("\n--- 7: windowed into a temporary name, then renamed");
+    let h = windowed(name("7-tmp")).await?;
+    let bytes = mtp_rs::ptp::PropertyValue::String(name("7-renamed")).to_bytes()?;
+    let r = s
+        .set_object_prop_value(h, mtp_rs::ptp::ObjectPropertyCode::ObjectFileName, &bytes)
+        .await;
+    println!("  rename: {}", show(&r));
+    describe(ctx, h, "  after").await;
+
+    println!("\nKept every object; check the file system, then run `cleanup`.");
+    Ok(())
+}
+
 async fn cleanup(ctx: &Ctx) -> R<()> {
     let handles = ctx
         .session
@@ -1001,11 +1107,25 @@ async fn open_once(ext: String, check_every: usize) -> R<Ctx> {
             break;
         }
     }
+    let mut download = download.ok_or("no Download folder at the root")?;
+    if let Some(name) = FOLDER.get().cloned().flatten() {
+        let mut found = None;
+        for h in session
+            .get_object_handles(storage, None, Some(download))
+            .await?
+        {
+            if session.get_object_info(h).await?.filename == name {
+                found = Some(h);
+                break;
+            }
+        }
+        download = found.ok_or_else(|| format!("no folder {name:?} in Download"))?;
+    }
     Ok(Ctx {
         _device: device,
         session,
         storage,
-        download: download.ok_or("no Download folder at the root")?,
+        download,
         ext,
         check_every,
     })

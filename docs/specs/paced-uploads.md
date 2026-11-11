@@ -26,9 +26,9 @@ evidence. Decisions (David, 2026-11-11):
 
 Decided while building, open to change:
 
-- **Dates aren't set afterwards**: AOSP's `MtpDatabase.setObjectProperty` handles only `ObjectFileName` and answers
-  everything else `ObjectPropNotSupported` (read on `main`, 2026-11-11). To verify on the Pixel with
-  `android_edit_probe setdate`; Samsung unverified (the S23 went back before this could run).
+- **Dates can't be set afterwards, and a windowed upload can't keep its date on AOSP at all**: § Dates (#68) has the
+  source and the Pixel runs. Samsung's answer to `SetObjectPropValue(DateModified)` is still untried (the S23 went
+  back first).
 - A free-space check (`GetStorageInfo`) before a windowed upload, since size 0 keeps the phone from refusing a
   too-big file up front.
 - A held-open upload starts with its first chunk, so a `Break` before any byte went out creates nothing.
@@ -109,6 +109,8 @@ about nothing**, and 32 MiB already ran at 72–96% of held open.
 
 A call waits for the window in flight, never longer. The uploader yields between windows; without that, the unfair
 session lock lets the uploader take it straight back (seen in the race check below: 8 listings during 1,000 uploads).
+These probe runs drove `PtpSession` directly; the built API needed more than a yield on a multi-thread runtime
+(§ The built API on hardware).
 
 ### Read-back after `EndEditObject`
 
@@ -119,7 +121,7 @@ session lock lets the uploader take it straight back (seen in the race check bel
   256 MiB upload, `sha256sum` over adb). MediaStore had the file at its full size afterwards (1 run).
 - **The modification time is the time of the last write**, not the `DateModified` sent in `SendObjectInfo`. The header-only
   `SendObject` stamps the sent date (`futimens`), and the writes after it move it to now. A held-open upload keeps the
-  sent date. Setting it afterwards needs `SetObjectPropValue(DateModified)`; not tried.
+  sent date. Setting it afterwards is refused (§ Dates (#68)).
 
 ### Stopping partway
 
@@ -189,7 +191,7 @@ the dates.
 - **Dates differ from the Pixel: Samsung ignores the `DateModified` sent in `SendObjectInfo` for every upload**, held
   open included (5 held-open uploads, all windowed ones): the object reads the time of the upload. On the Pixel a
   held-open upload keeps the sent date. So setting a date needs `SetObjectPropValue(DateModified)` on both phones
-  (not tried on either), and Samsung's held-open uploads already lose the date today.
+  (the Pixel refuses it, § Dates (#68); Samsung untried), and Samsung's held-open uploads already lose the date today.
 - **No `EndEditObject`, then `CloseSession` and a new session** (3 runs) or the session dropped with no close (3 runs):
   same handle, exactly the 64 MiB of the whole windows, `BeginEditObject` from the new session `GeneralError` (the edit
   is still open), `EndEditObject` from it OK (3 of 3). The three `CloseSession` runs deleted their objects without
@@ -209,6 +211,78 @@ the dates.
   that already exists answers `GeneralError` (1 run, harmless).
 - **No stop mode wedged the phone** (34 runs), and nothing needed the reset. The session answered after every
   experiment.
+
+## Dates (#68)
+
+**A windowed upload can't end with the source's date on AOSP.** Pixel 9 Pro XL, Android 17, macOS/nusb, 2026-11-11,
+`android_edit_probe setdate` and `dates` (one run each, every object checked through MTP and with `stat` on
+`/sdcard/Download/...` over SSH, which reads the file system's mtime).
+
+From source (`frameworks/av` `MtpServer.cpp`, `MtpUtils.cpp`; `frameworks/base` `MtpDatabase.java`,
+`MtpStorageManager.java`, `android_mtp_MtpDatabase.cpp`, all on `main`, 2026-11-11):
+
+- The one `futimens` in the server is at the end of `doSendObject`, with the date from the pending `SendObjectInfo`.
+  `doSendObject` opens the file `O_RDWR | O_CREAT | O_TRUNC`, so it can't run after the windows without wiping them.
+- `setObjectProperty` handles `ObjectFileName` (a rename) and answers `ObjectPropNotSupported` for the rest, and
+  `getObjectPropertyDesc` marks only `ObjectFileName` writable (`DateModified` is a read-only DateTime string).
+- `copyFile` (behind `CopyObject`) writes a new file and copies no times, so a copy is dated now.
+- The date MTP reports is `File.lastModified()` read at each request (`MtpObject.getModifiedTime`), so MTP and the
+  file system can't disagree.
+
+On the phone (MTP and `stat` agreed on every object):
+
+- **Windowed, nothing after**: dated at the last write. `SetObjectPropValue(DateModified)` answers 0xA80A
+  (`ObjectPropNotSupported`) for `20200102T030405`, `...Z`, and `...+0100`, on a windowed and on a held-open object, and
+  changes nothing.
+- **A second `SendObjectInfo` for the same name** (size 0, never followed by a `SendObject`): `GeneralError`.
+- **Windowed into a temporary name, then renamed**: the rename works and keeps the upload's date.
+- **Held open, then `BeginEditObject` + `EndEditObject` with no write**: keeps the sent date, so neither the edit
+  nor its `MediaStore` scan touches the date. **Held open, then an edit that only truncates to the same size**:
+  dated now (`ftruncate`).
+- Rechecked with `stat` 5 s and 60 s later: no change, so the media scan doesn't restore or reset anything.
+
+What's left (the product choice is #68's):
+
+- (a) Dates win by default: held open when the upload carries a date and the device keeps dates, windows
+  otherwise (no date, or a device like Samsung that drops it anyway). The only option that loses no date a device
+  would have kept.
+- (b) Windows by default and dates lost.
+- (c) A size threshold.
+- (d) An AOSP patch: let `setObjectProperty` accept `DateModified` (`File.setLastModified`) and mark it writable in
+  the prop desc, a few lines in `MtpDatabase.java`. It would also let a host fix Samsung's held-open uploads if
+  Samsung picked it up. Years to reach phones, so it only comes with one of the others.
+- (e) The app decides per transfer.
+
+## The built API on hardware
+
+Pixel 9 Pro XL, Android 17, macOS/nusb, USB 3 (5 Gb/s), 2026-11-11 evening, the built `UploadPacing` /
+`FileUpload` code in a test folder under `Download`.
+
+- **`test_paced_upload_round_trip_with_listings`** (1 GiB, held open then `MaxWindowTime(2 s)`, a listing every
+  250 ms from another task on tokio's multi-thread runtime): content right in every run (6 held open, 16
+  windowed), held open kept the sent 2020 date, windowed was dated at the last write. Windows run first 8 MiB, then
+  350–560 MiB each (1.3–1.9 s), 242–334 MB/s against 283–306 held open.
+- **A listing waited two or three windows.** With a yield between windows (3 uploads), each listing that started
+  mid-window waited 2.97–3.38 s; with a first fix that let one waiting request in (9 uploads), most still waited
+  2.5–3.6 s. Two causes, both on the multi-thread runtime only: the woken caller sat behind the uploader in the
+  worker's LIFO slot, and an Android listing is about six requests (one `GetObjectPropList` per property), and
+  between them the uploader, woken on another worker, took the lock back. Instrumented: the listing's first request
+  got in after the window, its second waited the next whole window. The virtual device showed the same (80–255
+  windows of 64 KiB). Fixed with `OperationLock::let_waiting_calls_in` (AGENTS.md § Paced downloads), after which
+  12 of 12 listings waited only for the window in flight (1.28–1.65 s, windows of 1.4–1.9 s), at the same
+  throughput. Downloads share the fix; their virtual-device test failed the same way, but they weren't rerun
+  under contention on hardware.
+- **`test_upload_stopped_midway_then_session_works`** with `MTP_UPLOAD_PACING=time:2000`, 256 MiB, stops at 10%
+  and 50% (inside the second window), 20 runs per mode, no wedge, no reopen, no reset in any of the 60:
+  - `break`: returned 0.03–0.14 s after the break with `partial: Some`, holding exactly the first 8 MiB window as a
+    clean prefix; next listing 0.01–0.03 s, delete 0.06–0.12 s (20 of 20).
+  - `drop` (the future dropped while it waits on its source): the next listing, which also truncates, ends the edit,
+    and deletes, took 0.10–0.27 s, and the object was gone through MTP and on the file system (20 of 20).
+  - `timeout` (dropped 300 ms in, a USB transfer in flight): next listing 0.08–0.20 s, object gone (20 of 20).
+- **The CLI keeps dates** (#69, #70, 1 run each): `put` of a file dated 2019-06-14 10:23 local gave the same epoch
+  in `ls --json` (`2019-06-14T10:23:00`), `ls -l`, and `stat` on the phone; `get` of it and of four existing
+  files (summer and winter dates) set the host mtime to the phone's to the second; a folder `get` dated the folder
+  too.
 
 ## Desk research
 
@@ -241,8 +315,7 @@ the dates.
    - `UploadError::partial` becomes `Some(handle)` on Android for a windowed upload: the file holds a clean prefix, so
      the caller can delete it or resume. The library doesn't delete it. That's the opposite of today's held-open
      Android upload (`None`), so it needs a changelog line and a consumer heads-up (Cmdr).
-   - Set `DateModified` after the last window if the caller asked for one (to verify on hardware). Samsung drops the
-     sent date on held-open uploads too, so the same call would fix those.
+   - A windowed upload ends dated now: the phone refuses setting `DateModified` afterwards, and AOSP has no other way (§ Dates (#68)).
    - Cancel between windows sends nothing; mid-window it takes the existing ZLP path (10 of 10 clean).
 2. **Resumable uploads across sessions** fall out of the same ops: an edit survives the session, and a new host can
    `EndEditObject` it, or `BeginEditObject` a committed prefix and append. Could be a later API
