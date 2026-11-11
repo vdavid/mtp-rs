@@ -218,9 +218,21 @@ impl Transport for VirtualTransport {
         Ok(())
     }
 
-    async fn receive_bulk(&self, _max_size: usize) -> Result<Vec<u8>, crate::PtpError> {
+    async fn receive_bulk(&self, max_size: usize) -> Result<Vec<u8>, crate::PtpError> {
         let mut state = self.state.lock().unwrap();
         match state.response_queue.pop_front() {
+            Some(data) if max_size > 0 && data.len() > max_size => {
+                // A USB bulk read returns at most `max_size` bytes, so a container longer than
+                // that arrives over several reads, as on hardware (#63). The rest goes back to
+                // the front of the queue in `max_size` pieces, cut in one pass so a big object
+                // isn't copied once per read.
+                let mut pieces = data.chunks(max_size).map(<[u8]>::to_vec);
+                let first = pieces.next().expect("data is longer than max_size");
+                for piece in pieces.rev() {
+                    state.response_queue.push_front(piece);
+                }
+                Ok(first)
+            }
             Some(data) => Ok(data),
             None => Err(crate::PtpError::invalid_data("no response available")),
         }
@@ -1121,6 +1133,64 @@ mod tests {
 
         // The session survives all of that: a refusal must not wedge the device.
         assert_eq!(storages[0].list_objects(None).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn held_open_download_arrives_in_usb_sized_chunks() {
+        // Real USB reads a held-open GetObject 64 KiB at a time, so `next_chunk` never hands
+        // over more than that. A consumer that bounds memory per call has to be able to see
+        // the same on the virtual device (#63), not the whole object as one chunk.
+        const USB_READ: usize = 64 * 1024;
+        let dir = tempfile::tempdir().unwrap();
+        // A multi-MiB object, and one whose data container (12-byte header + payload) is
+        // exactly two reads long.
+        let sizes = [3 * 1024 * 1024 + 123, 2 * USB_READ - 12];
+        for (i, size) in sizes.iter().enumerate() {
+            let content: Vec<u8> = (0..*size).map(|b| (b % 251) as u8).collect();
+            std::fs::write(dir.path().join(format!("big{i}.bin")), &content).unwrap();
+        }
+
+        let config = VirtualDeviceConfig {
+            serial: "test-held-open-chunks".into(),
+            supports_partial_object: false,
+            supports_partial_object_64: false,
+            ..test_config(dir.path())
+        };
+        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        let storages = device.storages().await.unwrap();
+        let mut objects = storages[0].list_objects(None).await.unwrap();
+        objects.sort_by(|a, b| a.filename.cmp(&b.filename));
+
+        for (obj, size) in objects.iter().zip(sizes) {
+            let content = std::fs::read(dir.path().join(&obj.filename)).unwrap();
+            let mut dl = storages[0]
+                .download(obj.handle, ByteRange::Full)
+                .await
+                .unwrap();
+            assert!(
+                dl.holds_session(),
+                "a no-partial device reads with a held-open GetObject"
+            );
+
+            let mut got = Vec::with_capacity(size);
+            let mut chunks = 0;
+            while let Some(chunk) = dl.next_chunk().await {
+                let chunk = chunk.expect("chunk should not error");
+                assert!(
+                    chunk.len() <= USB_READ,
+                    "{}: a {}-byte chunk is larger than one USB read",
+                    obj.filename,
+                    chunk.len()
+                );
+                got.extend_from_slice(&chunk);
+                chunks += 1;
+            }
+            assert!(chunks > 1, "{}: came as one chunk", obj.filename);
+            assert_eq!(got, content, "{}: reassembles byte-exact", obj.filename);
+        }
+
+        // The data phase and its response were read to the end: the session still works.
+        assert_eq!(storages[0].list_objects(None).await.unwrap().len(), 2);
     }
 
     #[tokio::test]
