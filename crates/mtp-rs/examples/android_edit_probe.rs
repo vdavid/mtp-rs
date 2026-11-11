@@ -77,7 +77,7 @@ async fn run(mut args: Vec<String>) -> R<()> {
     println!("open: {:.2?}", started.elapsed());
     match cmd.as_str() {
         "info" => info(&ctx).await?,
-        "combos" => combos(&ctx).await?,
+        "combos" => combos(&ctx, args.get(1).map_or("", String::as_str)).await?,
         "bench" => {
             let file = PathBuf::from(args.get(1).ok_or("bench <file> <window>...")?);
             let windows = args[2..]
@@ -147,23 +147,36 @@ async fn info(ctx: &Ctx) -> R<()> {
     Ok(())
 }
 
-/// Each case runs on a fresh object and ends by reading it back and deleting it.
-async fn combos(ctx: &Ctx) -> R<()> {
+/// Each case runs on a fresh object and ends by reading it back and deleting it. `which` picks
+/// cases by letter (default all).
+///
+/// Left out on purpose, since AOSP answers them before reading the data phase, which is the
+/// wedge `SendObject` hit (`docs/specs/paced-uploads.md`): `SOI(size=N)` then an empty
+/// `SendObject` (the phone waits for N bytes that never come), and a `SendPartialObject` past the
+/// end or on an object not open for editing.
+async fn combos(ctx: &Ctx, which: &str) -> R<()> {
     let len: usize = 3 * CHUNK;
     let data: Vec<u8> = (0..len).map(|i| pattern(i as u64)).collect();
     let data = Bytes::from(data);
     let s = &ctx.session;
 
-    // (name, declared size, send an empty SendObject first)
-    let cases: [(&str, u64, bool); 4] = [
-        ("A: SOI(size=N), no SendObject, edit", len as u64, false),
-        ("B: SOI(size=0), empty SendObject, edit", 0, true),
-        ("C: SOI(size=N), empty SendObject, edit", len as u64, true),
-        ("D: SOI(size=0), no SendObject, edit", 0, false),
+    // (letter, name, declared size, send an empty SendObject first)
+    let cases: [(char, &str, u64, bool); 3] = [
+        ('b', "B: SOI(size=0), empty SendObject, edit", 0, true),
+        (
+            'a',
+            "A: SOI(size=N), no SendObject, edit",
+            len as u64,
+            false,
+        ),
+        ('d', "D: SOI(size=0), no SendObject, edit", 0, false),
     ];
-    for (i, (name, declared, empty_send)) in cases.into_iter().enumerate() {
+    for (letter, name, declared, empty_send) in cases {
+        if !which.is_empty() && !which.contains(letter) {
+            continue;
+        }
         println!("\n--- {name}");
-        let filename = format!("{PREFIX}combo-{}.{}", (b'a' + i as u8) as char, ctx.ext);
+        let filename = format!("{PREFIX}combo-{letter}.{}", ctx.ext);
         let t = Instant::now();
         let handle = match send_info(ctx, &filename, declared).await {
             Ok(h) => h,
@@ -181,6 +194,9 @@ async fn combos(ctx: &Ctx) -> R<()> {
                 .send_object_stream(0, stream::iter(Vec::<std::io::Result<Bytes>>::new()))
                 .await;
             println!("  SendObject(0 bytes): {} ({:.1?})", show(&r), t.elapsed());
+            if r.is_err() {
+                return Err("SendObject failed; stopping before anything riskier".into());
+            }
             describe(ctx, handle, "  after SendObject").await;
         }
         let t = Instant::now();
@@ -205,7 +221,7 @@ async fn combos(ctx: &Ctx) -> R<()> {
                 offset += CHUNK as u64;
             }
             describe(ctx, handle, "  mid-edit").await;
-            if i == 1 {
+            if letter == 'b' {
                 edge_cases(ctx, handle, offset, &data).await;
             }
             let t = Instant::now();
@@ -223,10 +239,6 @@ async fn edge_cases(ctx: &Ctx, handle: ObjectHandle, size: u64, data: &Bytes) {
     let s = &ctx.session;
     let r = s.begin_edit_object(handle).await;
     println!("  edge: second BeginEditObject: {}", show(&r));
-    let r = s
-        .send_partial_object(handle, size + 1, 1, one(Bytes::from_static(b"x")))
-        .await;
-    println!("  edge: SendPartialObject one past the end: {}", show(&r));
     let r = s
         .send_partial_object(handle, 0, 1, one(data.slice(0..1)))
         .await;
@@ -444,6 +456,7 @@ async fn stop(ctx: Ctx, mode: &str, file: &Path, window: u64) -> R<Ctx> {
 
     match mode {
         "noend-close" | "noend-drop" => {
+            drop(s);
             let Ctx {
                 _device, session, ..
             } = ctx;
@@ -551,7 +564,28 @@ async fn after_stop(ctx: &Ctx, handle: ObjectHandle, file: &Path, offset: u64) {
         t.elapsed()
     );
     describe(ctx, handle, "after stop").await;
-    // Is the edit still open? Rewrite the stopped window from its start.
+    // Is the edit still open? A second BeginEditObject answers GeneralError while it is, and
+    // opens it again if it isn't; either way it's open after this. A SendPartialObject on an
+    // object not open for editing, or past its end, is refused before its data phase is read,
+    // which wedges the phone, so check both before resuming.
+    let r = s.begin_edit_object(handle).await;
+    println!(
+        "BeginEditObject again: {} (GeneralError = the edit was still open)",
+        show(&r)
+    );
+    match s.get_object_info(handle).await {
+        Ok(i) if i.size >= offset => {}
+        other => {
+            println!(
+                "not resuming: size {:?} is short of offset {offset}",
+                other.map(|i| i.size)
+            );
+            let _ = s.end_edit_object(handle).await;
+            delete(ctx, handle).await;
+            return;
+        }
+    }
+    // Rewrite the stopped window from its start.
     let window = 4 * CHUNK as u64;
     let r = match file_stream(file, offset, window) {
         Ok(src) => {
@@ -588,12 +622,12 @@ async fn check(ctx: &Ctx) -> R<()> {
             );
             let r = ctx.session.begin_edit_object(h).await;
             println!("  BeginEditObject: {}", show(&r));
-            if r.is_ok() {
-                println!(
-                    "  EndEditObject: {}",
-                    show(&ctx.session.end_edit_object(h).await)
-                );
-            }
+            // A GeneralError there can mean an earlier session's edit is still open: end it.
+            println!(
+                "  EndEditObject: {}",
+                show(&ctx.session.end_edit_object(h).await)
+            );
+            describe(ctx, h, "  after end").await;
         }
     }
     Ok(())
@@ -801,7 +835,11 @@ async fn find(ctx: &Ctx, name: &str) -> R<Option<ObjectHandle>> {
     Ok(None)
 }
 
+/// `PROBE_KEEP=1` keeps the objects (to checksum them on the phone), and `cleanup` deletes them.
 async fn delete(ctx: &Ctx, handle: ObjectHandle) {
+    if std::env::var_os("PROBE_KEEP").is_some() {
+        return;
+    }
     if let Err(e) = ctx.session.delete_object(handle).await {
         println!("  delete {handle:?}: {e}");
     }

@@ -2119,7 +2119,8 @@ mod destructive {
     /// between an upload's `SendObjectInfo` and `SendObject`, since Android forgets the info and
     /// refuses the data (#62, AGENTS.md § Streaming uploads). Stops at the first failed upload.
     ///
-    /// `MTP_TEST_INTERLEAVE_UPLOADS` (default 1000) sets the count. `MTP_TEST_INTERLEAVE_SPLIT=1`
+    /// `MTP_TEST_INTERLEAVE_UPLOADS` (default 1000) sets the count, `MTP_TEST_INTERLEAVE_GAP_MS`
+    /// (default 20) the pause after each upload that lets the lister in. `MTP_TEST_INTERLEAVE_SPLIT=1`
     /// sends the two phases as two calls on a raw `ptp::` session, the shape `MtpDevice::upload`
     /// had before the fix, to see whether the gap is hit on hardware. On a Pixel a hit is expected
     /// to wedge MTP until a replug, so run that mode last. It uses `MTP_TEST_FOLDER`, else
@@ -2146,6 +2147,14 @@ mod destructive {
         let started = Instant::now();
         let mut failure = None;
         let mut uploaded = 0;
+        // The session lock isn't fair: with no pause the uploader takes it straight back and
+        // the lister barely runs (8 listings during 1,000 uploads on a Pixel 9 Pro XL).
+        let gap = std::time::Duration::from_millis(
+            std::env::var("MTP_TEST_INTERLEAVE_GAP_MS")
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(20),
+        );
 
         if crate::env_enabled("MTP_TEST_INTERLEAVE_SPLIT") {
             use mtp_rs::ptp::{ObjectFormatCode, ObjectHandle as PtpHandle, ObjectInfo};
@@ -2216,6 +2225,7 @@ mod destructive {
                 if failure.is_some() {
                     break;
                 }
+                tokio::time::sleep(gap).await;
             }
             done.store(true, Ordering::Relaxed);
             let _ = tokio::time::timeout(std::time::Duration::from_secs(40), lister).await;
@@ -2251,6 +2261,7 @@ mod destructive {
                 if failure.is_some() {
                     break;
                 }
+                tokio::time::sleep(gap).await;
             }
             done.store(true, Ordering::Relaxed);
             let _ = tokio::time::timeout(std::time::Duration::from_secs(40), lister).await;

@@ -732,10 +732,12 @@ file in RAM. Key implementation notes:
   command, and `doSendObject` then answers `NoValidObjectInfo` (0x2015) without
   reading the data phase. On a Pixel 9 Pro XL that refusal wedged MTP until a
   replug: our bulk OUT waited for a device that was waiting to send its answer
-  (macOS/nusb, 2026-11-11, one run, `docs/specs/paced-uploads.md`). Two separate
-  calls left a gap a few instructions wide, but a listing from another task got
-  in about once per 1,000–3,000 uploads on the virtual device
-  (`upload_survives_listings_from_another_task`). Don't split the two again.
+  (macOS/nusb, 2026-11-11, `docs/specs/paced-uploads.md`). Two separate calls
+  left a gap a few instructions wide, but a listing from another task got in
+  about once per 1,000–3,000 uploads on the virtual device
+  (`upload_survives_listings_from_another_task`), and at upload 42 on the Pixel
+  through the old two-call shape, wedging it (1 run). With the fix: 1,400 of
+  1,400 (`test_upload_with_concurrent_listings`). Don't split the two again.
   Low-level `ptp::` callers using `send_object_info` + `send_object_stream` still
   have the gap; the `send_object_info` docs say so. The virtual device models the
   AOSP behavior with `android: true`.
@@ -1020,7 +1022,7 @@ Run `just check` before committing. `cargo fmt`, `cargo clippy -D warnings`, tes
 - [docs/architecture.md](docs/architecture.md), [docs/protocol.md](docs/protocol.md)
 - [docs/debugging.md](docs/debugging.md): debugging hub. Real-device setup and recovery (ptpcamerad blocker, software reset, fast-fail timeouts, device gotchas) plus USB capture. Read before touching physical hardware.
 - [docs/releasing.md](docs/releasing.md): how to publish a new version to crates.io, and how `mtp-rs-cli-v*` tags build prebuilt CLI binaries and the Homebrew formula via dist
-- [docs/specs/paced-uploads.md](docs/specs/paced-uploads.md): research spike for #62, uploads in windows through Android's edit ops (0x95C2–0x95C5). Wire shapes from AOSP, hardware findings so far, and the probe (`examples/android_edit_probe.rs`). Read before touching uploads or the edit ops.
+- [docs/specs/paced-uploads.md](docs/specs/paced-uploads.md): research spike for #62, uploads in windows through Android's edit ops (0x95C2–0x95C5). Wire shapes from AOSP, hardware numbers (window cost, calls between windows, stop modes), options, and the probe (`examples/android_edit_probe.rs`). Read before touching uploads or the edit ops.
 - [SECURITY.md](SECURITY.md): how to report a vulnerability, and that only the latest release gets fixes.
 - [docs/ptp-camera-features.md](docs/ptp-camera-features.md): camera control through `ptp::` (properties, capture, events), using only stable API.
 - [docs/dependency-updates.md](docs/dependency-updates.md): playbook for Renovate PRs. How the config groups and automerges, how to read a red PR, crates that must move together, per-dependency holds (`nusb`, `windows`), the MSRV policy (why nothing is ever capped for the MSRV, and how CI checks it), and everything an MSRV raise touches. Read before merging or closing a dependency PR.
