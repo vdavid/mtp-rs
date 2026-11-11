@@ -654,6 +654,17 @@ impl PtpSession {
         data: &[u8],
     ) -> Result<ResponseContainer, Error> {
         let _guard = self.operation_lock.lock().await;
+        self.execute_with_send_locked(operation, params, data).await
+    }
+
+    /// [`execute_with_send`](Self::execute_with_send) for a caller that already holds
+    /// `operation_lock`.
+    pub(crate) async fn execute_with_send_locked(
+        &self,
+        operation: OperationCode,
+        params: &[u32],
+        data: &[u8],
+    ) -> Result<ResponseContainer, Error> {
         self.recover_if_needed().await?;
 
         let tx_id = self.next_transaction_id();

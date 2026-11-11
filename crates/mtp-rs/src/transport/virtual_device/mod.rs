@@ -123,6 +123,8 @@ impl Drop for VirtualTransport {
 /// Container type constants.
 const CONTAINER_TYPE_COMMAND: u16 = 1;
 const CONTAINER_TYPE_DATA: u16 = 2;
+/// `No_Valid_ObjectInfo`: a `SendObject` with no `SendObjectInfo` in effect.
+const NO_VALID_OBJECT_INFO: u16 = 0x2015;
 
 #[async_trait]
 impl Transport for VirtualTransport {
@@ -169,9 +171,28 @@ impl Transport for VirtualTransport {
                     params.push(unpack_u32(&data[offset..])?);
                 }
 
+                let op = crate::ptp::OperationCode::from(code);
+                if state.config.android {
+                    // AOSP's `MtpServer::handleRequest` forgets a pending `SendObjectInfo` on any
+                    // command other than `SendObject`, so the object it described never gets its
+                    // data. (AOSP keeps a cache entry with no file; here the empty placeholder
+                    // `SendObjectInfo` made stays.)
+                    if op != crate::ptp::OperationCode::SendObject {
+                        state.pending_send = None;
+                    } else if state.pending_send.is_none() {
+                        // `doSendObject` answers `NoValidObjectInfo` straight away and never reads
+                        // the data phase. The data container that follows reaches the device as
+                        // the next "command" (see the data arm below).
+                        state.response_queue.push_back(builders::build_response(
+                            NO_VALID_OBJECT_INFO,
+                            tx_id,
+                            &[],
+                        ));
+                        return Ok(());
+                    }
+                }
                 // Check if this operation expects a data phase from the host.
                 // If so, don't dispatch yet -- store the command and wait for data.
-                let op = crate::ptp::OperationCode::from(code);
                 if matches!(
                     op,
                     crate::ptp::OperationCode::SendObjectInfo
@@ -200,6 +221,9 @@ impl Transport for VirtualTransport {
                             Some(payload),
                         );
                     }
+                    // AOSP's run loop reads a stray data container as a request, and
+                    // `handleRequest` drops it without an answer ("wrong container type").
+                    None if state.config.android => {}
                     None => {
                         return Err(crate::PtpError::invalid_data(
                             "received data container without pending command",
@@ -1750,6 +1774,77 @@ mod tests {
         assert_eq!(data.as_slice(), b"hello upload");
     }
 
+    /// Android forgets a pending `SendObjectInfo` on any other command (AOSP
+    /// `MtpServer::handleRequest`), so a listing from another task that lands between an
+    /// upload's two phases makes its `SendObject` fail with `NoValidObjectInfo`, and on a real
+    /// Pixel it wedged MTP until a replug (#62, `docs/specs/paced-uploads.md`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn upload_survives_listings_from_another_task() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        // The listers read a small folder, so each listing costs the same however many files
+        // the uploads add to the root.
+        std::fs::create_dir(dir.path().join("Listed")).unwrap();
+        let device = MtpDevice::builder()
+            .open_virtual(test_config(dir.path()))
+            .await
+            .unwrap();
+        let uploader = device.storages().await.unwrap().remove(0);
+        let listed = uploader
+            .list_objects(None)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|o| o.filename == "Listed")
+            .unwrap()
+            .handle;
+
+        // The gap is a few instructions wide (the futures mutex isn't fair, so the uploader
+        // usually takes the lock straight back), and listers that have just started hit it most
+        // often, so start a fresh one each round. Before the fix, 6 of 6 runs failed, with 2–6
+        // of the 8,000 uploads refused; a run is ~7 s in a debug build.
+        const ROUNDS: usize = 800;
+        const UPLOADS_PER_ROUND: usize = 10;
+        const LISTERS: usize = 1;
+        let listings = Arc::new(AtomicUsize::new(0));
+        let mut failures = Vec::new();
+        for round in 0..ROUNDS {
+            let done = Arc::new(AtomicBool::new(false));
+            let mut tasks = Vec::new();
+            for _ in 0..LISTERS {
+                let lister = device.storages().await.unwrap().remove(0);
+                let (done, listings) = (Arc::clone(&done), Arc::clone(&listings));
+                tasks.push(tokio::spawn(async move {
+                    while !done.load(Ordering::Relaxed) {
+                        lister.list_objects(Some(listed)).await.unwrap();
+                        listings.fetch_add(1, Ordering::Relaxed);
+                    }
+                }));
+            }
+            for i in 0..UPLOADS_PER_ROUND {
+                let name = format!("r{round}-f{i}.txt");
+                let info = crate::mtp::NewObjectInfo::file(name.clone(), 5);
+                if let Err(e) = uploader.upload(None, info, bytes_stream(b"hello")).await {
+                    failures.push((name, e.to_string()));
+                }
+            }
+            done.store(true, Ordering::Relaxed);
+            for task in tasks {
+                task.await.unwrap();
+            }
+        }
+        assert!(listings.load(Ordering::Relaxed) > 0);
+        assert!(
+            failures.is_empty(),
+            "{} of {} uploads failed: {:?}",
+            failures.len(),
+            ROUNDS * UPLOADS_PER_ROUND,
+            &failures[..failures.len().min(3)]
+        );
+    }
+
     #[tokio::test]
     async fn upload_to_subfolder() {
         let dir = tempfile::tempdir().unwrap();
@@ -2489,6 +2584,65 @@ mod tests {
 
     /// The raw AOSP answer, one layer down: OK with handle 0xFFFF, no new object, and the
     /// destination overwritten in place without truncation.
+    /// `SendObjectInfo`, any other command, then `SendObject`, on a raw session. Returns the
+    /// `SendObject` result and whether the session answers afterwards.
+    async fn send_object_after_another_command(
+        android: bool,
+        serial: &str,
+    ) -> (Result<(), crate::PtpError>, bool) {
+        use crate::ptp::{ObjectFormatCode, ObjectHandle as PtpHandle, ObjectInfo, PtpSession};
+        use crate::transport::virtual_device::VirtualTransport;
+        use crate::transport::Transport;
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = test_config_with_serial(dir.path(), serial);
+        config.android = android;
+        let transport: Arc<dyn Transport> = Arc::new(VirtualTransport::new(config));
+        let session = PtpSession::open(transport, 1).await.unwrap();
+        let storage = session.get_storage_ids().await.unwrap()[0];
+        let info = ObjectInfo {
+            format: ObjectFormatCode::Undefined,
+            size: 5,
+            filename: "a.txt".into(),
+            ..Default::default()
+        };
+        session
+            .send_object_info(storage, PtpHandle::SEND_ROOT, &info)
+            .await
+            .unwrap();
+        session.get_storage_ids().await.unwrap();
+        let sent = session.send_object(b"hello").await;
+        let healthy = session.get_storage_ids().await.is_ok();
+        (sent, healthy)
+    }
+
+    #[tokio::test]
+    async fn send_object_after_another_command_is_refused_like_aosp() {
+        let (sent, healthy) = send_object_after_another_command(true, "sendinfo-forgotten").await;
+        assert!(
+            matches!(
+                sent,
+                Err(crate::PtpError::Protocol {
+                    code: crate::ptp::ResponseCode::Unknown(0x2015),
+                    ..
+                })
+            ),
+            "{sent:?}"
+        );
+        assert!(
+            healthy,
+            "the stray data container gets no answer, so the session stays in step"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_object_after_another_command_still_works_on_a_camera() {
+        let (sent, healthy) = send_object_after_another_command(false, "sendinfo-camera").await;
+        assert!(sent.is_ok(), "{sent:?}");
+        assert!(healthy);
+    }
+
     #[tokio::test]
     async fn ptp_copy_onto_an_existing_name_answers_like_aosp() {
         use crate::ptp::{ObjectHandle as PtpHandle, PtpSession};

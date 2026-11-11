@@ -238,6 +238,11 @@ impl PtpSession {
     /// This must be called before `send_object()` to prepare the device for
     /// receiving a new object.
     ///
+    /// Send the `SendObject` next, with nothing in between, also from other tasks sharing this
+    /// session: Android forgets the info on any other command and then refuses the `SendObject`
+    /// with `NoValidObjectInfo` without reading its data, which wedged a Pixel until a replug
+    /// (#62).
+    ///
     /// # Returns
     ///
     /// Returns a tuple of (storage_id, parent_handle, new_object_handle) where:
@@ -250,9 +255,21 @@ impl PtpSession {
         parent: ObjectHandle,
         info: &ObjectInfo,
     ) -> Result<(StorageId, ObjectHandle, ObjectHandle), Error> {
+        let _guard = self.operation_lock.lock().await;
+        self.send_object_info_locked(storage_id, parent, info).await
+    }
+
+    /// [`send_object_info`](Self::send_object_info) for a caller that already holds
+    /// `operation_lock`.
+    pub(crate) async fn send_object_info_locked(
+        &self,
+        storage_id: StorageId,
+        parent: ObjectHandle,
+        info: &ObjectInfo,
+    ) -> Result<(StorageId, ObjectHandle, ObjectHandle), Error> {
         let data = info.to_bytes()?;
         let response = self
-            .execute_with_send(
+            .execute_with_send_locked(
                 OperationCode::SendObjectInfo,
                 &[storage_id.0, parent.0],
                 &data,

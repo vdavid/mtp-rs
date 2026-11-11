@@ -725,6 +725,26 @@ device look disconnected.
 Uploads use `Transport::send_bulk_streaming()` to avoid buffering the entire
 file in RAM. Key implementation notes:
 
+- **`SendObjectInfo` and `SendObject` go out under one hold of the session's
+  operation lock** (`PtpSession::send_object_with_info`, built on the `*_locked`
+  variants of `send_object_info` and `execute_with_send*`). AOSP's
+  `MtpServer::handleRequest` forgets a pending `SendObjectInfo` on any other
+  command, and `doSendObject` then answers `NoValidObjectInfo` (0x2015) without
+  reading the data phase. On a Pixel 9 Pro XL that refusal wedged MTP until a
+  replug: our bulk OUT waited for a device that was waiting to send its answer
+  (macOS/nusb, 2026-11-11, one run, `docs/specs/paced-uploads.md`). Two separate
+  calls left a gap a few instructions wide, but a listing from another task got
+  in about once per 1,000–3,000 uploads on the virtual device
+  (`upload_survives_listings_from_another_task`). Don't split the two again.
+  Low-level `ptp::` callers using `send_object_info` + `send_object_stream` still
+  have the gap; the `send_object_info` docs say so. The virtual device models the
+  AOSP behavior with `android: true`.
+- **A `SendObject` refused before its data phase still costs the full timeout.**
+  Noticing the early answer would mean reading bulk IN while the bulk OUT is
+  pending, then cancelling an OUT transfer the device never reads; what the
+  phone makes of the bytes that already went out (AOSP reads them as commands
+  and drops them) hasn't been tried on hardware, so it isn't done. The lock above
+  removes the trigger we know of.
 - PTP data containers can span multiple USB bulk transfers. The device
   detects end-of-data via a short packet (< max packet size) or a
   zero-length packet (ZLP) when the total is a multiple of max packet size.

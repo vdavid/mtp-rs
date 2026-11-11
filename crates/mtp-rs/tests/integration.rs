@@ -2114,4 +2114,161 @@ mod destructive {
         assert!(failures.is_empty(), "{failures:#?}");
         tlog!("Upload stop test PASSED");
     }
+
+    /// Small uploads while another task lists the same folder in a loop: no listing may land
+    /// between an upload's `SendObjectInfo` and `SendObject`, since Android forgets the info and
+    /// refuses the data (#62, AGENTS.md § Streaming uploads). Stops at the first failed upload.
+    ///
+    /// `MTP_TEST_INTERLEAVE_UPLOADS` (default 1000) sets the count. `MTP_TEST_INTERLEAVE_SPLIT=1`
+    /// sends the two phases as two calls on a raw `ptp::` session, the shape `MtpDevice::upload`
+    /// had before the fix, to see whether the gap is hit on hardware. On a Pixel a hit is expected
+    /// to wedge MTP until a replug, so run that mode last. It uses `MTP_TEST_FOLDER`, else
+    /// `Download`.
+    ///
+    /// ```sh
+    /// cargo test -p mtp-rs --release --test integration upload_with_concurrent_listings -- --ignored --nocapture
+    /// ```
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore]
+    #[serial]
+    async fn test_upload_with_concurrent_listings() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let uploads = std::env::var("MTP_TEST_INTERLEAVE_UPLOADS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(1000);
+        let prefix = format!("mtp-rs-interleave-{}-", std::process::id());
+        let payload = Bytes::from(vec![0x5Au8; 1024]);
+        let done = Arc::new(AtomicBool::new(false));
+        let listings = Arc::new(AtomicUsize::new(0));
+        let started = Instant::now();
+        let mut failure = None;
+        let mut uploaded = 0;
+
+        if crate::env_enabled("MTP_TEST_INTERLEAVE_SPLIT") {
+            use mtp_rs::ptp::{ObjectFormatCode, ObjectHandle as PtpHandle, ObjectInfo};
+            let device = match crate::open_test_ptp().await {
+                Ok(d) => d,
+                Err(e) => panic!("open device: {e}"),
+            };
+            // Sets drain-on-cancel for Android, as `MtpDevice` does.
+            device.get_device_info().await.unwrap();
+            let session = Arc::new(device.open_session().await.unwrap());
+            let storage = session.get_storage_ids().await.unwrap()[0];
+            let wanted = std::env::var("MTP_TEST_FOLDER").unwrap_or_else(|_| "Download".into());
+            let mut folder = None;
+            for h in session
+                .get_object_handles(storage, None, Some(PtpHandle::ALL))
+                .await
+                .unwrap()
+            {
+                if session.get_object_info(h).await.unwrap().filename == wanted {
+                    folder = Some(h);
+                    break;
+                }
+            }
+            let folder = folder.unwrap_or_else(|| panic!("no {wanted} folder at the root"));
+            tlog!("Split mode: raw ptp session, {uploads} uploads into {wanted}");
+            let lister = {
+                let (session, done, listings) = (
+                    Arc::clone(&session),
+                    Arc::clone(&done),
+                    Arc::clone(&listings),
+                );
+                tokio::spawn(async move {
+                    while !done.load(Ordering::Relaxed) {
+                        if session
+                            .get_object_handles(storage, None, Some(folder))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        listings.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            };
+            for i in 0..uploads {
+                // Outside the crate `ObjectInfo` is non-exhaustive: start from the default.
+                #[allow(clippy::field_reassign_with_default)]
+                let info = {
+                    let mut info = ObjectInfo::default();
+                    info.format = ObjectFormatCode::Undefined;
+                    info.size = payload.len() as u64;
+                    info.filename = format!("{prefix}{i}.bin");
+                    info
+                };
+                let upload = async {
+                    let (_, _, h) = session.send_object_info(storage, folder, &info).await?;
+                    let data = futures::stream::iter(vec![Ok(payload.clone())]);
+                    session
+                        .send_object_stream(payload.len() as u64, data)
+                        .await?;
+                    session.delete_object(h).await
+                };
+                match tokio::time::timeout(std::time::Duration::from_secs(40), upload).await {
+                    Ok(Ok(())) => uploaded += 1,
+                    Ok(Err(e)) => failure = Some(format!("upload {i}: {e}")),
+                    Err(_) => failure = Some(format!("upload {i}: no answer in 40 s")),
+                }
+                if failure.is_some() {
+                    break;
+                }
+            }
+            done.store(true, Ordering::Relaxed);
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(40), lister).await;
+        } else {
+            let Some((device, storage, folder)) = setup_with_writable_folder().await else {
+                return;
+            };
+            tlog!("MtpDevice::upload, {uploads} uploads");
+            let lister = {
+                let lister_storage = device.storages().await.unwrap().remove(0);
+                let (done, listings) = (Arc::clone(&done), Arc::clone(&listings));
+                tokio::spawn(async move {
+                    while !done.load(Ordering::Relaxed) {
+                        if lister_storage.list_objects(Some(folder)).await.is_err() {
+                            break;
+                        }
+                        listings.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            };
+            for i in 0..uploads {
+                let info = NewObjectInfo::file(format!("{prefix}{i}.bin"), payload.len() as u64);
+                let data = futures::stream::iter(vec![Ok::<_, std::io::Error>(payload.clone())]);
+                let upload = async {
+                    let h = storage.upload(Some(folder), info, data).await?;
+                    storage.delete(h).await
+                };
+                match tokio::time::timeout(std::time::Duration::from_secs(40), upload).await {
+                    Ok(Ok(())) => uploaded += 1,
+                    Ok(Err(e)) => failure = Some(format!("upload {i}: {e}")),
+                    Err(_) => failure = Some(format!("upload {i}: no answer in 40 s")),
+                }
+                if failure.is_some() {
+                    break;
+                }
+            }
+            done.store(true, Ordering::Relaxed);
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(40), lister).await;
+            if let Ok(objects) = storage.list_objects(Some(folder)).await {
+                for obj in objects
+                    .into_iter()
+                    .filter(|o| o.filename.starts_with(&prefix))
+                {
+                    let _ = storage.delete(obj.handle).await;
+                }
+            }
+        }
+
+        tlog!(
+            "{uploaded} uploads and {} listings in {:.1?}",
+            listings.load(Ordering::Relaxed),
+            started.elapsed()
+        );
+        assert!(failure.is_none(), "{failure:?}");
+    }
 }

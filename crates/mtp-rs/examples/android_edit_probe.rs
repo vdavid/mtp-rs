@@ -331,12 +331,19 @@ async fn interleave(ctx: &Ctx, file: &Path, window: Option<u64>) -> R<()> {
     );
 
     let done = Arc::new(AtomicBool::new(false));
+    // The caller waits until the upload is past `SendObjectInfo`: a call between it and
+    // `SendObject` makes Android forget the info, and that wedged the Pixel (#62). The two are
+    // separate calls on a raw session, so the probe has to keep that gap free itself.
+    let ready = Arc::new(AtomicBool::new(false));
     let caller = {
         let session = Arc::clone(&ctx.session);
         let (storage, download) = (ctx.storage, ctx.download);
-        let done = Arc::clone(&done);
+        let (done, ready) = (Arc::clone(&done), Arc::clone(&ready));
         tokio::spawn(async move {
             let mut rounds: Vec<[Duration; 3]> = Vec::new();
+            while !ready.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
             while !done.load(Ordering::Relaxed) {
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 let mut r = [Duration::ZERO; 3];
@@ -369,12 +376,19 @@ async fn interleave(ctx: &Ctx, file: &Path, window: Option<u64>) -> R<()> {
     let t = Instant::now();
     let handle = match window {
         Some(w) => {
-            upload_windowed(ctx, &name, file, size, w, None)
+            upload_windowed(ctx, &name, file, size, w, Some(&ready))
                 .await?
                 .handle
         }
         None => {
             let h = send_info(ctx, &name, size).await?;
+            // The data phase has to have started before the caller goes: a second after the
+            // `SendObject` call begins, well inside a 1 GiB transfer.
+            let ready = Arc::clone(&ready);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                ready.store(true, Ordering::Relaxed);
+            });
             ctx.session
                 .send_object_stream(size, file_stream(file, 0, size)?)
                 .await?;
@@ -382,6 +396,7 @@ async fn interleave(ctx: &Ctx, file: &Path, window: Option<u64>) -> R<()> {
         }
     };
     let upload = t.elapsed();
+    ready.store(true, Ordering::Relaxed);
     done.store(true, Ordering::Relaxed);
     let rounds = caller.await?;
     println!(
@@ -628,10 +643,15 @@ async fn upload_windowed(
     file: &Path,
     size: u64,
     window: u64,
-    _unused: Option<()>,
+    // Set once the edit is open, so a caller task can start without landing between
+    // `SendObjectInfo` and `SendObject`.
+    ready: Option<&AtomicBool>,
 ) -> R<Windowed> {
     let total = Instant::now();
     let handle = begin_upload(ctx, name).await?;
+    if let Some(ready) = ready {
+        ready.store(true, Ordering::Relaxed);
+    }
     let setup = total.elapsed();
     let mut windows = Vec::new();
     let mut offset = 0;

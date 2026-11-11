@@ -14,6 +14,14 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+### Fixed
+
+- **[lib] An upload can no longer be broken by another call on the same device starting at the wrong moment.** An upload is two requests, one describing the file and one sending its bytes, and a call from another task (a folder listing, say) could slip in between. Android then forgets the description and refuses the bytes, which made the upload fail, and on a Pixel 9 Pro XL a refused upload left the phone unreachable until it was replugged. The two requests now go out back to back. [#62](https://github.com/vdavid/mtp-rs/issues/62)
+
+### Added
+
+- **[lib] The virtual device forgets a pending upload description like Android does.** With `android: true`, any other command between `SendObjectInfo` and `SendObject` makes the `SendObject` fail with `NoValidObjectInfo` (0x2015), so a test can catch a host that lets another call in between. [#62](https://github.com/vdavid/mtp-rs/issues/62)
+
 ## [0.38.1] - 2026-11-11
 
 Library `0.38.1` and CLI `0.11.9`. Big downloads on Windows stay fast while an app browses the phone, stopping an upload on Android no longer makes the next call time out, and uploads no longer block a runtime thread. No API changes, so `^0.38` users get it through `cargo update`.

@@ -943,17 +943,6 @@ impl MtpBackend for UsbBackend {
             .map(ObjectHandle::to_ptp)
             .unwrap_or(PtpHandle::SEND_ROOT);
 
-        // Phase 1: SendObjectInfo. No object exists yet, so a failure here has no partial to
-        // surface.
-        let (_, _, handle) = self
-            .session
-            .send_object_info(storage.to_ptp(), parent_handle, &object_info)
-            .await
-            .map_err(|source| UploadError {
-                source: source.into(),
-                partial: None,
-            })?;
-
         // Wrap the stream to report progress and support cancellation.
         let mut bytes_sent = 0u64;
         let mut progress = progress;
@@ -975,15 +964,30 @@ impl MtpBackend for UsbBackend {
             Ok(chunk)
         });
 
-        // Phase 2: SendObject. The object already exists on the device, so any failure (genuine
-        // error or cancellation) surfaces the handle as `partial` for the caller to delete or
-        // resume. We do NOT delete it here.
-        let Err(e) = self
+        // SendObjectInfo then SendObject, under one hold of the session lock: Android forgets the
+        // info if any other task's operation gets in between (#62). A failure in the info phase
+        // has no object to surface. Once the object exists, any failure (genuine error or
+        // cancellation) surfaces the handle as `partial` for the caller to delete or resume. We
+        // do NOT delete it here.
+        let (handle, e) = match self
             .session
-            .send_object_stream(total_size, progress_stream)
+            .send_object_with_info(
+                storage.to_ptp(),
+                parent_handle,
+                &object_info,
+                total_size,
+                progress_stream,
+            )
             .await
-        else {
-            return Ok(handle.into());
+        {
+            Ok(handle) => return Ok(handle.into()),
+            Err((None, source)) => {
+                return Err(UploadError {
+                    source: source.into(),
+                    partial: None,
+                })
+            }
+            Err((Some(handle), e)) => (handle, e),
         };
         // When the source stopped (a cancel or a read error), the session has already ended the
         // data phase and the device answered. Android drops the object at that point (#62), so

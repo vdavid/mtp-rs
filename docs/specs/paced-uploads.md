@@ -73,14 +73,15 @@ Pixel 9 Pro XL, Android 17 (`CP3A.261005.005`), macOS/nusb, USB 3, 2026-11-11.
   more. Five spaced reopens over ~2.5 min, then one more after a minute of quiet: all `Timeout`. `android.process.media`
   stayed alive; no `MtpServer` exit in logcat. Needs a replug. The SIC reset wasn't tried (it kills a Pixel's MTP).
 
-### Possible existing bug this points at (not verified)
+### The existing bug this pointed at (fixed)
 
-`UsbBackend::upload` sends `SendObjectInfo` and `SendObject` as two separate session-lock acquisitions. A consumer
-that lists a folder from another task while an upload starts (Cmdr does) can get a command in between, which makes
-AOSP forget the info, and the `SendObject` then meets the same refusal-before-data as case B. If that reproduces, it's
-a wedge in today's uploads, independent of paced uploads. Fix candidates: hold the session lock across both phases
-(a `PtpSession` call that does both), and teach `execute_with_send*` to look for an early response when the data
-phase stalls. Worth a test with a concurrent listing before anything else.
+`UsbBackend::upload` sent `SendObjectInfo` and `SendObject` as two separate session-lock acquisitions, so a listing
+from another task could land between them, which makes AOSP forget the info and refuse the `SendObject` like case B.
+Confirmed on the virtual device once it modeled AOSP here: with one task listing in a loop, 2–6 of 8,000 uploads failed
+with 0x2015 in each of 6 runs. Fixed by sending both under one hold of the lock (`PtpSession::send_object_with_info`);
+AGENTS.md § Streaming uploads has the details, and why an early-answer check in `execute_with_send*` isn't done. Not
+yet reproduced on the Pixel; the commands are in the "Still to run" list. `create_folder` has no gap: AOSP creates a
+folder inside `SendObjectInfo` and expects no `SendObject`.
 
 ## Desk research
 
@@ -116,8 +117,8 @@ phase stalls. Worth a test with a concurrent listing before anything else.
    one `SendObject`. Host-side scheduling between files in a multi-file copy (a consumer concern, maybe a hint like
    `holds_session()` from us), and document the rest.
 
-Recommendation so far: option 1 looks viable from the source, but don't commit to it before `bench` and `stop` run;
-first, check the possible existing bug above, since it affects every Android upload today.
+Recommendation so far: option 1 looks viable from the source, but don't commit to it before `bench` and `stop` run.
+Whatever shape it takes, its `SendObjectInfo` and empty `SendObject` must go out under one hold of the lock too.
 
 ## Still to run (after the replug)
 
@@ -130,5 +131,5 @@ From `crates/mtp-rs`, with the ptpcamerad blocker running and adb stopped:
 4. `bench … --check-every 1 --ext mp4`: does the handle survive a long upload with a media extension.
 5. `stop cancel <256 MiB file> 32M 10`, `stop drop … 10`, `stop noend-close … 3`, `stop noend-drop … 3`,
    `stop exit …` then `check` (3 times).
-6. A concurrent listing between `SendObjectInfo` and `SendObject` through `MtpDevice::upload`, to confirm or rule out
-   the existing bug.
+6. Interleaved listings during uploads through `MtpDevice::upload`, before and after the lock fix:
+   `MTP_TEST_INTERLEAVE_UPLOADS=200 cargo test -p mtp-rs --release --test integration upload_with_concurrent_listings -- --ignored --nocapture`.

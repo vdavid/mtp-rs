@@ -6,7 +6,7 @@
 
 use crate::ptp::{
     container_type, pack_u16, pack_u32, unpack_u32, CommandContainer, ContainerType, ObjectHandle,
-    OperationCode, ResponseCode, ResponseContainer,
+    ObjectInfo, OperationCode, ResponseCode, ResponseContainer, StorageId,
 };
 use crate::transport::Transport;
 use crate::PtpError as Error;
@@ -174,6 +174,23 @@ impl PtpSession {
         operation: OperationCode,
         params: &[u32],
         total_size: u64,
+        data: S,
+    ) -> Result<ResponseContainer, Error>
+    where
+        S: Stream<Item = Result<Bytes, std::io::Error>> + Unpin + Send,
+    {
+        let _guard = self.operation_lock.lock().await;
+        self.execute_with_send_stream_locked(operation, params, total_size, data)
+            .await
+    }
+
+    /// [`execute_with_send_stream`](Self::execute_with_send_stream) for a caller that already
+    /// holds `operation_lock`.
+    pub(crate) async fn execute_with_send_stream_locked<S>(
+        &self,
+        operation: OperationCode,
+        params: &[u32],
+        total_size: u64,
         mut data: S,
     ) -> Result<ResponseContainer, Error>
     where
@@ -182,7 +199,6 @@ impl PtpSession {
         use futures::StreamExt;
         use std::sync::atomic::Ordering;
 
-        let _guard = self.operation_lock.lock().await;
         self.recover_if_needed().await?;
         let tx_id = self.next_transaction_id();
         let mut scope = TransactionScope::arm(&self.recovery, tx_id);
@@ -291,6 +307,39 @@ impl PtpSession {
             .await?;
         Self::check_response(&response, OperationCode::SendObject)?;
         Ok(())
+    }
+
+    /// `SendObjectInfo` then a streamed `SendObject`, holding the session's operation lock across
+    /// both, so no other task's operation lands between them.
+    ///
+    /// Android forgets a pending `SendObjectInfo` on any other command (AOSP
+    /// `MtpServer::handleRequest`) and answers the `SendObject` that follows with
+    /// `NoValidObjectInfo` without reading its data phase: on a Pixel that wedged MTP until a
+    /// replug (#62). Returns the new object's handle; on failure, the handle too when the info
+    /// phase had already created the object.
+    pub(crate) async fn send_object_with_info<S>(
+        &self,
+        storage_id: StorageId,
+        parent: ObjectHandle,
+        info: &ObjectInfo,
+        total_size: u64,
+        data: S,
+    ) -> Result<ObjectHandle, (Option<ObjectHandle>, Error)>
+    where
+        S: Stream<Item = Result<Bytes, std::io::Error>> + Unpin + Send,
+    {
+        let _guard = self.operation_lock.lock().await;
+        let (_, _, handle) = self
+            .send_object_info_locked(storage_id, parent, info)
+            .await
+            .map_err(|e| (None, e))?;
+        let response = self
+            .execute_with_send_stream_locked(OperationCode::SendObject, &[], total_size, data)
+            .await
+            .map_err(|e| (Some(handle), e))?;
+        Self::check_response(&response, OperationCode::SendObject)
+            .map_err(|e| (Some(handle), e))?;
+        Ok(handle)
     }
 
     /// Write `len` bytes at `offset` into an object opened with
