@@ -29,8 +29,12 @@ impl LibmtpBackend {
     /// libmtp's raw device list has no serial without opening each device, and opening another
     /// phone could disturb whoever uses it. So the serial is resolved to a USB vendor and product
     /// ID through mtp-rs's listing (which opens nothing), and exactly one raw device must match
-    /// them. After opening, the device's own serial is checked against the one asked for.
-    pub fn connect(serial: Option<&str>) -> Result<Self, Box<dyn std::error::Error>> {
+    /// them. After opening, the serial libmtp reads (the MTP DeviceInfo one, which can differ from
+    /// the USB serial) is checked against `mtp_serial`, which mtp-rs read from the same device.
+    pub fn connect(
+        serial: Option<&str>,
+        mtp_serial: Option<&str>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let raw_devices =
             detect_raw_devices().map_err(|e| format!("Failed to detect raw devices: {:?}", e))?;
 
@@ -58,10 +62,10 @@ impl LibmtpBackend {
         let mut device = raw
             .open_uncached()
             .ok_or("Failed to open MTP device (open_uncached returned None)")?;
-        if let Some(s) = serial {
+        if let Some(s) = mtp_serial {
             let got = device.serial_number().unwrap_or_default();
             if got != s {
-                return Err(format!("libmtp opened serial '{got}', expected '{s}'").into());
+                return Err(format!("libmtp opened MTP serial '{got}', expected '{s}'").into());
             }
         }
 

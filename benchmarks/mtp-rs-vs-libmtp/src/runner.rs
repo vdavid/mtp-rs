@@ -38,6 +38,7 @@ pub async fn run_benchmarks(
                 let warmup_runs = config.warmup_runs;
 
                 let serial = config.serial.clone();
+                let mtp_serial = config.mtp_serial.clone();
                 let result = match backend {
                     BackendName::MtpRs => {
                         run_mtp_rs_scenario(
@@ -56,6 +57,7 @@ pub async fn run_benchmarks(
                             tokio::task::spawn_blocking(move || {
                                 run_libmtp_scenario(
                                     serial.as_deref(),
+                                    mtp_serial.as_deref(),
                                     operation,
                                     file_size,
                                     num_runs,
@@ -205,6 +207,7 @@ async fn run_mtp_rs_scenario(
 /// This function is meant to be called from `spawn_blocking`.
 fn run_libmtp_scenario(
     serial: Option<&str>,
+    mtp_serial: Option<&str>,
     operation: Operation,
     file_size: u64,
     num_runs: usize,
@@ -215,8 +218,8 @@ fn run_libmtp_scenario(
     let mut durations = Vec::with_capacity(num_runs);
 
     eprintln!("  Connecting (libmtp)...");
-    let backend =
-        LibmtpBackend::connect(serial).map_err(|e| format!("libmtp connect failed: {e}"))?;
+    let backend = LibmtpBackend::connect(serial, mtp_serial)
+        .map_err(|e| format!("libmtp connect failed: {e}"))?;
     eprintln!("  Device: {}", backend.device_description());
 
     for i in 0..total_iterations {

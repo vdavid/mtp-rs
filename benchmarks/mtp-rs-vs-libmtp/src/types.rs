@@ -279,6 +279,10 @@ pub struct BenchmarkConfig {
     /// The device to benchmark, by USB serial. `None` needs exactly one device connected.
     #[serde(default)]
     pub serial: Option<String>,
+    /// The same device's MTP DeviceInfo serial, read by mtp-rs before the run, so the libmtp
+    /// backend can check it opened that device. `None` skips the check.
+    #[serde(default)]
+    pub mtp_serial: Option<String>,
 }
 
 impl Default for BenchmarkConfig {
@@ -291,6 +295,7 @@ impl Default for BenchmarkConfig {
             operations: vec![Operation::Download, Operation::Upload, Operation::ListFiles],
             backends: vec![BackendName::MtpRs, BackendName::Libmtp],
             serial: None,
+            mtp_serial: None,
         }
     }
 }

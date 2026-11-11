@@ -37,10 +37,22 @@ pub struct RunInfo {
     pub libmtp_version: String,
     /// Device manufacturer and model, as the device reports them.
     pub device: String,
-    /// Device firmware version (`DeviceInfo::device_version`).
+    /// `DeviceInfo::device_version`. Android reports `1.0` here, not its build.
     pub device_firmware: String,
     /// Negotiated USB link speed: the slowest of host port, cable, and device.
     pub usb_speed: String,
+    /// The serial in the device's MTP DeviceInfo, which is what libmtp reports, and can differ
+    /// from the USB serial `--serial` takes (a Pixel 9 Pro XL gives a 32-digit hex one). Kept out of
+    /// the report; used to check libmtp opened the same device.
+    #[serde(skip)]
+    pub mtp_serial: Option<String>,
+    /// Host load average (1, 5, 15 min) and core count when the run started. Other work on the
+    /// machine shows up as spread, so it belongs next to the numbers.
+    #[serde(default)]
+    pub load_start: String,
+    /// The same when the run ended.
+    #[serde(default)]
+    pub load_end: String,
 }
 
 impl RunInfo {
@@ -60,12 +72,16 @@ impl RunInfo {
             device: "unknown".to_string(),
             device_firmware: "unknown".to_string(),
             usb_speed: "unknown".to_string(),
+            mtp_serial: None,
+            load_start: load_average(),
+            load_end: String::new(),
         };
         match probe_device(serial).await {
-            Ok((device, firmware, speed)) => {
+            Ok((device, firmware, speed, mtp_serial)) => {
                 info.device = device;
                 info.device_firmware = firmware;
                 info.usb_speed = speed;
+                info.mtp_serial = Some(mtp_serial);
             }
             Err(e) => eprintln!("Couldn't read the device's identity: {e}"),
         }
@@ -80,10 +96,19 @@ impl RunInfo {
             format!("mtp-rs:     {} ({})", self.mtp_rs_version, self.git_rev),
             format!("libmtp:     {}", self.libmtp_version),
             format!(
-                "Device:     {} (firmware {})",
+                "Device:     {} (MTP device version {})",
                 self.device, self.device_firmware
             ),
             format!("USB link:   {}", self.usb_speed),
+            format!(
+                "Host load:  {} at start, {} at end",
+                self.load_start,
+                if self.load_end.is_empty() {
+                    "?"
+                } else {
+                    &self.load_end
+                }
+            ),
         ]
     }
 }
@@ -92,7 +117,7 @@ impl RunInfo {
 /// link speed lives.
 async fn probe_device(
     serial: Option<&str>,
-) -> Result<(String, String, String), Box<dyn std::error::Error>> {
+) -> Result<(String, String, String, String), Box<dyn std::error::Error>> {
     let listed = MtpDevice::list_devices()?;
     let device = crate::mtp_rs_backend::open_device(serial).await?;
     let di = device.device_info();
@@ -100,14 +125,32 @@ async fn probe_device(
     let firmware = di.device_version.clone();
     let entry = listed
         .iter()
-        .find(|d| d.serial_number.as_deref() == Some(di.serial_number.as_str()))
+        .find(|d| d.serial_number.is_some() && d.serial_number.as_deref() == serial)
         .or_else(|| (listed.len() == 1).then(|| &listed[0]));
     let speed = match entry {
         Some(d) => usb_speed_label(d.speed),
         None => "unknown (couldn't match the open device to a USB listing)".to_string(),
     };
+    let mtp_serial = di.serial_number.clone();
     device.close().await?;
-    Ok((name, firmware, speed))
+    Ok((name, firmware, speed, mtp_serial))
+}
+
+/// The 1, 5, and 15-minute load averages and the core count, for example `8.5 5.0 10.2 (16 cores)`.
+pub fn load_average() -> String {
+    let cores = std::thread::available_parallelism().map_or(0, |n| n.get());
+    let load = command_output("sysctl", &["-n", "vm.loadavg"])
+        .map(|s| {
+            s.trim_matches(|c| c == '{' || c == '}' || c == ' ')
+                .to_string()
+        })
+        .or_else(|| {
+            std::fs::read_to_string("/proc/loadavg")
+                .ok()
+                .map(|s| s.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    format!("{load} ({cores} cores)")
 }
 
 /// A link speed with the marketing name people know it by and its signaling rate.
@@ -194,8 +237,11 @@ mod tests {
             git_rev: "abc123".into(),
             libmtp_version: "1.1.23".into(),
             device: "Google Pixel 9 Pro XL".into(),
-            device_firmware: "BP4A".into(),
+            device_firmware: "1.0".into(),
             usb_speed: "USB 3.2 Gen 1 (5 Gbit/s)".into(),
+            mtp_serial: None,
+            load_start: "2.1 3.0 4.0 (16 cores)".into(),
+            load_end: "5.5 4.0 4.0 (16 cores)".into(),
         };
         let all = info.lines().join("\n");
         for needle in [
@@ -203,8 +249,9 @@ mod tests {
             "macOS 27.0.1",
             "0.38.0 (abc123)",
             "1.1.23",
-            "Pixel 9 Pro XL (firmware BP4A)",
+            "Pixel 9 Pro XL (MTP device version 1.0)",
             "5 Gbit/s",
+            "2.1 3.0 4.0 (16 cores) at start, 5.5 4.0 4.0 (16 cores) at end",
         ] {
             assert!(all.contains(needle), "missing {needle} in\n{all}");
         }

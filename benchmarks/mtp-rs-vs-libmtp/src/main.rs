@@ -161,7 +161,7 @@ async fn main() {
         }
     };
 
-    let config = BenchmarkConfig {
+    let mut config = BenchmarkConfig {
         num_runs: cli.runs,
         warmup_runs: cli.warmup,
         file_sizes,
@@ -169,6 +169,7 @@ async fn main() {
         operations,
         backends,
         serial: cli.serial.clone(),
+        mtp_serial: None,
     };
 
     // Print configuration summary to stderr (keeps stdout clean for machine-readable output).
@@ -220,7 +221,8 @@ async fn main() {
     eprintln!("Output:     {}", cli.output);
     eprintln!();
 
-    let info = RunInfo::collect(config.serial.as_deref()).await;
+    let mut info = RunInfo::collect(config.serial.as_deref()).await;
+    config.mtp_serial = info.mtp_serial.clone();
     for line in info.lines() {
         eprintln!("{line}");
     }
@@ -234,6 +236,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    info.load_end = mtp_bench::run_info::load_average();
 
     if results.is_empty() {
         eprintln!("No results collected.");
