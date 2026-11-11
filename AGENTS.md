@@ -1000,6 +1000,7 @@ Run `just check` before committing. `cargo fmt`, `cargo clippy -D warnings`, tes
 - [docs/architecture.md](docs/architecture.md), [docs/protocol.md](docs/protocol.md)
 - [docs/debugging.md](docs/debugging.md): debugging hub. Real-device setup and recovery (ptpcamerad blocker, software reset, fast-fail timeouts, device gotchas) plus USB capture. Read before touching physical hardware.
 - [docs/releasing.md](docs/releasing.md): how to publish a new version to crates.io, and how `mtp-rs-cli-v*` tags build prebuilt CLI binaries and the Homebrew formula via dist
+- [docs/specs/paced-uploads.md](docs/specs/paced-uploads.md): research spike for #62, uploads in windows through Android's edit ops (0x95C2–0x95C5). Wire shapes from AOSP, hardware findings so far, and the probe (`examples/android_edit_probe.rs`). Read before touching uploads or the edit ops.
 - [SECURITY.md](SECURITY.md): how to report a vulnerability, and that only the latest release gets fixes.
 - [docs/ptp-camera-features.md](docs/ptp-camera-features.md): camera control through `ptp::` (properties, capture, events), using only stable API.
 - [docs/dependency-updates.md](docs/dependency-updates.md): playbook for Renovate PRs. How the config groups and automerges, how to read a red PR, crates that must move together, per-dependency holds (`nusb`, `windows`), the MSRV policy (why nothing is ever capped for the MSRV, and how CI checks it), and everything an MSRV raise touches. Read before merging or closing a dependency PR.

@@ -191,6 +191,39 @@ impl PtpSession {
         Ok(data)
     }
 
+    /// Open an existing object for editing (Android extension `BeginEditObject`, `0x95C4`).
+    ///
+    /// The edit stays open across transactions until [`end_edit_object`](Self::end_edit_object),
+    /// so other operations can run between the
+    /// [`send_partial_object`](Self::send_partial_object) calls. AOSP allows one edit per object;
+    /// a second begin answers `GeneralError`. Only devices that list the op in
+    /// `DeviceInfo::operations_supported` accept it.
+    pub async fn begin_edit_object(&self, handle: ObjectHandle) -> Result<(), Error> {
+        let response = self
+            .execute(OperationCode::BeginEditObject, &[handle.0])
+            .await?;
+        Self::check_response(&response, OperationCode::BeginEditObject)
+    }
+
+    /// Commit and close an edit (Android extension `EndEditObject`, `0x95C5`).
+    pub async fn end_edit_object(&self, handle: ObjectHandle) -> Result<(), Error> {
+        let response = self
+            .execute(OperationCode::EndEditObject, &[handle.0])
+            .await?;
+        Self::check_response(&response, OperationCode::EndEditObject)
+    }
+
+    /// Set the size of an object being edited (Android extension `TruncateObject`, `0x95C3`).
+    pub async fn truncate_object(&self, handle: ObjectHandle, size: u64) -> Result<(), Error> {
+        let response = self
+            .execute(
+                OperationCode::TruncateObject,
+                &[handle.0, size as u32, (size >> 32) as u32],
+            )
+            .await?;
+        Self::check_response(&response, OperationCode::TruncateObject)
+    }
+
     /// Downloads the thumbnail image for an object.
     pub async fn get_thumb(&self, handle: ObjectHandle) -> Result<Vec<u8>, Error> {
         let (response, data) = self

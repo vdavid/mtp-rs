@@ -90,6 +90,20 @@ pub enum OperationCode {
     /// Get partial object data with 64-bit offset (Android/MTP extension).
     /// Supports files larger than 4 GB. Parameters: handle, offset_lo, offset_hi, max_bytes.
     GetPartialObject64 = 0x95C1,
+    /// Write part of an object opened with [`BeginEditObject`](Self::BeginEditObject) (Android
+    /// extension). Parameters: handle, offset_lo, offset_hi, length; then `length` bytes of data.
+    /// The offset may not be past the object's current size, so appending at the end works.
+    SendPartialObject = 0x95C2,
+    /// Set the size of an object opened with [`BeginEditObject`](Self::BeginEditObject) (Android
+    /// extension). Parameters: handle, offset_lo, offset_hi.
+    TruncateObject = 0x95C3,
+    /// Open an existing object for editing (Android extension). Parameter: handle. One edit per
+    /// object at a time; the edit lives outside any transaction, so other operations can run
+    /// between the [`SendPartialObject`](Self::SendPartialObject) calls.
+    BeginEditObject = 0x95C4,
+    /// Commit and close an edit opened with [`BeginEditObject`](Self::BeginEditObject) (Android
+    /// extension). Parameter: handle.
+    EndEditObject = 0x95C5,
     /// Unknown or vendor-specific operation code.
     #[num_enum(catch_all)]
     Unknown(u16),

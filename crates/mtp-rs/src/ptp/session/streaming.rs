@@ -292,6 +292,35 @@ impl PtpSession {
         Self::check_response(&response, OperationCode::SendObject)?;
         Ok(())
     }
+
+    /// Write `len` bytes at `offset` into an object opened with
+    /// [`begin_edit_object`](Self::begin_edit_object) (Android extension `SendPartialObject`,
+    /// `0x95C2`), streaming them from `data`.
+    ///
+    /// Each call is its own transaction, so the session is free between calls. AOSP refuses an
+    /// offset past the object's current size, so writing at the end appends. Returns the first
+    /// response parameter, the byte count the device reports writing, when it sends one.
+    pub async fn send_partial_object<S>(
+        &self,
+        handle: ObjectHandle,
+        offset: u64,
+        len: u32,
+        data: S,
+    ) -> Result<Option<u32>, Error>
+    where
+        S: Stream<Item = Result<Bytes, std::io::Error>> + Unpin + Send,
+    {
+        let response = self
+            .execute_with_send_stream(
+                OperationCode::SendPartialObject,
+                &[handle.0, offset as u32, (offset >> 32) as u32, len],
+                u64::from(len),
+                data,
+            )
+            .await?;
+        Self::check_response(&response, OperationCode::SendPartialObject)?;
+        Ok(response.params.first().copied())
+    }
 }
 
 /// A stream of data chunks received from USB during a download operation.
@@ -901,6 +930,36 @@ mod tests {
 
         // Send using streaming API
         session.send_object_stream(5, data_stream).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_partial_object_splits_the_offset_and_sends_the_length() {
+        use futures::stream;
+
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+        mock.queue_response(response_with_params(1, ResponseCode::Ok, &[5]));
+        let session = PtpSession::open(transport, 1).await.unwrap();
+
+        let offset = 0x1_2345_6789_u64;
+        let data = stream::iter(vec![Ok::<_, std::io::Error>(Bytes::from_static(b"hello"))]);
+        let written = session
+            .send_partial_object(ObjectHandle(7), offset, 5, data)
+            .await
+            .unwrap();
+        assert_eq!(written, Some(5));
+
+        let sends = mock.get_sends();
+        let command = &sends[1];
+        assert_eq!(&command[6..8], &pack_u16(0x95C2));
+        let params: Vec<u32> = command[12..]
+            .chunks(4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        assert_eq!(params, vec![7, 0x2345_6789, 1, 5]);
+        let data_phase = &sends[2];
+        assert_eq!(&data_phase[0..4], &pack_u32(12 + 5));
+        assert_eq!(&data_phase[12..], b"hello");
     }
 
     #[tokio::test]
