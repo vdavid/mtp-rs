@@ -14,7 +14,13 @@ Entries are grouped by release. Each entry tags which crate it applies to with *
 
 ## [Unreleased]
 
+## [0.38.1] - 2026-11-11
+
+Library `0.38.1` and CLI `0.11.9`. Big downloads on Windows stay fast while an app browses the phone, stopping an upload on Android no longer makes the next call time out, and uploads no longer block a runtime thread. No API changes, so `^0.38` users get it through `cargo update`.
+
 ### Fixed
+
+- **[cli]** The CLI ships with the library fixes below in `0.11.9`.
 
 - **[lib] On Windows, a big download no longer slows to a crawl when other calls run between its windows.** Each such call made the next window reopen the file on the phone, and on phones that can't seek, read everything before the window again. The download counted that as transfer time, so it shrank its windows, which let in more calls and caused more reopens: a 1 GB copy fell to under 1 MB/s while the app browsed the phone. Window sizes now come from the time spent receiving data only. [#61](https://github.com/vdavid/mtp-rs/issues/61)
 - **[lib] On Windows, calls between the windows of a download now cost the download nothing.** Each window is now its own partial read on the phone, sent through the Windows MTP driver, so there's no file stream to reopen after a call. A 1 GiB copy from a Pixel 9 Pro XL with a folder listing, a photo, and a thumbnail loaded between every few windows took 34 s, against 138 s before; with those calls between every window, 60–70 s, where before it fell to 2 MB/s and the phone stopped answering. Phones and drivers without that partial read keep the old path. [#61](https://github.com/vdavid/mtp-rs/issues/61)
