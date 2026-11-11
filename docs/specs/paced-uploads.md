@@ -2,7 +2,32 @@
 
 Goal: find out whether an upload to an Android phone can go out in windows through AOSP's edit operations, so the
 session is free between windows the way paced downloads free it (AGENTS.md § Paced downloads). This doc holds the
-evidence and the options; the design decision is open.
+evidence and the options.
+
+## Status
+
+**Built (option 1, default on).** The design and its rules are in AGENTS.md § Paced uploads; this doc keeps the
+evidence. Decisions taken (David, 2026-11-11):
+
+- Windowed uploads on devices listing 0x95C2–0x95C5, the default, with an opt-out
+  (`MtpDeviceBuilder::use_windowed_uploads(false)`, `UploadPacing::HeldOpen`). Everything else keeps one
+  `SendObject`; WPD keeps `Commit`.
+- A stopped windowed upload returns `UploadError::partial: Some(handle)`; the library never deletes it. On a stop:
+  truncate to what was acknowledged, then `EndEditObject`.
+- The virtual device models the edit ops, refusals and ghost included.
+- `PtpSession::send_object_with_info` (and the new `begin_edit_upload`) stay crate-private.
+- Resumable uploads across sessions (option 2): not built.
+
+Decided while building, open to change:
+
+- **A dropped upload future ends its edit on the next operation**, at the acknowledged size (the session's
+  recovery hook). It doesn't delete the object: the prefix stays under the file's name with no handle returned.
+- **Dates aren't set afterwards**: AOSP's `MtpDatabase.setObjectProperty` handles only `ObjectFileName` and answers
+  everything else `ObjectPropNotSupported` (read on `main`, 2026-11-11), so a windowed upload keeps the time of its
+  last write. To verify on the Pixel with `android_edit_probe setdate`; Samsung unverified (the S23 went back before
+  this could run).
+- A free-space check (`GetStorageInfo`) before a windowed upload, since size 0 keeps the phone from refusing a
+  too-big file up front.
 
 Hardware for every claim below unless it says otherwise: Pixel 9 Pro XL, Android 17 (`CP3A.261005.005`),
 macOS/nusb, USB 3 (5 Gb/s), 2026-11-11. § Galaxy S23 Ultra repeats the probe on Samsung's server. The probe is `crates/mtp-rs/examples/android_edit_probe.rs`; its header lists

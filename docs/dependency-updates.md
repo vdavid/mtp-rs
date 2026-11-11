@@ -109,7 +109,12 @@ job checks the consumer's view independently.
   holds an opaque `UsbError`), and what does is behind `unstable-raw`, which is exempt from SemVer. It still ships as a
   normal release with a changelog line for `unstable-raw` users.
 - **`cargo-semver-checks`**: not a Cargo dependency. Pinned by hand in `.github/workflows/ci.yml` (`semver` job) and
-  `justfile` (`install-tools`), so keep the two in sync, and check the new version is at least three days old.
+  `justfile` (`install-tools`), so keep the two in sync, and check the new version is at least three days old. One lint
+  is allowed in `crates/mtp-rs/Cargo.toml`: `enum_repr_variant_discriminant_changed`. Adding a code to a `ptp::` code
+  enum moves the implicit discriminant of its catch-all `Unknown(u16)`, which that lint reports as a major break,
+  though only an unsafe pointer cast can see it (the wire value comes from `u16::from`). It fired when #62 added
+  0x95C2–0x95C5. A new code is additive, so don't count it as a `ptp::` break for the 1.0 decision (AGENTS.md § Public
+  surface and stability).
 - **`windows` and `windows-core`**: the WPD backend. CI on `windows-latest` compiles and runs the conformance harness
   but has no device, so verify against a phone on Windows before merging.
   - **The 0.100 line**: windows-rs published `windows-core` 0.100.0 on 2026-09-03 but held back `windows` 0.100 while

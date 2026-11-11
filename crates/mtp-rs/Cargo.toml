@@ -18,6 +18,15 @@ exclude = [
 [package.metadata.docs.rs]
 all-features = true
 
+# The `ptp::` code enums (`OperationCode`, `ResponseCode`, `EventCode`, ...) are `#[repr(u16)]`,
+# `#[non_exhaustive]`, and end in a `num_enum` catch-all `Unknown(u16)`, whose implicit discriminant
+# is the last named code plus one. So adding any code moves it, and this lint calls that a major
+# break. It only matters to code that reads the discriminant through an unsafe pointer cast; the
+# wire value comes from `u16::from`, which `num_enum` keeps right. Adding codes is the point of
+# `#[non_exhaustive]` here, so it's allowed. See docs/dependency-updates.md § cargo-semver-checks.
+[package.metadata.cargo-semver-checks.lints]
+enum_repr_variant_discriminant_changed = "allow"
+
 [dependencies]
 # USB transport (Phase 3+)
 # Floor is 0.2.5, not 0.2, because two fixes below that are ones we'd hit:

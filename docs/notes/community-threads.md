@@ -54,6 +54,21 @@ Reports from this thread:
 
 ## Active threads
 
+### #62: Keep the device browsable during uploads (opened 2026-11-08, our own)
+
+Ours (`claude-created`), no external reporter, but it changes what consumers see on Android, so it belongs here.
+
+- Fixed along the way: a stopped Android upload made the next call time out (v0.38.1), and a call from another
+  task landing between `SendObjectInfo` and `SendObject` made Android refuse the upload and wedged a Pixel.
+- Built: windowed uploads through Android's edit ops (0x95C2–0x95C5), the default where a device lists them
+  (AGENTS.md § Paced uploads). Spike and hardware numbers: `docs/specs/paced-uploads.md` (Pixel 9 Pro XL and
+  Galaxy S23 Ultra, Samsung's closed server answered like AOSP).
+- **What a consumer will notice** (worth knowing when a report comes in): a stopped upload on Android now leaves
+  a clean prefix and `UploadError::partial: Some`, where it used to leave nothing; a windowed upload is dated at
+  its last write (Android can't set the date afterwards); `use_windowed_uploads(false)` or
+  `UploadPacing::HeldOpen` restores the old behavior. Cmdr needs a heads-up for both.
+- Not tried yet: the POCO (HyperOS) and any phone on Windows (WPD keeps `Commit`).
+
 ### #43: POCO X6 Pro 5G results, a Linux cancel wedge, and a WPD wait (opened 2026-10-22)
 
 Reporter: [@IoSonoPiero](https://github.com/IoSonoPiero) (see #41). Xiaomi POCO X6 Pro 5G, HyperOS 3.0.304.0 (WNLEUXM),

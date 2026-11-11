@@ -94,6 +94,9 @@ windows of about two seconds and frees the session between them; `download_with_
 `Storage::download_to_vec(handle)` / `Storage::read_range(handle, offset, len)` /
 `Storage::thumbnail(handle)`.
 
+**Upload API:** `Storage::upload` / `upload_with_progress` go out in windows on Android
+(`UploadPacing::default()`), `upload_with_pacing` takes an `UploadPacing`; see § Paced uploads.
+
 ## Public surface and stability
 
 The release that shaped this is 0.37.0 (#34). The goal: a 1.0 that's only a matter of waiting.
@@ -187,6 +190,12 @@ of it. It reads the version in `Cargo.toml`: a deliberate break passes once the 
   POCO. Reported upstream as https://issuetracker.google.com/issues/581487246, with patches up for review (links in
   `docs/notes/community-threads.md` § #59); old Android keeps the bug either way. The CLI's `cp` makes a renamed copy
   next to the original through a hidden staging folder (copy, rename, move back, remove the folder).
+- **Android's edit operations (0x95C2–0x95C5) wedge on a careless host**: a `SendPartialObject` on an object
+  not open for editing or past the edit's end is refused before its data is read, an edit stays open in the
+  server across sessions, and an edit without the empty `SendObject` first leaves an undeletable ghost.
+  Samsung's closed server answered exactly like AOSP (Galaxy S23 Ultra, 2026-11-11). Rules in § Paced uploads.
+- **A Galaxy S23 Ultra's `DeviceInfo` serial isn't its USB serial** (a 32-digit hex string); `open_by_serial`
+  matches the USB one.
 - **Xiaomi POCO X7 Pro (HyperOS 3)** declines `GetObjectPropList` for "all properties" (`0xFFFFFFFF`) with
   `InvalidObjectPropCode` (0xA801) in most folders but answers each property alone, and sends a property it has no
   value for (`DateCreated`) with data type 0 and no value. We never ask "all"; see § Folder listings via
@@ -226,7 +235,7 @@ of it. It reads the version in `Cargo.toml`: a deliberate break passes once the 
 - **Unit**: `cargo test --workspace` (uses mock transport)
 - **Fuzz**: `crates/mtp-rs/fuzz/`, one cargo-fuzz target per device-facing parser, run weekly by `.github/workflows/fuzz.yml`. The proptest `fuzz_*` tests stay as the quick in-suite version. See `crates/mtp-rs/fuzz/CLAUDE.md`.
 - **Filesystem-watcher tests run in their own pass** (`just test` does this for you: everything else, then `fs_watcher` with `--test-threads=1`). They wait on real OS filesystem-event delivery, so inside the ~400-test parallel pool a loaded machine starves them past their poll budget and they fail as a group while passing every time alone. Don't fold them back in, and don't "fix" a flake there by inflating the timeout. Each one also calls `wait_for_watcher_ready` first, which writes a probe file and waits for the watcher to report it: `notify` arms its stream on a background thread, so a write issued straight after `open_virtual` can land before anything is listening. The probe file is deliberately left in place, since deleting it queues a late `ObjectRemoved` that lands after the drain and steals the next test's first event.
-- **Virtual device**: `cargo test -p mtp-rs --features virtual-device` (full protocol tests against local filesystem). Everything public is in `mtp_rs::virtual_device`. `VirtualDeviceConfig` implements `Default`, so build it as `VirtualDeviceConfig { storages: vec![...], ..Default::default() }` and state only the fields a test actually exercises; new fields must land with a default so consumers don't break (see CONTRIBUTING.md). `VirtualStorageConfig` has no `Default` (an unset `backing_dir` fails silently). Bulk reads honor the requested size like USB, so a held-open download or a window over 64 KiB comes out of `next_chunk` in 64 KiB pieces, and a consumer can test its per-call memory bound against it (#63). Fault injection: `force_partial_read_caps` (short/stall reads), `force_cancel_wedge` / `force_operation_wedge` (#18), `force_object_info_error` and `VirtualDeviceConfig::undescribable_objects` (partially-readable folders, #22). Capability shaping: `supports_partial_object` / `supports_partial_object_64` pick which partial-read ops the device advertises AND serves (both `false` models libhaze/Sphaira, where `download(ByteRange::Full)` is the only read). `GetObjectPropList` is advertised and served by default (modern Android does), so every non-root virtual-device listing takes the fast path; `supports_object_prop_list: false` turns it off, and `prop_list_declined_properties` declines single properties. It models AOSP (depth 1 includes the folder itself, unknown properties come back Undefined) except that it serves `DateCreated` alone, so both listing paths match field for field. A prop-list answer that would include an `undescribable_objects` / `force_object_info_error` object fails whole with `GeneralError`, so #22 skips still happen on the per-handle fallback. Dates: objects report their backing file's mtime (and birth time) on the clock set by `utc_offset` (default UTC, zoneless unless `dates_include_offset`), and an upload's `DateModified` becomes the file's mtime, so a fixture seeds a date with `File::set_modified`. `android` (default `true`) models Android's `MtpServer`: it advertises `android.com`, so the host drains instead of sending CLASS_CANCEL and ends a stopped upload with a zero-length packet, and the device drops the half-written object (`UploadError::partial` is `None`, #62). `android: false` models a PTP camera: CLASS_CANCEL, and a stopped upload keeps its partial. Tests named `*_on_a_camera` cover that path.
+- **Virtual device**: `cargo test -p mtp-rs --features virtual-device` (full protocol tests against local filesystem). Everything public is in `mtp_rs::virtual_device`. `VirtualDeviceConfig` implements `Default`, so build it as `VirtualDeviceConfig { storages: vec![...], ..Default::default() }` and state only the fields a test actually exercises; new fields must land with a default so consumers don't break (see CONTRIBUTING.md). `VirtualStorageConfig` has no `Default` (an unset `backing_dir` fails silently). Bulk reads honor the requested size like USB, so a held-open download or a window over 64 KiB comes out of `next_chunk` in 64 KiB pieces, and a consumer can test its per-call memory bound against it (#63). Fault injection: `force_partial_read_caps` (short/stall reads), `force_cancel_wedge` / `force_operation_wedge` (#18), `force_object_info_error` and `VirtualDeviceConfig::undescribable_objects` (partially-readable folders, #22). Capability shaping: `supports_partial_object` / `supports_partial_object_64` pick which partial-read ops the device advertises AND serves (both `false` models libhaze/Sphaira, where `download(ByteRange::Full)` is the only read). `GetObjectPropList` is advertised and served by default (modern Android does), so every non-root virtual-device listing takes the fast path; `supports_object_prop_list: false` turns it off, and `prop_list_declined_properties` declines single properties. It models AOSP (depth 1 includes the folder itself, unknown properties come back Undefined) except that it serves `DateCreated` alone, so both listing paths match field for field. A prop-list answer that would include an `undescribable_objects` / `force_object_info_error` object fails whole with `GeneralError`, so #22 skips still happen on the per-handle fallback. Dates: objects report their backing file's mtime (and birth time) on the clock set by `utc_offset` (default UTC, zoneless unless `dates_include_offset`), and a held-open upload's `DateModified` becomes the file's mtime (a windowed one ends at the time of its last write, like Android), so a fixture seeds a date with `File::set_modified`. `android` (default `true`) models Android's `MtpServer`: it advertises `android.com`, so the host drains instead of sending CLASS_CANCEL and ends a stopped upload with a zero-length packet, and the device drops the half-written object of a held-open upload (`UploadError::partial` is `None`, #62). `android: false` models a PTP camera: CLASS_CANCEL, and a stopped upload keeps its partial. Tests named `*_on_a_camera` cover that path. `supports_edit_objects` (default `true`, Android mode only) lists and serves the edit ops, so uploads take the windowed path (§ Paced uploads); tests of the held-open Android path open with `use_windowed_uploads(false)`. The model wedges the way a phone does on a data phase it refused unread (`virtual_device_wedged`), keeps edits across sessions (`virtual_open_edits`), and leaves filler past the edit's size when a window stops, so a host that forgets to truncate fails.
 - **Integration**: `cargo test -p mtp-rs --test integration -- --ignored --nocapture` (needs device). Destructive tests pick a writable root folder from a priority list (Android `Download`, Garmin `Music`, Kindle `documents`, etc.); set `MTP_TEST_FOLDER=Name` to override. A timeout or missing device skips a test only until the device has answered once in the run; after that it fails, so a wedge mid-run can't pass as a row of skips (#43). See `crates/mtp-rs/tests/integration.rs` header for full details. To compare the two listing paths on a real device (read-only, prints timings): `MTP_TEST_LIST_FOLDER=/DCIM/Camera cargo test -p mtp-rs --test integration prop_list -- --ignored --nocapture`, or `cargo run --release -p mtp-rs --example list_speed -- DCIM/Camera`.
 - **CLI**: `cargo test -p mtp-rs-cli --features virtual-device` (runs the built binary against a virtual device)
 - **Property**: `cargo test --workspace --all-features` (proptest fuzzing)
@@ -619,6 +628,61 @@ one chunk, so a test there needs a forced short read to be mid-window.
 `test_paced_download_matches_held_open_and_frees_session` in `tests/integration.rs` (`#[ignore]`),
 and `mtp-bench --operations stream,paced,windowed`.
 
+## Paced uploads (windows through Android's edit ops)
+
+`Storage::upload` / `upload_with_progress` use `UploadPacing::default()` (`MaxWindowTime(2 s)`);
+`upload_with_pacing` picks `HeldOpen`, `MaxWindowTime(d)`, or `FixedWindow(bytes)`. Where
+`MtpBackend::can_upload_in_windows` is true (the USB backend, the device lists 0x95C2–0x95C5, so
+`Capabilities::supports_windowed_upload`, and `MtpDeviceBuilder::use_windowed_uploads` wasn't turned off),
+the file goes out as `SendPartialObject` windows inside one `BeginEditObject`/`EndEditObject` edit and the
+session is free between them. Everything else (cameras, Garmin, Kindle, Switch, WPD, an empty file) is one
+`SendObject`. Evidence, both phones, every number: `docs/specs/paced-uploads.md`.
+
+The policy is in `mtp::upload` (backend-neutral): the download `Pacer` sizes windows (first 8 MiB, then
+measured speed × target, the window's time including the source's, since another call waits for both), a
+`YieldNow` before each window after the first, and the stop path. Backends provide
+`begin_windowed_upload` and an `UploadBody` (`write_window`, `finish`, `abandon`); USB's is `UsbUploadEdit`.
+
+Rules the hardware set; keep all of them:
+
+- **The shape**: `SendObjectInfo` declaring size 0, a `SendObject` with no data, `BeginEditObject`, windows,
+  `EndEditObject`. AOSP creates the file at `SendObject`, so skipping it leaves an undeletable ghost
+  (`DeleteObject` 0x2012 until MTP restarts, both phones). A non-zero size makes the phone wait for that many
+  bytes in the empty `SendObject`. `PtpSession::begin_edit_upload` sends the first three under one hold of the
+  session lock, so the #62 race fix covers this shape. Size 0 means the phone can't refuse a too-big file up
+  front, so `begin_windowed_upload` checks `GetStorageInfo` free space first (`Error::StorageFull`).
+- **Never send a window the phone refuses unread**: on an object not open for editing, or at an offset past
+  the edit's size. AOSP answers before reading the data, the data then reads as commands, and a Pixel needs a
+  replug. `UsbUploadEdit` only ever writes at `acknowledged` (windows that answered OK) on an edit it opened;
+  there's no offset parameter to get wrong. AOSP grows the edit only on a whole window, so a failed window
+  leaves `acknowledged` right.
+- **Every stop truncates to `acknowledged`, then ends the edit** (`abandon`). A stopped window's bytes stay on
+  disk past the edit's size (both phones, 10 of 10), and an edit nobody ends stays open in the phone's server
+  across sessions until MTP restarts. Skipped when the session is gone (`Timeout`, `Disconnected`,
+  `DeviceReset`).
+- **A dropped upload** can't send anything from `Drop`: `UsbUploadEdit::drop` calls
+  `PtpSession::defer_edit_close(handle, acknowledged)`, and `recover_if_needed` (the start of every operation)
+  truncates and ends deferred edits after any pipe drain. Refusals there are harmless (no data phase). If the
+  device is closed first, the edit stays open on the phone. `begin_edit_upload` defers one around its own
+  `BeginEditObject` for a drop mid-call, then cancels it (it uses `transact`, not `execute_locked`, so its
+  own deferral doesn't run).
+- **`UploadError::partial` is `Some(handle)` for every windowed stop** once the object exists: a clean prefix,
+  possibly empty. The library never deletes it. Held-open Android uploads stay `None` (§ Ending an upload that
+  stopped partway).
+- **Dates**: Android stamps `DateModified` at the empty `SendObject` and every window's write moves it on, so a
+  windowed upload is dated at its last write. AOSP's `MtpDatabase.setObjectProperty` refuses everything but the
+  file name (`ObjectPropNotSupported`), so it can't be fixed afterwards; documented, not worked around. A Pixel
+  keeps the sent date on a held-open upload, a Galaxy S23 Ultra never does.
+- A source shorter or longer than `NewObjectInfo::size` stops the upload (never a short window).
+- The `SendPartialObject` response parameter is a server bug (length minus the first 16 KiB read), never a
+  byte count.
+
+Tested against the virtual device in `transport/virtual_device/paced_upload_tests.rs` (every stop mode, drops
+between and mid-window, the opt-outs, the model's refusals and ghost), plus conformance. Real-device:
+`test_paced_upload_round_trip_with_listings` and `test_upload_stopped_midway_then_session_works`
+(`MTP_UPLOAD_PACING`) in `tests/integration.rs`; `examples/android_edit_probe.rs` for raw edit-op work;
+`examples/paced_upload.rs` with no hardware.
+
 ## Stall recovery and device reset
 
 - Devices STALL a bulk endpoint to signal errors (cameras do this for
@@ -787,7 +851,10 @@ the cleanup-or-resume policy to the consumer. `From<UploadError> for Error` keep
 virtual device creates the object (empty placeholder) at `SendObjectInfo` time,
 like real devices, so the handle is real before the data phase.
 
-**Android removes the object itself when an upload stops partway, so `partial` is
+This section is the held-open path (`SendObject`). A windowed upload (§ Paced uploads) always returns
+`Some(handle)` with a clean prefix once the object exists.
+
+**Android removes the object itself when a held-open upload stops partway, so `partial` is
 `None` there.** After a source failure (a progress `Break` arrives as one),
 `UsbBackend::upload` asks `GetObjectInfo` once: `InvalidObjectHandle` means the
 device dropped it, any other answer keeps `Some`. See the next section for why

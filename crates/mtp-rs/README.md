@@ -251,18 +251,28 @@ let handle = storage.upload(None, info, Box::pin(stream)).await?;
 println!("Uploaded with handle {:?}", handle);
 ```
 
-Uploads are two-phase: the device creates the object, then receives the data. If
-the data phase fails or is cancelled, the device is left holding a partial
-object. `upload()` returns an `UploadError` whose `partial` field carries that
-object's handle so you decide what to do. The library never auto-deletes it,
-which keeps resume (retrying the data phase against the same handle) possible:
+On Android phones, `upload` writes the file in windows of about two seconds each and frees the device between them, the way `download` reads (see below). So a folder listing during a big upload waits for one window, not for the whole file. Each window costs 1–3 ms, well under 1% of the speed. Devices without Android's edit operations (`device.capabilities().supports_windowed_upload` is `false`), and Windows, upload in one piece.
+
+To pick another pacing, use `upload_with_pacing`, or turn windows off for a whole device with `MtpDevice::builder().use_windowed_uploads(false)`:
+
+```rust
+use mtp_rs::UploadPacing;
+use std::ops::ControlFlow;
+
+// One transfer: the device is busy until the end.
+storage.upload_with_pacing(None, info, stream, UploadPacing::HeldOpen, |_| ControlFlow::Continue(())).await?;
+```
+
+One thing a windowed upload loses on Android: the modification date in `NewObjectInfo`. Android stamps it when the file is created, and every write after that moves it to the time of the write, so the file ends up dated when its last window arrived. Android can't set the date afterwards. A held-open upload keeps it on a Pixel (not on a Galaxy S23 Ultra, which drops it either way), so use `UploadPacing::HeldOpen` where the date matters.
+
+If an upload stops partway (an error, or `ControlFlow::Break` from the progress callback), the device may keep the object. `upload()` returns an `UploadError` whose `partial` field carries that object's handle so you decide what to do. The library never auto-deletes it. A windowed upload always keeps the object, holding exactly the windows the device acknowledged: a clean prefix of the file. A held-open upload to Android leaves nothing (`partial` is `None`), and other devices may keep an empty or truncated object:
 
 ```rust
 match storage.upload(None, info, Box::pin(stream)).await {
     Ok(handle) => println!("Uploaded with handle {:?}", handle),
     Err(e) => {
         if let Some(partial) = e.partial {
-            // Discard the corrupt artifact (or retry the data phase to resume).
+            // Discard the incomplete file.
             storage.delete(partial).await?;
         }
         return Err(e.source); // `UploadError: Into<Error>` keeps `?` ergonomic.
@@ -466,7 +476,8 @@ We use `nusb` for USB access, which is also runtime-agnostic.
 | Filename length           | Max 254 characters                                 |
 | Non-empty folder delete   | Fails; delete contents first                       |
 | One connection per device | Can't open the same device twice                   |
-| Upload cancellation       | A partial object may remain on the device. `upload()` surfaces its handle via `UploadError::partial` so you can delete it or resume; the library never auto-deletes it. |
+| Upload cancellation       | A partial object may remain on the device. `upload()` surfaces its handle via `UploadError::partial` so you can delete it; the library never auto-deletes it. A dropped windowed upload future leaves the acknowledged prefix with no handle returned, so prefer `ControlFlow::Break`. |
+| Upload dates on Android   | A windowed upload (the default there) ends up dated at its last write; use `UploadPacing::HeldOpen` to keep the date on a Pixel. |
 | Recursive listing speed   | Manual traversal is slower (~1 request per folder) |
 
 ## Android weirdnesses
