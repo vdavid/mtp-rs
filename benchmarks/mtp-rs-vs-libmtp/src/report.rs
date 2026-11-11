@@ -331,6 +331,42 @@ pub struct JsonReport {
     pub results: Vec<BenchmarkResult>,
 }
 
+/// Merge saved JSON reports (from runs split into chunks) into one: their results in order,
+/// the first one's context, with its end load taken from the last. Refuses reports from
+/// different code, devices, or links, since one table would then mix them.
+pub fn merge_reports(reports: Vec<JsonReport>) -> Result<(RunInfo, Vec<BenchmarkResult>), String> {
+    let mut reports = reports.into_iter();
+    let first = reports.next().ok_or("no reports to merge")?;
+    let mut info = first.run;
+    let mut results = first.results;
+    for r in reports {
+        let same = |a: &str, b: &str, what: &str| {
+            if a == b {
+                Ok(())
+            } else {
+                Err(format!("reports differ in {what}: '{a}' and '{b}'"))
+            }
+        };
+        same(&info.git_rev, &r.run.git_rev, "git commit")?;
+        same(
+            &info.mtp_rs_version,
+            &r.run.mtp_rs_version,
+            "mtp-rs version",
+        )?;
+        same(
+            &info.libmtp_version,
+            &r.run.libmtp_version,
+            "libmtp version",
+        )?;
+        same(&info.device, &r.run.device, "device")?;
+        same(&info.usb_speed, &r.run.usb_speed, "USB link")?;
+        same(&info.os, &r.run.os, "host OS")?;
+        info.load_end = r.run.load_end;
+        results.extend(r.results);
+    }
+    Ok((info, results))
+}
+
 /// Render results as a JSON string: `{ "run": {...}, "results": [...] }`.
 pub fn render_json(info: &RunInfo, results: &[BenchmarkResult]) -> serde_json::Result<String> {
     serde_json::to_string_pretty(&JsonReport {
@@ -476,6 +512,34 @@ mod tests {
         assert!(table.contains("mtp-rs Median"));
         assert!(table.contains("Listing Median"));
         assert!(table.contains("USB 3.2 Gen 1"));
+    }
+
+    #[test]
+    fn merged_chunks_keep_every_result_and_refuse_a_different_device() {
+        let chunk = |results: Vec<BenchmarkResult>, load_end: &str| JsonReport {
+            run: RunInfo {
+                load_start: "1.0".into(),
+                load_end: load_end.into(),
+                ..info()
+            },
+            results,
+        };
+        let a = chunk(sample_results(), "2.0");
+        let b = chunk(with_list_during()[3..].to_vec(), "3.0");
+        let (merged, results) = merge_reports(vec![a, b]).unwrap();
+        assert_eq!(results.len(), 5);
+        assert_eq!(merged.load_start, "1.0");
+        assert_eq!(merged.load_end, "3.0");
+        // Round-trips through the saved format.
+        let json = render_json(&merged, &results).unwrap();
+        let again: JsonReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(again.results.len(), 5);
+
+        let mut other = chunk(sample_results(), "2.0");
+        other.run.device = "Samsung Galaxy S23 Ultra".into();
+        let err = merge_reports(vec![chunk(sample_results(), "2.0"), other]).unwrap_err();
+        assert!(err.contains("device"), "{err}");
+        assert!(merge_reports(vec![]).is_err());
     }
 
     #[test]

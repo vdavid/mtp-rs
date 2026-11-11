@@ -55,6 +55,11 @@ struct Cli {
     /// than one MTP device is connected; both backends refuse to guess.
     #[arg(long)]
     serial: Option<String>,
+
+    /// Comma-separated JSON reports (from `--output json`) to merge and print in `--output`
+    /// format, opening no device. For a long run split into chunks.
+    #[arg(long)]
+    render: Option<String>,
 }
 
 /// `windowed` expands to one operation per entry in `windows_mib`, and `list_during` to held
@@ -80,6 +85,22 @@ fn parse_operations(input: &str, windows_mib: &[u32]) -> Result<Vec<Operation>, 
                         .map(|&window_mib| Pacing::FixedWindow { window_mib }),
                 );
                 ops.extend(pacings.map(|pacing| Operation::ListDuringDownload { pacing }));
+            }
+            // One pacing at a time, so a long run can be split into chunks.
+            "list_during_held" => ops.push(Operation::ListDuringDownload {
+                pacing: Pacing::HeldOpen,
+            }),
+            "list_during_paced" => ops.push(Operation::ListDuringDownload {
+                pacing: Pacing::Default,
+            }),
+            "list_during_windowed" => {
+                ops.extend(
+                    windows_mib
+                        .iter()
+                        .map(|&window_mib| Operation::ListDuringDownload {
+                            pacing: Pacing::FixedWindow { window_mib },
+                        }),
+                )
             }
             other => {
                 return Err(format!(
@@ -120,6 +141,32 @@ fn parse_backends(input: &str) -> Result<Vec<BackendName>, String> {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    if let Some(paths) = &cli.render {
+        let mut reports = Vec::new();
+        for path in paths.split(',').map(str::trim) {
+            let parsed = std::fs::read_to_string(path)
+                .map_err(|e| e.to_string())
+                .and_then(|s| {
+                    serde_json::from_str::<report::JsonReport>(&s).map_err(|e| e.to_string())
+                });
+            match parsed {
+                Ok(r) => reports.push(r),
+                Err(e) => {
+                    eprintln!("Couldn't read report {path}: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        match report::merge_reports(reports) {
+            Ok((info, results)) => print_report(&cli.output, &info, &results),
+            Err(e) => {
+                eprintln!("Can't merge: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     let file_sizes = match parse_sizes(&cli.sizes) {
         Ok(s) => s,
@@ -244,18 +291,22 @@ async fn main() {
     }
 
     eprintln!("\n=== Results ===\n");
+    print_report(&cli.output, &info, &results);
+}
 
-    match cli.output.to_lowercase().as_str() {
+/// Print the results in `output` format, exiting on an unknown format.
+fn print_report(output: &str, info: &RunInfo, results: &[mtp_bench::types::BenchmarkResult]) {
+    match output.to_lowercase().as_str() {
         "table" => {
-            println!("{}", report::render_terminal_table(&info, &results));
+            println!("{}", report::render_terminal_table(info, results));
         }
         "markdown" | "md" => {
-            println!("{}", report::render_markdown_table(&info, &results));
+            println!("{}", report::render_markdown_table(info, results));
         }
         "csv" => {
-            println!("{}", report::render_csv(&info, &results));
+            println!("{}", report::render_csv(info, results));
         }
-        "json" => match report::render_json(&info, &results) {
+        "json" => match report::render_json(info, results) {
             Ok(json) => println!("{}", json),
             Err(e) => {
                 eprintln!("Failed to serialize results to JSON: {}", e);
@@ -296,6 +347,13 @@ mod tests {
             ]
         );
         assert_eq!(parse_operations("list-during", &[8]).unwrap().len(), 3);
+        // The single-pacing names add up to the same set.
+        let split = parse_operations(
+            "list_during_held,list_during_paced,list_during_windowed",
+            &[8, 64],
+        )
+        .unwrap();
+        assert_eq!(split, ops);
     }
 
     #[test]

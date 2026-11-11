@@ -29,10 +29,11 @@ This runs all operations (download, upload, list) at all default sizes (1 MB, 10
 | `--warmup` | `1` | Number of warmup runs (excluded from results) |
 | `--sizes` | `1MB,10MB,100MB,1GB` | Comma-separated file sizes (supports KB, MB, GB, decimal) |
 | `--list-during-sizes` | `4GB` | File sizes for `list_during` |
-| `--operations` | `download,upload,list` | Comma-separated operations to benchmark. mtp-rs only: `stream` (`DownloadPacing::HeldOpen`), `paced` (the default adaptive pacing), `windowed` (`DownloadPacing::FixedWindow`, one run per `--windows` size), and `list_during` (see below); the download modes discard the bytes |
+| `--operations` | `download,upload,list` | Comma-separated operations to benchmark. mtp-rs only: `stream` (`DownloadPacing::HeldOpen`), `paced` (the default adaptive pacing), `windowed` (`DownloadPacing::FixedWindow`, one run per `--windows` size), and `list_during` (see below; `list_during_held`, `list_during_paced`, and `list_during_windowed` pick one pacing); the download modes discard the bytes |
 | `--windows` | `8` | Comma-separated window sizes in MiB for `windowed` and `list_during` |
 | `--backends` | `mtp-rs,libmtp` | Comma-separated backends to test |
 | `--output` | `table` | Output format: `table`, `markdown`, `csv`, or `json` |
+| `--render` | none | Comma-separated JSON reports to merge and print in `--output` format, with no device (see "Long runs in chunks") |
 | `--serial` | none | The device to benchmark, by USB serial (`mtp-rs devices` lists them). Required when more than one MTP device is connected: neither backend guesses |
 
 ### Picking the device
@@ -94,6 +95,24 @@ Export results as JSON for further analysis:
 
 ```bash
 cargo run --release -p mtp-bench -- --output json > results.json
+```
+
+### Long runs in chunks
+
+The full set takes most of an hour on USB 3, longer on USB 2. To run it in pieces (to watch the host's load between them, or to stay under a shell timeout), save each piece with `--output json` and merge them with `--render`, which opens no device and refuses pieces from different commits, devices, or links. `list_during_held`, `list_during_paced`, and `list_during_windowed` select one pacing of `list_during` each. Keep each scenario in a single piece: a scenario split across two pieces shows up twice.
+
+```bash
+B="./target/release/mtp-bench --serial <serial> --output json"
+cargo build --release -p mtp-bench
+$B --sizes 1MB,10MB,100MB --warmup 5 --runs 10 > r1.json
+$B --sizes 1GB --operations download --backends mtp-rs --warmup 5 --runs 10 > r2.json
+$B --sizes 1GB --operations download --backends libmtp --warmup 5 --runs 10 > r3.json
+$B --sizes 1GB --operations upload --warmup 5 --runs 10 > r4.json
+$B --sizes 1GB --backends mtp-rs --operations stream,paced --warmup 2 --runs 8 > r5.json
+$B --sizes 1GB --backends mtp-rs --operations windowed --windows 8,32 --warmup 2 --runs 8 > r6.json
+$B --backends mtp-rs --operations list_during_held,list_during_paced --warmup 1 --runs 7 > r7.json
+$B --backends mtp-rs --operations list_during_windowed --windows 8,32 --warmup 1 --runs 7 > r8.json
+./target/release/mtp-bench --render r1.json,r2.json,r3.json,r4.json,r5.json,r6.json,r7.json,r8.json --output markdown
 ```
 
 ## How it works
