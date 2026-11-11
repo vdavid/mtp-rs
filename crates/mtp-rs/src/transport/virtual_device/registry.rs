@@ -507,6 +507,31 @@ pub fn force_operation_wedge(serial: &str) -> bool {
     true
 }
 
+/// Whether this device wedged: it refused a data phase before reading it (a `SendPartialObject`
+/// on an object not open for editing or past the edit's end, or a `SendObject` with no
+/// `SendObjectInfo` in effect) and then got the data anyway, which a real Android phone reads as
+/// garbage commands until it stops answering. From then on every command goes unanswered and
+/// every read times out, until the device is dropped. `None` for an unknown serial.
+///
+/// For tests asserting that a host never sends such a window, which on a Pixel needs a replug.
+pub fn virtual_device_wedged(serial: &str) -> Option<bool> {
+    let active = active_states().lock().unwrap();
+    let state_arc = Arc::clone(&active.iter().find(|(s, _)| s == serial)?.1);
+    drop(active); // Release the registry lock before acquiring the state lock.
+    let wedged = state_arc.lock().unwrap().wedged;
+    Some(wedged)
+}
+
+/// How many edits (`BeginEditObject` without its `EndEditObject`) are open on this device, the
+/// way an Android phone keeps them open across sessions. `None` for an unknown serial.
+pub fn virtual_open_edits(serial: &str) -> Option<usize> {
+    let active = active_states().lock().unwrap();
+    let state_arc = Arc::clone(&active.iter().find(|(s, _)| s == serial)?.1);
+    drop(active);
+    let open = state_arc.lock().unwrap().edits.len();
+    Some(open)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1127,6 +1127,7 @@ fn capabilities_from(commands: &[PROPERTYKEY]) -> Capabilities {
             supports_partial_download: true,
             supports_thumbnails: true,
             supports_events: true,
+            supports_windowed_upload: false,
         };
     }
 
@@ -1146,6 +1147,8 @@ fn capabilities_from(commands: &[PROPERTYKEY]) -> Capabilities {
         supports_thumbnails: true,
         // The backend registers a WPD event callback (Advise) at open, so events are delivered.
         supports_events: true,
+        // Uploads stay on `CreateObjectWithPropertiesAndData` + `Commit` (docs/specs/paced-uploads.md).
+        supports_windowed_upload: false,
     }
 }
 

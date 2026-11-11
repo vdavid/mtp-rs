@@ -13,9 +13,10 @@
 //! - **Writable parent** (`parent: Option<ObjectHandle>`): every fn creates and works under the
 //!   supplied parent instead of assuming the root is writable.
 //! - **Upload-cancel partial handle** (`expects_partial: bool`): a two-phase USB device that keeps
-//!   the half-written object leaves `UploadError::partial = Some(handle)` after a cancelled upload;
-//!   Android (and so the virtual device) drops it, and WPD commits transactionally, so both leave
-//!   `None`.
+//!   the half-written object leaves `UploadError::partial = Some(handle)` after a cancelled upload,
+//!   and so does a windowed upload to Android (the default there), which keeps the acknowledged
+//!   windows; a held-open upload to Android drops it, and WPD commits transactionally, so both of
+//!   those leave `None`.
 //!
 //! Lives in `tests/common/` so cargo does not treat it as its own test binary; each test file
 //! includes it with `mod common;`.
@@ -43,6 +44,17 @@ pub async fn open_device(serial: &str) -> (mtp_rs::MtpDevice, tempfile::TempDir)
 /// camera, which the host cancels with CLASS_CANCEL and which keeps a half-written upload.
 #[cfg(feature = "virtual-device")]
 pub async fn open_device_as(serial: &str, android: bool) -> (mtp_rs::MtpDevice, tempfile::TempDir) {
+    open_device_with(serial, android, true).await
+}
+
+/// Like [`open_device_as`], with windowed uploads on or off
+/// ([`MtpDeviceBuilder::use_windowed_uploads`](mtp_rs::MtpDeviceBuilder::use_windowed_uploads)).
+#[cfg(feature = "virtual-device")]
+pub async fn open_device_with(
+    serial: &str,
+    android: bool,
+    windowed_uploads: bool,
+) -> (mtp_rs::MtpDevice, tempfile::TempDir) {
     use mtp_rs::virtual_device::{VirtualDeviceConfig, VirtualStorageConfig};
 
     let dir = tempfile::tempdir().unwrap();
@@ -62,6 +74,7 @@ pub async fn open_device_as(serial: &str, android: bool) -> (mtp_rs::MtpDevice, 
         ..Default::default()
     };
     let device = mtp_rs::MtpDevice::builder()
+        .use_windowed_uploads(windowed_uploads)
         .open_virtual(config)
         .await
         .unwrap();
@@ -329,7 +342,9 @@ pub async fn run_upload_with_progress(storage: &Storage, parent: Option<ObjectHa
 ///
 /// `expects_partial` parameterizes the device divergence: a two-phase USB device that keeps the
 /// half-written object surfaces it (`UploadError::partial = Some(handle)`) for the caller to clean
-/// up; Android (and the virtual device) drops it, and WPD commits transactionally, so `None`.
+/// up, and so does a windowed upload (Android's edit operations, the default where the device has
+/// them), which keeps the acknowledged windows; a held-open upload to Android drops it, and WPD
+/// commits transactionally, so `None`.
 pub async fn run_upload_cancel(
     storage: &Storage,
     parent: Option<ObjectHandle>,

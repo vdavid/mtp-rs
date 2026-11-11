@@ -1,6 +1,6 @@
 //! MtpDevice - the main entry point for MTP operations.
 
-use crate::mtp::backend::usb::UsbBackend;
+use crate::mtp::backend::usb::{UsbBackend, UsbOptions};
 use crate::mtp::backend::{Backend, MtpBackend};
 use crate::mtp::{Capabilities, DeviceEvent, DeviceInfo, Error, Storage, StorageId};
 use crate::ptp::PtpSession;
@@ -448,6 +448,7 @@ pub struct MtpDeviceBuilder {
     backend: Backend,
     reuse_existing_session_id: Option<u32>,
     use_object_prop_list: bool,
+    use_windowed_uploads: bool,
 }
 
 impl MtpDeviceBuilder {
@@ -459,6 +460,7 @@ impl MtpDeviceBuilder {
             backend: Backend::default(),
             reuse_existing_session_id: None,
             use_object_prop_list: true,
+            use_windowed_uploads: true,
         }
     }
 
@@ -641,6 +643,36 @@ impl MtpDeviceBuilder {
         self
     }
 
+    /// Whether uploads may go out in windows (default `true`).
+    ///
+    /// On a device that lists Android's edit operations
+    /// ([`Capabilities::supports_windowed_upload`](crate::Capabilities::supports_windowed_upload)),
+    /// [`Storage::upload`](crate::Storage::upload) writes a file as a series of windows of about
+    /// two seconds each, and the device is free between them: a folder listing or a download from
+    /// another task waits for one window, not for the whole file. See [`UploadPacing`].
+    ///
+    /// Pass `false` to send every upload as one held-open `SendObject`, as on devices without the
+    /// operations, whatever pacing a call asks for. Two things differ then on Android: the device
+    /// keeps the modification date sent in [`NewObjectInfo`](crate::NewObjectInfo) (a Pixel does;
+    /// a windowed upload gets the time of its last write), and a stopped upload leaves nothing
+    /// behind ([`UploadError::partial`](crate::UploadError::partial) is `None`).
+    ///
+    /// This setting applies only to the USB backend; WPD on Windows always uploads in one piece.
+    ///
+    /// [`UploadPacing`]: crate::UploadPacing
+    #[must_use]
+    pub fn use_windowed_uploads(mut self, enabled: bool) -> Self {
+        self.use_windowed_uploads = enabled;
+        self
+    }
+
+    fn usb_options(&self) -> UsbOptions {
+        UsbOptions {
+            use_object_prop_list: self.use_object_prop_list,
+            use_windowed_uploads: self.use_windowed_uploads,
+        }
+    }
+
     async fn open_ptp_session(
         &self,
         transport: Arc<dyn Transport>,
@@ -784,7 +816,7 @@ impl MtpDeviceBuilder {
             session.set_split_header_data(true);
         }
 
-        let backend = UsbBackend::new(session, device_info, self.use_object_prop_list);
+        let backend = UsbBackend::new(session, device_info, self.usb_options());
         Ok(MtpDevice {
             backend: Arc::new(backend),
         })
@@ -909,7 +941,7 @@ impl MtpDeviceBuilder {
         // Get device info
         let device_info = session.get_device_info().await?;
 
-        let backend = UsbBackend::new(session, device_info, self.use_object_prop_list);
+        let backend = UsbBackend::new(session, device_info, self.usb_options());
         Ok(MtpDevice {
             backend: Arc::new(backend),
         })

@@ -88,16 +88,16 @@ impl Default for DownloadPacing {
     }
 }
 
-/// Picks window sizes for a paced download.
+/// Picks window sizes for a paced download, and for a paced upload (see `mtp::upload`).
 #[derive(Debug)]
-struct Pacer {
+pub(crate) struct Pacer {
     pacing: DownloadPacing,
     /// Smoothed bytes per second of device time, once a window has finished.
     rate: Option<f64>,
 }
 
 impl Pacer {
-    fn new(pacing: DownloadPacing) -> Self {
+    pub(crate) fn new(pacing: DownloadPacing) -> Self {
         Self { pacing, rate: None }
     }
 
@@ -106,7 +106,7 @@ impl Pacer {
     }
 
     /// The size of the next window, given the bytes still to read.
-    fn next_window(&self, remaining: u64) -> u32 {
+    pub(crate) fn next_window(&self, remaining: u64) -> u32 {
         let want = match self.pacing {
             DownloadPacing::FixedWindow(size) => u64::from(size.max(1)),
             DownloadPacing::MaxCancelDelay(target) => match self.rate {
@@ -122,7 +122,7 @@ impl Pacer {
     }
 
     /// Learn from a finished window: `bytes` read in `device_time`.
-    fn record(&mut self, bytes: u64, device_time: Duration) {
+    pub(crate) fn record(&mut self, bytes: u64, device_time: Duration) {
         if bytes == 0 || device_time.is_zero() {
             return;
         }
@@ -517,7 +517,7 @@ impl FileDownload {
 /// Returns `Pending` once, so other tasks the executor has ready (a call that was waiting for the
 /// device) get to run before this one continues. Runtime-agnostic.
 #[derive(Default)]
-struct YieldNow {
+pub(crate) struct YieldNow {
     yielded: bool,
 }
 

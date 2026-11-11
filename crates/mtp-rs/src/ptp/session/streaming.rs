@@ -342,6 +342,55 @@ impl PtpSession {
         Ok(handle)
     }
 
+    /// Create an empty object and open it for editing, for an upload that goes out in
+    /// [`send_partial_object`](Self::send_partial_object) windows: `SendObjectInfo` (`info` must
+    /// declare size 0), a `SendObject` with no data, then `BeginEditObject`, all under one hold of
+    /// the operation lock.
+    ///
+    /// Why this shape (hardware evidence in `docs/specs/paced-uploads.md`): AOSP creates the file
+    /// at `SendObject`, not at `SendObjectInfo`, and `BeginEditObject` opens it without
+    /// `O_CREAT`, so skipping the `SendObject` leaves a ghost object that can't be deleted. The
+    /// size must be 0 because the phone reads the declared size as the data to wait for. And one
+    /// lock hold, because Android forgets the info on any other command between the two (#62).
+    ///
+    /// On failure, the handle comes back too when `SendObjectInfo` had created the object.
+    pub(crate) async fn begin_edit_upload(
+        &self,
+        storage_id: StorageId,
+        parent: ObjectHandle,
+        info: &ObjectInfo,
+    ) -> Result<ObjectHandle, (Option<ObjectHandle>, Error)> {
+        debug_assert_eq!(info.size, 0, "a windowed upload declares size 0");
+        let _guard = self.operation_lock.lock().await;
+        let (_, _, handle) = self
+            .send_object_info_locked(storage_id, parent, info)
+            .await
+            .map_err(|e| (None, e))?;
+        let response = self
+            .execute_with_send_stream_locked(
+                OperationCode::SendObject,
+                &[],
+                0,
+                futures::stream::empty::<Result<Bytes, std::io::Error>>(),
+            )
+            .await
+            .map_err(|e| (Some(handle), e))?;
+        Self::check_response(&response, OperationCode::SendObject)
+            .map_err(|e| (Some(handle), e))?;
+        // If this future is dropped while `BeginEditObject` is in flight, the edit may be open
+        // with nobody to end it: the deferred close ends it on the next operation. Nothing else
+        // can run before we cancel it again, since we hold the lock. (`transact`, not
+        // `execute_locked`: recovery would run that close right now.)
+        self.defer_edit_close(handle, 0);
+        let result = self
+            .transact(OperationCode::BeginEditObject, &[handle.0])
+            .await
+            .and_then(|r| Self::check_response(&r, OperationCode::BeginEditObject));
+        self.cancel_deferred_edit_close(handle);
+        result.map_err(|e| (Some(handle), e))?;
+        Ok(handle)
+    }
+
     /// Write `len` bytes at `offset` into an object opened with
     /// [`begin_edit_object`](Self::begin_edit_object) (Android extension `SendPartialObject`,
     /// `0x95C2`), streaming them from `data`.

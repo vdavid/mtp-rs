@@ -8,7 +8,8 @@ use mtp_rs::ptp::{self, PtpDevice, PtpError};
 use mtp_rs::{
     Backend, ByteRange, CancelToken, DateTime, DeviceEvent, DownloadPacing, Error, HotplugEvent,
     ListingItem, MtpDevice, MtpDeviceInfo, MtpMatchReason, NewObjectInfo, ObjectFormat,
-    ObjectHandle, ObjectInfo, StorageId, UsbSpeed, UtcOffset, DEFAULT_MAX_CANCEL_DELAY,
+    ObjectHandle, ObjectInfo, StorageId, UploadPacing, UsbSpeed, UtcOffset,
+    DEFAULT_MAX_CANCEL_DELAY, DEFAULT_UPLOAD_WINDOW_TIME,
 };
 
 #[test]
@@ -68,7 +69,20 @@ fn id_newtypes_and_input_enums_are_buildable() {
         DownloadPacing::MaxCancelDelay(DEFAULT_MAX_CANCEL_DELAY)
     );
 
-    let _ = MtpDevice::builder().backend(Backend::Usb);
+    let upload_pacings = [
+        UploadPacing::HeldOpen,
+        UploadPacing::MaxWindowTime(std::time::Duration::from_millis(500)),
+        UploadPacing::FixedWindow(1 << 20),
+    ];
+    assert_eq!(upload_pacings.len(), 3);
+    assert_eq!(
+        UploadPacing::default(),
+        UploadPacing::MaxWindowTime(DEFAULT_UPLOAD_WINDOW_TIME)
+    );
+
+    let _ = MtpDevice::builder()
+        .backend(Backend::Usb)
+        .use_windowed_uploads(false);
     assert!(!CancelToken::new().is_cancelled());
 }
 
@@ -76,6 +90,9 @@ fn id_newtypes_and_input_enums_are_buildable() {
 fn output_types_are_readable_through_root_paths() {
     let info = ObjectInfo::default();
     assert!(info.filename.is_empty());
+
+    let caps = mtp_rs::Capabilities::default();
+    assert!(!caps.supports_windowed_upload);
 
     let item = ListingItem::Object(info);
     assert!(item.object().is_some());

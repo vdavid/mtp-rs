@@ -26,6 +26,8 @@ const STORE_READ_ONLY: u16 = 0x200E;
 const NO_THUMBNAIL: u16 = 0x2010;
 const SESSION_ALREADY_OPEN: u16 = 0x201E;
 const INVALID_PARENT: u16 = 0x201A;
+const PARTIAL_DELETION: u16 = 0x2012;
+const OBJECT_PROP_NOT_SUPPORTED: u16 = 0xA80A;
 
 /// Dispatch a command to the appropriate handler.
 ///
@@ -101,6 +103,20 @@ pub(super) fn dispatch(
                 OperationCode::SetObjectPropValue => {
                     handle_set_object_prop_value(state, tx_id, params, data_payload)
                 }
+                OperationCode::SendPartialObject
+                | OperationCode::TruncateObject
+                | OperationCode::BeginEditObject
+                | OperationCode::EndEditObject
+                    if !state.edit_objects_enabled() =>
+                {
+                    unsupported(state, tx_id)
+                }
+                OperationCode::BeginEditObject => handle_begin_edit_object(state, tx_id, params),
+                OperationCode::SendPartialObject => {
+                    handle_send_partial_object(state, tx_id, params, data_payload)
+                }
+                OperationCode::TruncateObject => handle_truncate_object(state, tx_id, params),
+                OperationCode::EndEditObject => handle_end_edit_object(state, tx_id, params),
                 _ => unsupported(state, tx_id),
             }
         }
@@ -305,6 +321,13 @@ fn handle_get_object_info(
 
 fn handle_get_object(state: &mut VirtualDeviceState, op_code: u16, tx_id: u32, params: &[u32]) {
     let handle = ObjectHandle(params.first().copied().unwrap_or(0));
+    if state.ghosts.contains(&handle.0) {
+        // AOSP: the ghost has no file to open.
+        state
+            .response_queue
+            .push_back(build_response(GENERAL_ERROR, tx_id, &[]));
+        return;
+    }
     let path = match state.resolve_path(handle) {
         Some(p) => p,
         None => {
@@ -721,6 +744,22 @@ pub(super) fn end_data_phase_short(state: &mut VirtualDeviceState) {
     let Some(pending) = state.pending_command.take() else {
         return;
     };
+    if OperationCode::from(pending.code) == OperationCode::SendPartialObject {
+        // AOSP `doSendPartialObject` has `pwrite` the bytes as they come, so the part of the
+        // window that arrived stays on disk past the edit's size, which doesn't grow (a Pixel and
+        // a Galaxy S23 Ultra, 10 of 10 each). The virtual device gets a window's data in one
+        // piece or not at all, so it writes filler for half the window in its place: a host that
+        // abandons an upload has to truncate it away.
+        if let Some((handle, offset, len)) = partial_write_params(&pending.params) {
+            if let Some(path) = state.resolve_path(handle) {
+                use std::io::{Seek, SeekFrom, Write};
+                if let Ok(mut file) = std::fs::File::options().write(true).open(path) {
+                    let _ = file.seek(SeekFrom::Start(offset));
+                    let _ = file.write_all(&vec![0xEE; len as usize / 2]);
+                }
+            }
+        }
+    }
     if OperationCode::from(pending.code) == OperationCode::SendObject {
         if let Some(send) = state.pending_send.take() {
             if !send.is_folder {
@@ -738,6 +777,13 @@ pub(super) fn end_data_phase_short(state: &mut VirtualDeviceState) {
 
 fn handle_delete_object(state: &mut VirtualDeviceState, tx_id: u32, params: &[u32]) {
     let handle = ObjectHandle(params.first().copied().unwrap_or(0));
+    if state.ghosts.contains(&handle.0) {
+        // What a Pixel and a Galaxy S23 Ultra answered: the ghost stays until MTP restarts.
+        state
+            .response_queue
+            .push_back(build_response(PARTIAL_DELETION, tx_id, &[]));
+        return;
+    }
 
     let obj = match state.objects.get(&handle.0) {
         Some(o) => o.clone(),
@@ -1135,9 +1181,10 @@ fn handle_set_object_prop_value(
     let property = ObjectPropertyCode::from(prop_code);
 
     if property != ObjectPropertyCode::ObjectFileName {
+        // AOSP `MtpDatabase.setObjectProperty` renames and nothing else.
         state
             .response_queue
-            .push_back(build_response(OPERATION_NOT_SUPPORTED, tx_id, &[]));
+            .push_back(build_response(OBJECT_PROP_NOT_SUPPORTED, tx_id, &[]));
         return;
     }
 
@@ -1321,4 +1368,136 @@ fn is_same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
             _ => false,
         }
     }
+}
+
+/// `SendPartialObject`'s parameters: handle, 64-bit offset (low, high), length.
+fn partial_write_params(params: &[u32]) -> Option<(ObjectHandle, u64, u32)> {
+    match params {
+        [handle, lo, hi, len, ..] => Some((
+            ObjectHandle(*handle),
+            u64::from(*lo) | (u64::from(*hi) << 32),
+            *len,
+        )),
+        _ => None,
+    }
+}
+
+/// Whether AOSP's `doSendPartialObject` reads this window's data at all: the object has to be
+/// open for editing and the offset at most the edit's size. Anything else is refused before the
+/// data phase, which is the wedge (see `VirtualDeviceState::refused_data_unread`).
+pub(super) fn partial_write_accepted(state: &VirtualDeviceState, params: &[u32]) -> bool {
+    partial_write_params(params).is_some_and(|(handle, offset, _)| {
+        state
+            .edits
+            .get(&handle.0)
+            .is_some_and(|&size| offset <= size)
+    })
+}
+
+/// `BeginEditObject`: AOSP opens the file `O_RDWR | O_EXCL` with no `O_CREAT` and refuses a
+/// second edit of the same object.
+fn handle_begin_edit_object(state: &mut VirtualDeviceState, tx_id: u32, params: &[u32]) {
+    let handle = ObjectHandle(params.first().copied().unwrap_or(0));
+    let Some(path) = state.resolve_path(handle) else {
+        state
+            .response_queue
+            .push_back(build_response(INVALID_OBJECT_HANDLE, tx_id, &[]));
+        return;
+    };
+    let code = match std::fs::metadata(&path) {
+        _ if state.ghosts.contains(&handle.0) || state.edits.contains_key(&handle.0) => {
+            GENERAL_ERROR
+        }
+        Ok(meta) if meta.is_file() => {
+            state.edits.insert(handle.0, meta.len());
+            OK
+        }
+        _ => GENERAL_ERROR,
+    };
+    state
+        .response_queue
+        .push_back(build_response(code, tx_id, &[]));
+}
+
+/// `SendPartialObject` with its data: write it at the offset, and grow the edit when the whole
+/// window arrived. The checks before the data phase are in `partial_write_accepted`.
+fn handle_send_partial_object(
+    state: &mut VirtualDeviceState,
+    tx_id: u32,
+    params: &[u32],
+    data_payload: Option<&[u8]>,
+) {
+    use std::io::{Seek, SeekFrom, Write};
+    let (Some((handle, offset, len)), Some(data)) = (partial_write_params(params), data_payload)
+    else {
+        state
+            .response_queue
+            .push_back(build_response(GENERAL_ERROR, tx_id, &[]));
+        return;
+    };
+    let written = state.resolve_path(handle).is_some_and(|path| {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|mut f| {
+                f.seek(SeekFrom::Start(offset))?;
+                f.write_all(data)
+            })
+            .is_ok()
+    });
+    if !written || data.len() != len as usize {
+        state
+            .response_queue
+            .push_back(build_response(GENERAL_ERROR, tx_id, &[]));
+        return;
+    }
+    if let Some(size) = state.edits.get_mut(&handle.0) {
+        *size = (*size).max(offset + u64::from(len));
+    }
+    // AOSP answers the length minus what came with the first 16 KiB read, a server bug that makes
+    // the parameter useless as a byte count (1,032,204 for a 1 MiB window on both phones tried).
+    let reported = len.saturating_sub(16 * 1024 - 12);
+    state
+        .response_queue
+        .push_back(build_response(OK, tx_id, &[reported]));
+}
+
+/// `TruncateObject`: `ftruncate` an object open for editing, and set the edit's size.
+fn handle_truncate_object(state: &mut VirtualDeviceState, tx_id: u32, params: &[u32]) {
+    let handle = ObjectHandle(params.first().copied().unwrap_or(0));
+    let size = u64::from(params.get(1).copied().unwrap_or(0))
+        | (u64::from(params.get(2).copied().unwrap_or(0)) << 32);
+    let truncated = state.edits.contains_key(&handle.0)
+        && state.resolve_path(handle).is_some_and(|path| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .and_then(|f| f.set_len(size))
+                .is_ok()
+        });
+    let code = if truncated {
+        state.edits.insert(handle.0, size);
+        OK
+    } else {
+        GENERAL_ERROR
+    };
+    state
+        .response_queue
+        .push_back(build_response(code, tx_id, &[]));
+}
+
+/// `EndEditObject`: commit and close the edit (AOSP rescans the file for MediaStore).
+fn handle_end_edit_object(state: &mut VirtualDeviceState, tx_id: u32, params: &[u32]) {
+    let handle = ObjectHandle(params.first().copied().unwrap_or(0));
+    let code = if state.edits.remove(&handle.0).is_some() {
+        state
+            .event_queue
+            .push_back(build_event(EventCode::ObjectInfoChanged, &[handle.0]));
+        OK
+    } else {
+        GENERAL_ERROR
+    };
+    state
+        .response_queue
+        .push_back(build_response(code, tx_id, &[]));
 }

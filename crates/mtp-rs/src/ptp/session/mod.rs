@@ -11,7 +11,7 @@ pub use streaming::{receive_stream_to_stream, ReceiveStream};
 
 use crate::ptp::{
     container_type, pack_u16, pack_u32, unpack_u32, CommandContainer, ContainerType, DataContainer,
-    OperationCode, ResponseCode, ResponseContainer, SessionId, TransactionId,
+    ObjectHandle, OperationCode, ResponseCode, ResponseContainer, SessionId, TransactionId,
 };
 use crate::transport::Transport;
 use crate::PtpError as Error;
@@ -216,6 +216,11 @@ pub struct PtpSession {
     /// because a prior transaction was abandoned mid-flight. Shared via `Arc`
     /// with [`ReceiveStream`] so a dropped download flags it too.
     recovery: Arc<RecoveryState>,
+    /// Edits (handle, bytes to keep) to end before the next operation; see
+    /// [`defer_edit_close`](Self::defer_edit_close).
+    deferred_edit_closes: std::sync::Mutex<Vec<(ObjectHandle, u64)>>,
+    /// Whether `deferred_edit_closes` has anything, so the check costs one load per operation.
+    edits_deferred: AtomicBool,
 }
 
 impl PtpSession {
@@ -228,6 +233,8 @@ impl PtpSession {
             operation_lock: Arc::new(Mutex::new(())),
             split_header_data: AtomicBool::new(false),
             recovery: Arc::new(RecoveryState::default()),
+            deferred_edit_closes: std::sync::Mutex::new(Vec::new()),
+            edits_deferred: AtomicBool::new(false),
         }
     }
 
@@ -447,6 +454,68 @@ impl PtpSession {
     /// must hold the operation lock (so the flag check is race-free). A cheap
     /// no-op when nothing is pending.
     async fn recover_if_needed(&self) -> Result<(), Error> {
+        self.drain_if_needed().await?;
+        self.close_deferred_edits().await
+    }
+
+    /// Keep an edit open on the device from being forgotten: the next operation on this session
+    /// truncates `handle` to `keep` bytes and ends the edit, before it runs. For a windowed upload
+    /// whose future was dropped (`Drop` can't send anything): without this the edit stays open on
+    /// an Android phone until its MTP server restarts, holding the file open. Refusals are
+    /// harmless (both operations have no data phase), so an edit that already ended costs two
+    /// `GeneralError` answers.
+    pub(crate) fn defer_edit_close(&self, handle: ObjectHandle, keep: u64) {
+        let mut closes = self.deferred_edit_closes.lock().unwrap();
+        closes.retain(|(h, _)| *h != handle);
+        closes.push((handle, keep));
+        self.edits_deferred.store(true, Ordering::SeqCst);
+    }
+
+    /// Undo [`defer_edit_close`](Self::defer_edit_close) for `handle`, once its edit was ended
+    /// (or never opened) by the code that deferred it.
+    pub(crate) fn cancel_deferred_edit_close(&self, handle: ObjectHandle) {
+        let mut closes = self.deferred_edit_closes.lock().unwrap();
+        closes.retain(|(h, _)| *h != handle);
+        self.edits_deferred
+            .store(!closes.is_empty(), Ordering::SeqCst);
+    }
+
+    async fn close_deferred_edits(&self) -> Result<(), Error> {
+        if !self.edits_deferred.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let closes = {
+            let mut closes = self.deferred_edit_closes.lock().unwrap();
+            self.edits_deferred.store(false, Ordering::SeqCst);
+            std::mem::take(&mut *closes)
+        };
+        for (i, &(handle, keep)) in closes.iter().enumerate() {
+            diag_debug!(
+                "recover: ending the edit of {:?} a dropped upload left open, at {} bytes",
+                handle,
+                keep
+            );
+            let steps = [
+                (
+                    OperationCode::TruncateObject,
+                    vec![handle.0, keep as u32, (keep >> 32) as u32],
+                ),
+                (OperationCode::EndEditObject, vec![handle.0]),
+            ];
+            for (op, params) in steps {
+                if let Err(e) = self.transact(op, &params).await {
+                    // The session failed under us: keep what's left for the next operation.
+                    for &(h, k) in &closes[i..] {
+                        self.defer_edit_close(h, k);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn drain_if_needed(&self) -> Result<(), Error> {
         let Some((tx_id, send_open)) = self.recovery.take() else {
             return Ok(());
         };
@@ -496,8 +565,26 @@ impl PtpSession {
         params: &[u32],
     ) -> Result<ResponseContainer, Error> {
         let _guard = self.operation_lock.lock().await;
-        self.recover_if_needed().await?;
+        self.execute_locked(operation, params).await
+    }
 
+    /// [`execute`](Self::execute) for a caller that already holds `operation_lock`.
+    pub(crate) async fn execute_locked(
+        &self,
+        operation: OperationCode,
+        params: &[u32],
+    ) -> Result<ResponseContainer, Error> {
+        self.recover_if_needed().await?;
+        self.transact(operation, params).await
+    }
+
+    /// One command→response transaction with no data phase and no recovery first. The caller
+    /// holds `operation_lock` and has recovered already (or is the recovery).
+    async fn transact(
+        &self,
+        operation: OperationCode,
+        params: &[u32],
+    ) -> Result<ResponseContainer, Error> {
         let tx_id = self.next_transaction_id();
         // Armed across the whole command→response cycle: any early exit (a
         // dropped future, an I/O error, a transaction-ID mismatch) leaves the

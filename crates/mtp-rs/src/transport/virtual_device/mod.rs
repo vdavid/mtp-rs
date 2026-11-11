@@ -130,6 +130,10 @@ const NO_VALID_OBJECT_INFO: u16 = 0x2015;
 impl Transport for VirtualTransport {
     async fn send_bulk(&self, data: &[u8]) -> Result<(), crate::PtpError> {
         let mut state = self.state.lock().unwrap();
+        if state.wedged {
+            // A wedged phone reads nothing we send as a command again (see `wedged`).
+            return Ok(());
+        }
 
         // While a data phase is open, Android's `MtpServer` reads the bulk OUT pipe as data, so
         // anything that isn't a data container (a zero-length packet, or the next command) ends
@@ -178,7 +182,12 @@ impl Transport for VirtualTransport {
                     // data. (AOSP keeps a cache entry with no file; here the empty placeholder
                     // `SendObjectInfo` made stays.)
                     if op != crate::ptp::OperationCode::SendObject {
-                        state.pending_send = None;
+                        // A file's object stays listed with no file behind it: a ghost.
+                        if let Some(send) = state.pending_send.take() {
+                            if !send.is_folder {
+                                state.ghosts.insert(send.assigned_handle.0);
+                            }
+                        }
                     } else if state.pending_send.is_none() {
                         // `doSendObject` answers `NoValidObjectInfo` straight away and never reads
                         // the data phase. The data container that follows reaches the device as
@@ -188,8 +197,23 @@ impl Transport for VirtualTransport {
                             tx_id,
                             &[],
                         ));
+                        state.refused_data_unread = true;
                         return Ok(());
                     }
+                }
+                // AOSP checks a `SendPartialObject` before reading its data, and the refused data
+                // then reaches the device as commands, which wedged a Pixel (#62).
+                if op == crate::ptp::OperationCode::SendPartialObject
+                    && state.edit_objects_enabled()
+                    && !handlers::partial_write_accepted(&state, &params)
+                {
+                    state.response_queue.push_back(builders::build_response(
+                        handlers::GENERAL_ERROR,
+                        tx_id,
+                        &[],
+                    ));
+                    state.refused_data_unread = true;
+                    return Ok(());
                 }
                 // Check if this operation expects a data phase from the host.
                 // If so, don't dispatch yet -- store the command and wait for data.
@@ -198,7 +222,9 @@ impl Transport for VirtualTransport {
                     crate::ptp::OperationCode::SendObjectInfo
                         | crate::ptp::OperationCode::SendObject
                         | crate::ptp::OperationCode::SetObjectPropValue
-                ) {
+                ) || (op == crate::ptp::OperationCode::SendPartialObject
+                    && state.edit_objects_enabled())
+                {
                     state.pending_command = Some(PendingCommand {
                         code,
                         tx_id,
@@ -222,8 +248,14 @@ impl Transport for VirtualTransport {
                         );
                     }
                     // AOSP's run loop reads a stray data container as a request, and
-                    // `handleRequest` drops it without an answer ("wrong container type").
-                    None if state.config.android => {}
+                    // `handleRequest` drops it without an answer ("wrong container type"). The
+                    // payload of a data phase the device refused unread is another matter: the
+                    // phone reads it as a stream of garbage commands and stops answering.
+                    None if state.config.android => {
+                        if std::mem::take(&mut state.refused_data_unread) && data.len() > 12 {
+                            state.wedged = true;
+                        }
+                    }
                     None => {
                         return Err(crate::PtpError::invalid_data(
                             "received data container without pending command",
@@ -244,6 +276,11 @@ impl Transport for VirtualTransport {
 
     async fn receive_bulk(&self, max_size: usize) -> Result<Vec<u8>, crate::PtpError> {
         let mut state = self.state.lock().unwrap();
+        // A wedged device still sends what it had queued (its answer to the refused command),
+        // then nothing.
+        if state.wedged && state.response_queue.is_empty() {
+            return Err(crate::PtpError::Timeout);
+        }
         match state.response_queue.pop_front() {
             Some(data) if max_size > 0 && data.len() > max_size => {
                 // A USB bulk read returns at most `max_size` bytes, so a container longer than
@@ -309,6 +346,9 @@ impl Transport for VirtualTransport {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod paced_upload_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1727,7 +1767,11 @@ mod tests {
             utc_offset: offset(60),
             ..test_config(dir.path())
         };
-        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        let device = MtpDevice::builder()
+            .use_windowed_uploads(false)
+            .open_virtual(config)
+            .await
+            .unwrap();
         let storages = device.storages().await.unwrap();
 
         for (name, sent, want_unix) in cases {
@@ -1893,7 +1937,11 @@ mod tests {
         std::fs::create_dir(dir.path().join("Download")).unwrap();
 
         let config = test_config(dir.path());
-        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        let device = MtpDevice::builder()
+            .use_windowed_uploads(false)
+            .open_virtual(config)
+            .await
+            .unwrap();
         let storages = device.storages().await.unwrap();
 
         // Find the Download folder to upload into (avoids root-creation quirks).
@@ -1939,6 +1987,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("Download")).unwrap();
         let device = MtpDevice::builder()
+            .use_windowed_uploads(false)
             .open_virtual(test_config(dir.path()))
             .await
             .unwrap();
@@ -1965,7 +2014,11 @@ mod tests {
         std::fs::create_dir(dir.path().join("Download")).unwrap();
 
         let config = test_config(dir.path());
-        let device = MtpDevice::builder().open_virtual(config).await.unwrap();
+        let device = MtpDevice::builder()
+            .use_windowed_uploads(false)
+            .open_virtual(config)
+            .await
+            .unwrap();
         let storages = device.storages().await.unwrap();
 
         let items = storages[0].list_objects(None).await.unwrap();
@@ -2589,7 +2642,7 @@ mod tests {
     async fn send_object_after_another_command(
         android: bool,
         serial: &str,
-    ) -> (Result<(), crate::PtpError>, bool) {
+    ) -> (Result<(), crate::PtpError>, bool, Option<bool>) {
         use crate::ptp::{ObjectFormatCode, ObjectHandle as PtpHandle, ObjectInfo, PtpSession};
         use crate::transport::virtual_device::VirtualTransport;
         use crate::transport::Transport;
@@ -2614,12 +2667,17 @@ mod tests {
         session.get_storage_ids().await.unwrap();
         let sent = session.send_object(b"hello").await;
         let healthy = session.get_storage_ids().await.is_ok();
-        (sent, healthy)
+        (
+            sent,
+            healthy,
+            crate::virtual_device::virtual_device_wedged(serial),
+        )
     }
 
     #[tokio::test]
     async fn send_object_after_another_command_is_refused_like_aosp() {
-        let (sent, healthy) = send_object_after_another_command(true, "sendinfo-forgotten").await;
+        let (sent, healthy, wedged) =
+            send_object_after_another_command(true, "sendinfo-forgotten").await;
         assert!(
             matches!(
                 sent,
@@ -2630,15 +2688,15 @@ mod tests {
             ),
             "{sent:?}"
         );
-        assert!(
-            healthy,
-            "the stray data container gets no answer, so the session stays in step"
-        );
+        // The phone refused the data phase before reading it, so the data arrives as commands
+        // and it stops answering: a Pixel needed a replug (#62).
+        assert!(!healthy, "the refused data must wedge the device");
+        assert_eq!(wedged, Some(true));
     }
 
     #[tokio::test]
     async fn send_object_after_another_command_still_works_on_a_camera() {
-        let (sent, healthy) = send_object_after_another_command(false, "sendinfo-camera").await;
+        let (sent, healthy, _) = send_object_after_another_command(false, "sendinfo-camera").await;
         assert!(sent.is_ok(), "{sent:?}");
         assert!(healthy);
     }

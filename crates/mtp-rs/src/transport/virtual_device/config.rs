@@ -160,6 +160,18 @@ pub struct VirtualDeviceConfig {
     /// ends an open data phase and keeps the half-written object. A stopped upload then
     /// surfaces `UploadError::partial` for the caller to delete or resume.
     pub android: bool,
+    /// Whether the device lists and serves Android's edit operations (`SendPartialObject`,
+    /// `TruncateObject`, `BeginEditObject`, `EndEditObject`, 0x95C2–0x95C5), which uploads go
+    /// through in windows. Only with [`android`](Self::android): they're an AOSP extension.
+    /// Defaults to `true`.
+    ///
+    /// Modeled on AOSP `MtpServer`, refusals included: a `SendPartialObject` on an object that
+    /// isn't open for editing, or past the edit's end, is answered `GeneralError` before its data
+    /// is read, and the data that follows wedges the device (every later command goes
+    /// unanswered, see `virtual_device_wedged`), as it wedges a real phone. A `SendObjectInfo`
+    /// whose `SendObject` never came leaves a ghost: listed, but `GetObject` and
+    /// `BeginEditObject` answer `GeneralError` and `DeleteObject` `PartialDeletion`.
+    pub supports_edit_objects: bool,
 }
 
 /// A ready-to-extend starting point: an obviously-fake identity plus the
@@ -197,6 +209,7 @@ impl Default for VirtualDeviceConfig {
             utc_offset: crate::mtp::UtcOffset::UTC,
             dates_include_offset: false,
             android: true,
+            supports_edit_objects: true,
         }
     }
 }
@@ -242,5 +255,6 @@ mod tests {
         assert_eq!(config.event_poll_interval, Duration::from_millis(50));
         assert!(config.watch_backing_dirs);
         assert!(config.android);
+        assert!(config.supports_edit_objects);
     }
 }

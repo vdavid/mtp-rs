@@ -117,6 +117,22 @@ pub(super) struct VirtualDeviceState {
     /// How many times each operation code was dispatched, so a test can tell
     /// which listing path a host took. Read via `registry::operation_count`.
     pub(super) operation_counts: HashMap<u16, u32>,
+
+    /// Objects open for editing (`BeginEditObject`), mapped to the edit's size: the bytes of
+    /// whole `SendPartialObject` windows, which is what AOSP tracks as `edit->mSize`. Server
+    /// state, so it outlives sessions like on a phone; only `EndEditObject` removes an entry,
+    /// and deleting the object under edit leaves it behind.
+    pub(super) edits: HashMap<u32, u64>,
+    /// Files whose `SendObjectInfo` was forgotten before a `SendObject` came: AOSP keeps the
+    /// object listed with no file behind it (`GetObject` and `BeginEditObject` answer
+    /// `GeneralError`, `DeleteObject` `PartialDeletion`). Android mode only.
+    pub(super) ghosts: std::collections::HashSet<u32>,
+    /// Set when the device refused a data phase before reading it: the data that follows
+    /// reaches it as garbage commands. The next data container with a payload wedges it.
+    pub(super) refused_data_unread: bool,
+    /// Wedged: every command goes unanswered and every read times out, the way a phone that
+    /// read a data phase as commands stops answering until a replug.
+    pub(super) wedged: bool,
 }
 
 /// Maximum number of entries in a device's dropped-paths ring (what
@@ -172,7 +188,16 @@ impl VirtualDeviceState {
             pending_operation_wedge: false,
             forced_object_info_errors: HashMap::new(),
             operation_counts: HashMap::new(),
+            edits: HashMap::new(),
+            ghosts: std::collections::HashSet::new(),
+            refused_data_unread: false,
+            wedged: false,
         }
+    }
+
+    /// Whether the edit operations are listed and served (an AOSP extension, so Android only).
+    pub fn edit_objects_enabled(&self) -> bool {
+        self.config.android && self.config.supports_edit_objects
     }
 
     /// Allocate the next object handle.

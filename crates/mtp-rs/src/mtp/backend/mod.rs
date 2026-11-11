@@ -113,6 +113,33 @@ pub(crate) trait DownloadBody: Send {
     }
 }
 
+/// An object being written in windows, opened by [`MtpBackend::begin_windowed_upload`]. The
+/// façade's paced upload drives it; consumers don't see it.
+///
+/// It tracks how many bytes the device acknowledged and writes only there, so no window can ever
+/// start past the end of what the device holds (Android refuses such a window without reading
+/// its data, which wedges the phone). Dropping it with the edit still open makes the next
+/// operation on the device end the edit at the acknowledged size.
+#[async_trait]
+pub(crate) trait UploadBody: Send {
+    /// The new object's handle.
+    fn handle(&self) -> ObjectHandle;
+
+    /// Bytes the device acknowledged so far: where the next window starts.
+    fn acknowledged(&self) -> u64;
+
+    /// Send the next `len` bytes from `data`, at [`acknowledged`](Self::acknowledged). Holds the
+    /// device only while the window is in flight. On an error the acknowledged size doesn't move.
+    async fn write_window(&mut self, len: u32, data: UploadStream<'_>) -> Result<(), Error>;
+
+    /// Commit the object: the upload is complete.
+    async fn finish(&mut self) -> Result<(), Error>;
+
+    /// Give up: cut the object back to the acknowledged bytes (a stopped window can leave some of
+    /// its bytes on disk past them) and end the edit, so the device keeps a clean prefix.
+    async fn abandon(&mut self) -> Result<(), Error>;
+}
+
 /// Whether a per-handle metadata error invalidates the whole collection or can
 /// be reported while sibling enumeration continues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,6 +257,27 @@ pub(crate) trait MtpBackend: Send + Sync {
         data: UploadStream<'_>,
         progress: Option<ProgressFn<'_>>,
     ) -> Result<ObjectHandle, UploadError>;
+
+    /// Whether uploads can go out in windows that free the device between them (the USB backend
+    /// on a device listing Android's edit operations, unless the consumer turned it off).
+    fn can_upload_in_windows(&self) -> bool {
+        false
+    }
+
+    /// Create an empty object under `parent` on `storage` and open it for a windowed upload.
+    /// Only called when [`can_upload_in_windows`](Self::can_upload_in_windows) is true. A failure
+    /// after the object exists carries its handle in [`UploadError::partial`].
+    async fn begin_windowed_upload(
+        &self,
+        _storage: StorageId,
+        _parent: Option<ObjectHandle>,
+        _info: &NewObjectInfo,
+    ) -> Result<Box<dyn UploadBody>, UploadError> {
+        Err(UploadError {
+            source: Error::Unsupported,
+            partial: None,
+        })
+    }
 
     /// Create a folder named `name` under `parent` on `storage`.
     async fn create_folder(

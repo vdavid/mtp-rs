@@ -10,7 +10,7 @@
 use crate::cancel::{bail_if_cancelled, CancelToken};
 use crate::mtp::backend::{
     BackendListing, BackendListingError, ByteRange, DownloadBody, MtpBackend, ProgressFn,
-    UploadStream,
+    UploadBody, UploadStream,
 };
 use crate::mtp::object::NewObjectInfo;
 use crate::mtp::stream::Progress;
@@ -94,26 +94,44 @@ pub(crate) struct UsbBackend {
     /// [`PROP_LIST_OPTIONAL`] properties the device declined, as bits by position: not asked
     /// again this session.
     prop_list_declined_optional: AtomicU8,
+    /// Whether uploads go out in windows through Android's edit operations: the device lists
+    /// all four (0x95C2–0x95C5) and the consumer didn't turn it off. See
+    /// [`MtpBackend::begin_windowed_upload`].
+    windowed_uploads: bool,
+}
+
+/// Which `mtp::` features the consumer turned off at open (see [`MtpDeviceBuilder`]).
+///
+/// [`MtpDeviceBuilder`]: crate::mtp::MtpDeviceBuilder
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UsbOptions {
+    pub(crate) use_object_prop_list: bool,
+    pub(crate) use_windowed_uploads: bool,
 }
 
 impl UsbBackend {
     /// Build the backend from an open session, deriving neutral info/capabilities once.
     ///
-    /// `use_object_prop_list: false` keeps every listing on the per-handle path, whatever the
-    /// device advertises (see [`MtpDeviceBuilder::use_object_prop_list`]).
+    /// `use_object_prop_list: false` keeps every listing on the per-handle path, and
+    /// `use_windowed_uploads: false` every upload on one `SendObject`, whatever the device
+    /// advertises (see [`MtpDeviceBuilder::use_object_prop_list`] and
+    /// [`MtpDeviceBuilder::use_windowed_uploads`]).
     ///
     /// [`MtpDeviceBuilder::use_object_prop_list`]: crate::mtp::MtpDeviceBuilder::use_object_prop_list
+    /// [`MtpDeviceBuilder::use_windowed_uploads`]: crate::mtp::MtpDeviceBuilder::use_windowed_uploads
     pub(crate) fn new(
         session: Arc<PtpSession>,
         ptp_info: PtpDeviceInfo,
-        use_object_prop_list: bool,
+        options: UsbOptions,
     ) -> Self {
         let device_info = DeviceInfo::from_ptp(&ptp_info);
         let capabilities = Capabilities::from_ptp_device_info(&ptp_info);
         let has_partial_object_64 = ptp_info.supports_operation(OperationCode::GetPartialObject64);
         let has_partial_object = ptp_info.supports_operation(OperationCode::GetPartialObject);
-        let has_object_prop_list =
-            use_object_prop_list && ptp_info.supports_operation(OperationCode::GetObjectPropList);
+        let has_object_prop_list = options.use_object_prop_list
+            && ptp_info.supports_operation(OperationCode::GetObjectPropList);
+        let windowed_uploads =
+            options.use_windowed_uploads && capabilities.supports_windowed_upload;
         Self {
             session,
             device_info,
@@ -123,6 +141,7 @@ impl UsbBackend {
             has_object_prop_list,
             prop_list_off: AtomicBool::new(false),
             prop_list_declined_optional: AtomicU8::new(0),
+            windowed_uploads,
         }
     }
 
@@ -707,6 +726,80 @@ impl DownloadBody for UsbDownloadBody {
     }
 }
 
+/// An open edit of a new object, written in `SendPartialObject` windows. See [`UploadBody`].
+struct UsbUploadEdit {
+    session: Arc<PtpSession>,
+    handle: PtpHandle,
+    /// Bytes the device acknowledged: windows that answered OK. AOSP grows the edit's size only
+    /// when a whole window arrived, so this is the edit's size on the phone too, and the only
+    /// offset a window may start at.
+    acknowledged: u64,
+    /// Whether the edit is still open on the device (until `finish` or `abandon` ends it).
+    open: bool,
+}
+
+#[async_trait]
+impl UploadBody for UsbUploadEdit {
+    fn handle(&self) -> ObjectHandle {
+        self.handle.into()
+    }
+
+    fn acknowledged(&self) -> u64 {
+        self.acknowledged
+    }
+
+    async fn write_window(&mut self, len: u32, data: UploadStream<'_>) -> Result<(), Error> {
+        if !self.open {
+            return Err(Error::invalid_data("the upload's edit is already closed"));
+        }
+        self.session
+            .send_partial_object(self.handle, self.acknowledged, len, data)
+            .await
+            .map_err(|e| match e {
+                PtpError::Io(io) if io.kind() == std::io::ErrorKind::Interrupted => {
+                    Error::Cancelled
+                }
+                e => e.into(),
+            })?;
+        self.acknowledged += u64::from(len);
+        Ok(())
+    }
+
+    async fn finish(&mut self) -> Result<(), Error> {
+        self.session.end_edit_object(self.handle).await?;
+        self.open = false;
+        Ok(())
+    }
+
+    async fn abandon(&mut self) -> Result<(), Error> {
+        let truncated = self
+            .session
+            .truncate_object(self.handle, self.acknowledged)
+            .await;
+        // A refused truncate still leaves the edit to end; a broken session doesn't, and the
+        // deferred close (see `Drop`) tries both again on the next operation.
+        if let Err(e) = &truncated {
+            if !matches!(e, PtpError::Protocol { .. }) {
+                return Err(truncated.unwrap_err().into());
+            }
+        }
+        self.session.end_edit_object(self.handle).await?;
+        self.open = false;
+        Ok(truncated?)
+    }
+}
+
+impl Drop for UsbUploadEdit {
+    fn drop(&mut self) {
+        if self.open {
+            // A dropped upload future, or a stop whose clean-up failed: the next operation on
+            // this session ends the edit (`Drop` can't send anything).
+            self.session
+                .defer_edit_close(self.handle, self.acknowledged);
+        }
+    }
+}
+
 #[async_trait]
 impl MtpBackend for UsbBackend {
     fn device_info(&self) -> &DeviceInfo {
@@ -1014,6 +1107,50 @@ impl MtpBackend for UsbBackend {
         })
     }
 
+    fn can_upload_in_windows(&self) -> bool {
+        self.windowed_uploads
+    }
+
+    async fn begin_windowed_upload(
+        &self,
+        storage: StorageId,
+        parent: Option<ObjectHandle>,
+        info: &NewObjectInfo,
+    ) -> Result<Box<dyn UploadBody>, UploadError> {
+        let fail = |source: Error, partial: Option<PtpHandle>| UploadError {
+            source,
+            partial: partial.map(Into::into),
+        };
+        // The object is declared with size 0 (the phone would otherwise wait for that many bytes
+        // in the empty `SendObject`), so the device can't refuse a file too big for the storage
+        // up front, as it does for a held-open upload. Check here instead, before anything exists.
+        let free = self
+            .session
+            .get_storage_info(storage.to_ptp())
+            .await
+            .map_err(|e| fail(e.into(), None))?
+            .free_space_bytes;
+        if free < info.size {
+            return Err(fail(Error::StorageFull, None));
+        }
+        let mut object_info = info.to_object_info();
+        object_info.size = 0;
+        let parent_handle = parent
+            .map(ObjectHandle::to_ptp)
+            .unwrap_or(PtpHandle::SEND_ROOT);
+        let handle = self
+            .session
+            .begin_edit_upload(storage.to_ptp(), parent_handle, &object_info)
+            .await
+            .map_err(|(partial, e)| fail(e.into(), partial))?;
+        Ok(Box::new(UsbUploadEdit {
+            session: Arc::clone(&self.session),
+            handle,
+            acknowledged: 0,
+            open: true,
+        }))
+    }
+
     async fn create_folder(
         &self,
         storage: StorageId,
@@ -1276,7 +1413,14 @@ mod tests {
             vendor_extension_desc: vendor_extension_desc.to_string(),
             ..PtpDeviceInfo::default()
         };
-        UsbBackend::new(session, ptp_info, true)
+        UsbBackend::new(
+            session,
+            ptp_info,
+            UsbOptions {
+                use_object_prop_list: true,
+                use_windowed_uploads: true,
+            },
+        )
     }
 
     fn object_info_bytes(filename: &str, parent: u32) -> Vec<u8> {
@@ -1421,7 +1565,14 @@ mod tests {
             operations_supported: vec![OperationCode::GetObjectPropList],
             ..PtpDeviceInfo::default()
         };
-        UsbBackend::new(session, ptp_info, true)
+        UsbBackend::new(
+            session,
+            ptp_info,
+            UsbOptions {
+                use_object_prop_list: true,
+                use_windowed_uploads: true,
+            },
+        )
     }
 
     /// A `GetObjectPropList` dataset of `(handle, property, data type, value)` elements.

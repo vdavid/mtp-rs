@@ -41,6 +41,7 @@ struct CapabilitiesRow {
     supports_partial_download: bool,
     supports_thumbnails: bool,
     supports_events: bool,
+    supports_windowed_upload: bool,
 }
 
 /// Outcome of the `--probe-cancel` cancel-health check (the #18 reproducer):
@@ -128,13 +129,14 @@ pub async fn run(cli: &Cli, args: &DoctorArgs) -> Result<(), CliError> {
             supports_partial_download: caps.supports_partial_download,
             supports_thumbnails: caps.supports_thumbnails,
             supports_events: caps.supports_events,
+            supports_windowed_upload: caps.supports_windowed_upload,
         },
     };
     if !cli.json {
         println!("open: ok ({} {})", opened.manufacturer, opened.model);
         let c = &opened.capabilities;
         println!(
-            "capabilities: upload={} delete={} rename={} move={} copy={} mkdir={} partial_download={} thumbnails={} events={}",
+            "capabilities: upload={} delete={} rename={} move={} copy={} mkdir={} partial_download={} thumbnails={} events={} windowed_upload={}",
             c.can_upload,
             c.can_delete,
             c.can_rename,
@@ -144,6 +146,7 @@ pub async fn run(cli: &Cli, args: &DoctorArgs) -> Result<(), CliError> {
             c.supports_partial_download,
             c.supports_thumbnails,
             c.supports_events,
+            c.supports_windowed_upload,
         );
     }
 

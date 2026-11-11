@@ -79,6 +79,14 @@ pub(super) fn build_device_info(state: &VirtualDeviceState) -> Vec<u8> {
     if state.config.supports_object_prop_list {
         ops.push(OperationCode::GetObjectPropList.into());
     }
+    if state.edit_objects_enabled() {
+        ops.extend([
+            u16::from(OperationCode::SendPartialObject),
+            OperationCode::TruncateObject.into(),
+            OperationCode::BeginEditObject.into(),
+            OperationCode::EndEditObject.into(),
+        ]);
+    }
     buf.extend_from_slice(&pack_u16_array(&ops));
 
     // EventsSupported
@@ -301,7 +309,17 @@ pub(super) fn object_facts(
             .to_string_lossy()
             .to_string(),
         is_dir,
-        size: if is_dir { 0 } else { metadata.len() },
+        // An object under edit reports the edit's size, not the bytes on disk: a stopped window
+        // leaves some past it (seen on a Galaxy S23 Ultra, docs/specs/paced-uploads.md).
+        size: if is_dir {
+            0
+        } else {
+            state
+                .edits
+                .get(&handle.0)
+                .copied()
+                .unwrap_or(metadata.len())
+        },
         format: format.into(),
         created: metadata.created().ok(),
         modified: metadata.modified().ok(),

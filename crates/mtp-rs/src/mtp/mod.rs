@@ -41,6 +41,7 @@ mod object;
 mod storage;
 mod stream;
 mod types;
+mod upload;
 
 pub use backend::{Backend, ByteRange};
 pub use device::{MtpDevice, MtpDeviceBuilder, MtpDeviceInfo};
@@ -59,3 +60,4 @@ pub use types::{
     Capabilities, DateTime, DeviceInfo, FilesystemType, ObjectFormat, ObjectHandle, ObjectInfo,
     StorageId, StorageInfo, StorageType, UtcOffset,
 };
+pub use upload::{UploadPacing, DEFAULT_UPLOAD_WINDOW_TIME};

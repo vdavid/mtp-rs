@@ -480,6 +480,11 @@ pub struct Capabilities {
     pub supports_thumbnails: bool,
     /// Emits device events.
     pub supports_events: bool,
+    /// Uploads can go out in windows that free the device between them (Android's edit
+    /// operations, 0x95C2–0x95C5). Where this is `true`, a stopped upload keeps the bytes the
+    /// device acknowledged and [`UploadError::partial`](crate::UploadError::partial) names the
+    /// object; see [`Storage::upload`](crate::Storage::upload). `false` on WPD.
+    pub supports_windowed_upload: bool,
 }
 
 impl Capabilities {
@@ -496,6 +501,12 @@ impl Capabilities {
                 || op(OperationCode::GetPartialObject),
             supports_thumbnails: op(OperationCode::GetThumb),
             supports_events: !d.events_supported.is_empty(),
+            supports_windowed_upload: op(OperationCode::SendObjectInfo)
+                && op(OperationCode::SendObject)
+                && op(OperationCode::SendPartialObject)
+                && op(OperationCode::TruncateObject)
+                && op(OperationCode::BeginEditObject)
+                && op(OperationCode::EndEditObject),
         }
     }
 }
