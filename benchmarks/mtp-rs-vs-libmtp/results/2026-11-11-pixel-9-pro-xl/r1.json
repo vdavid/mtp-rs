@@ -1,0 +1,674 @@
+{
+  "run": {
+    "date": "2026-11-11 17:24 +01:00",
+    "os": "macOS 27.0.1",
+    "mtp_rs_version": "0.38.1",
+    "git_rev": "5a007e8c5f2e",
+    "libmtp_version": "1.1.23",
+    "device": "Google Pixel 9 Pro XL",
+    "device_firmware": "1.0",
+    "usb_speed": "USB 3.2 Gen 1 (5 Gbit/s)",
+    "load_start": "3.15 3.69 6.09 (16 cores)",
+    "load_end": "2.88 3.54 5.73 (16 cores)"
+  },
+  "results": [
+    {
+      "backend": "MtpRs",
+      "operation": "Download",
+      "file_size_bytes": 1000000,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 12695708
+        },
+        {
+          "secs": 0,
+          "nanos": 14765458
+        },
+        {
+          "secs": 0,
+          "nanos": 15263958
+        },
+        {
+          "secs": 0,
+          "nanos": 13974292
+        },
+        {
+          "secs": 0,
+          "nanos": 16462375
+        },
+        {
+          "secs": 0,
+          "nanos": 18495667
+        },
+        {
+          "secs": 0,
+          "nanos": 14685542
+        },
+        {
+          "secs": 0,
+          "nanos": 14612375
+        },
+        {
+          "secs": 0,
+          "nanos": 16060042
+        },
+        {
+          "secs": 0,
+          "nanos": 15029167
+        }
+      ]
+    },
+    {
+      "backend": "Libmtp",
+      "operation": "Download",
+      "file_size_bytes": 1000000,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 15383917
+        },
+        {
+          "secs": 0,
+          "nanos": 15615042
+        },
+        {
+          "secs": 0,
+          "nanos": 25953417
+        },
+        {
+          "secs": 0,
+          "nanos": 15099708
+        },
+        {
+          "secs": 0,
+          "nanos": 18377291
+        },
+        {
+          "secs": 0,
+          "nanos": 15862375
+        },
+        {
+          "secs": 0,
+          "nanos": 19715167
+        },
+        {
+          "secs": 0,
+          "nanos": 15420791
+        },
+        {
+          "secs": 0,
+          "nanos": 16492917
+        },
+        {
+          "secs": 0,
+          "nanos": 15903459
+        }
+      ]
+    },
+    {
+      "backend": "MtpRs",
+      "operation": "Download",
+      "file_size_bytes": 10000000,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 56333417
+        },
+        {
+          "secs": 0,
+          "nanos": 54374042
+        },
+        {
+          "secs": 0,
+          "nanos": 61087083
+        },
+        {
+          "secs": 0,
+          "nanos": 56781208
+        },
+        {
+          "secs": 0,
+          "nanos": 66971958
+        },
+        {
+          "secs": 0,
+          "nanos": 57480500
+        },
+        {
+          "secs": 0,
+          "nanos": 61825083
+        },
+        {
+          "secs": 0,
+          "nanos": 57642042
+        },
+        {
+          "secs": 0,
+          "nanos": 56339916
+        },
+        {
+          "secs": 0,
+          "nanos": 58986417
+        }
+      ]
+    },
+    {
+      "backend": "Libmtp",
+      "operation": "Download",
+      "file_size_bytes": 10000000,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 78773167
+        },
+        {
+          "secs": 0,
+          "nanos": 76877167
+        },
+        {
+          "secs": 0,
+          "nanos": 78431542
+        },
+        {
+          "secs": 0,
+          "nanos": 80219750
+        },
+        {
+          "secs": 0,
+          "nanos": 86796083
+        },
+        {
+          "secs": 0,
+          "nanos": 90752542
+        },
+        {
+          "secs": 0,
+          "nanos": 78478958
+        },
+        {
+          "secs": 0,
+          "nanos": 74605458
+        },
+        {
+          "secs": 0,
+          "nanos": 75553584
+        },
+        {
+          "secs": 0,
+          "nanos": 79374417
+        }
+      ]
+    },
+    {
+      "backend": "MtpRs",
+      "operation": "Download",
+      "file_size_bytes": 100000000,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 460326458
+        },
+        {
+          "secs": 0,
+          "nanos": 459903791
+        },
+        {
+          "secs": 0,
+          "nanos": 451002208
+        },
+        {
+          "secs": 0,
+          "nanos": 464636250
+        },
+        {
+          "secs": 0,
+          "nanos": 467832875
+        },
+        {
+          "secs": 0,
+          "nanos": 460941750
+        },
+        {
+          "secs": 0,
+          "nanos": 459935542
+        },
+        {
+          "secs": 0,
+          "nanos": 476845750
+        },
+        {
+          "secs": 0,
+          "nanos": 448350083
+        },
+        {
+          "secs": 0,
+          "nanos": 454105958
+        }
+      ]
+    },
+    {
+      "backend": "Libmtp",
+      "operation": "Download",
+      "file_size_bytes": 100000000,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 596561291
+        },
+        {
+          "secs": 0,
+          "nanos": 630113583
+        },
+        {
+          "secs": 0,
+          "nanos": 628286166
+        },
+        {
+          "secs": 0,
+          "nanos": 626522375
+        },
+        {
+          "secs": 0,
+          "nanos": 629184708
+        },
+        {
+          "secs": 0,
+          "nanos": 631339375
+        },
+        {
+          "secs": 0,
+          "nanos": 614553708
+        },
+        {
+          "secs": 0,
+          "nanos": 621582958
+        },
+        {
+          "secs": 0,
+          "nanos": 685371000
+        },
+        {
+          "secs": 0,
+          "nanos": 608337625
+        }
+      ]
+    },
+    {
+      "backend": "MtpRs",
+      "operation": "Upload",
+      "file_size_bytes": 1000000,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 64932083
+        },
+        {
+          "secs": 0,
+          "nanos": 59831792
+        },
+        {
+          "secs": 0,
+          "nanos": 107424083
+        },
+        {
+          "secs": 0,
+          "nanos": 65366916
+        },
+        {
+          "secs": 0,
+          "nanos": 52686333
+        },
+        {
+          "secs": 0,
+          "nanos": 69761833
+        },
+        {
+          "secs": 0,
+          "nanos": 51174042
+        },
+        {
+          "secs": 0,
+          "nanos": 50406875
+        },
+        {
+          "secs": 0,
+          "nanos": 55556000
+        },
+        {
+          "secs": 0,
+          "nanos": 58099458
+        }
+      ]
+    },
+    {
+      "backend": "Libmtp",
+      "operation": "Upload",
+      "file_size_bytes": 1000000,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 59303542
+        },
+        {
+          "secs": 0,
+          "nanos": 82316000
+        },
+        {
+          "secs": 0,
+          "nanos": 73920708
+        },
+        {
+          "secs": 0,
+          "nanos": 56483375
+        },
+        {
+          "secs": 0,
+          "nanos": 63056041
+        },
+        {
+          "secs": 0,
+          "nanos": 60445750
+        },
+        {
+          "secs": 0,
+          "nanos": 71778375
+        },
+        {
+          "secs": 0,
+          "nanos": 55852250
+        },
+        {
+          "secs": 0,
+          "nanos": 73552541
+        },
+        {
+          "secs": 0,
+          "nanos": 71345708
+        }
+      ]
+    },
+    {
+      "backend": "MtpRs",
+      "operation": "Upload",
+      "file_size_bytes": 10000000,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 107010584
+        },
+        {
+          "secs": 0,
+          "nanos": 100920500
+        },
+        {
+          "secs": 0,
+          "nanos": 145301875
+        },
+        {
+          "secs": 0,
+          "nanos": 93238709
+        },
+        {
+          "secs": 0,
+          "nanos": 93916209
+        },
+        {
+          "secs": 0,
+          "nanos": 119355417
+        },
+        {
+          "secs": 0,
+          "nanos": 107214542
+        },
+        {
+          "secs": 0,
+          "nanos": 112109250
+        },
+        {
+          "secs": 0,
+          "nanos": 90862375
+        },
+        {
+          "secs": 0,
+          "nanos": 102606625
+        }
+      ]
+    },
+    {
+      "backend": "Libmtp",
+      "operation": "Upload",
+      "file_size_bytes": 10000000,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 135337917
+        },
+        {
+          "secs": 0,
+          "nanos": 152547417
+        },
+        {
+          "secs": 0,
+          "nanos": 143724167
+        },
+        {
+          "secs": 0,
+          "nanos": 154322417
+        },
+        {
+          "secs": 0,
+          "nanos": 126596375
+        },
+        {
+          "secs": 0,
+          "nanos": 127406833
+        },
+        {
+          "secs": 0,
+          "nanos": 131858417
+        },
+        {
+          "secs": 0,
+          "nanos": 158056625
+        },
+        {
+          "secs": 0,
+          "nanos": 137821041
+        },
+        {
+          "secs": 0,
+          "nanos": 140105333
+        }
+      ]
+    },
+    {
+      "backend": "MtpRs",
+      "operation": "Upload",
+      "file_size_bytes": 100000000,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 498009125
+        },
+        {
+          "secs": 0,
+          "nanos": 485804333
+        },
+        {
+          "secs": 0,
+          "nanos": 418042959
+        },
+        {
+          "secs": 0,
+          "nanos": 380179375
+        },
+        {
+          "secs": 0,
+          "nanos": 394388791
+        },
+        {
+          "secs": 0,
+          "nanos": 371293125
+        },
+        {
+          "secs": 0,
+          "nanos": 401440417
+        },
+        {
+          "secs": 0,
+          "nanos": 415921958
+        },
+        {
+          "secs": 0,
+          "nanos": 393976333
+        },
+        {
+          "secs": 0,
+          "nanos": 408551041
+        }
+      ]
+    },
+    {
+      "backend": "Libmtp",
+      "operation": "Upload",
+      "file_size_bytes": 100000000,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 676949000
+        },
+        {
+          "secs": 0,
+          "nanos": 616567042
+        },
+        {
+          "secs": 0,
+          "nanos": 617646416
+        },
+        {
+          "secs": 0,
+          "nanos": 614521625
+        },
+        {
+          "secs": 0,
+          "nanos": 612086834
+        },
+        {
+          "secs": 0,
+          "nanos": 645541625
+        },
+        {
+          "secs": 0,
+          "nanos": 636734042
+        },
+        {
+          "secs": 0,
+          "nanos": 619399625
+        },
+        {
+          "secs": 0,
+          "nanos": 613548084
+        },
+        {
+          "secs": 0,
+          "nanos": 618698958
+        }
+      ]
+    },
+    {
+      "backend": "MtpRs",
+      "operation": "ListFiles",
+      "file_size_bytes": 0,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 20588500
+        },
+        {
+          "secs": 0,
+          "nanos": 20723833
+        },
+        {
+          "secs": 0,
+          "nanos": 20807667
+        },
+        {
+          "secs": 0,
+          "nanos": 20446666
+        },
+        {
+          "secs": 0,
+          "nanos": 19789541
+        },
+        {
+          "secs": 0,
+          "nanos": 20100875
+        },
+        {
+          "secs": 0,
+          "nanos": 20086083
+        },
+        {
+          "secs": 0,
+          "nanos": 20400708
+        },
+        {
+          "secs": 0,
+          "nanos": 20254375
+        },
+        {
+          "secs": 0,
+          "nanos": 20878875
+        }
+      ]
+    },
+    {
+      "backend": "Libmtp",
+      "operation": "ListFiles",
+      "file_size_bytes": 0,
+      "durations": [
+        {
+          "secs": 0,
+          "nanos": 31603959
+        },
+        {
+          "secs": 0,
+          "nanos": 30992417
+        },
+        {
+          "secs": 0,
+          "nanos": 30633459
+        },
+        {
+          "secs": 0,
+          "nanos": 31268833
+        },
+        {
+          "secs": 0,
+          "nanos": 28561750
+        },
+        {
+          "secs": 0,
+          "nanos": 26322625
+        },
+        {
+          "secs": 0,
+          "nanos": 25186333
+        },
+        {
+          "secs": 0,
+          "nanos": 26656125
+        },
+        {
+          "secs": 0,
+          "nanos": 28401584
+        },
+        {
+          "secs": 0,
+          "nanos": 28943458
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "run": {
+    "date": "2026-11-11 17:33 +01:00",
+    "os": "macOS 27.0.1",
+    "mtp_rs_version": "0.38.1",
+    "git_rev": "5a007e8c5f2e",
+    "libmtp_version": "1.1.23",
+    "device": "Google Pixel 9 Pro XL",
+    "device_firmware": "1.0",
+    "usb_speed": "USB 3.2 Gen 1 (5 Gbit/s)",
+    "load_start": "6.50 5.23 5.78 (16 cores)",
+    "load_end": "70.11 22.60 12.05 (16 cores)"
+  },
+  "results": [
+    {
+      "backend": "Libmtp",
+      "operation": "Download",
+      "file_size_bytes": 1000000000,
+      "durations": [
+        {
+          "secs": 6,
+          "nanos": 181589083
+        },
+        {
+          "secs": 6,
+          "nanos": 194046667
+        },
+        {
+          "secs": 6,
+          "nanos": 104927791
+        },
+        {
+          "secs": 6,
+          "nanos": 366088625
+        },
+        {
+          "secs": 6,
+          "nanos": 155884083
+        },
+        {
+          "secs": 6,
+          "nanos": 262594042
+        },
+        {
+          "secs": 6,
+          "nanos": 270632958
+        },
+        {
+          "secs": 6,
+          "nanos": 258224459
+        },
+        {
+          "secs": 9,
+          "nanos": 775885250
+        },
+        {
+          "secs": 8,
+          "nanos": 639799334
+        }
+      ]
+    }
+  ]
+}
