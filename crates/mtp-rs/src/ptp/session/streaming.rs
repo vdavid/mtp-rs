@@ -386,7 +386,11 @@ impl PtpSession {
             .transact(OperationCode::BeginEditObject, &[handle.0])
             .await
             .and_then(|r| Self::check_response(&r, OperationCode::BeginEditObject));
-        self.cancel_deferred_edit_close(handle);
+        // An answer (OK or a refusal) settles whether the edit is open. A transport failure
+        // doesn't, so its deferred close stays for the next operation (harmless if it's closed).
+        if matches!(result, Ok(()) | Err(Error::Protocol { .. })) {
+            self.cancel_deferred_edit_close(handle);
+        }
         result.map_err(|e| (Some(handle), e))?;
         Ok(handle)
     }
