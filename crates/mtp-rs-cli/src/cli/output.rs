@@ -6,6 +6,7 @@ use mtp_rs::ObjectInfo;
 use serde::Serialize;
 use std::io::Write;
 
+use super::dates;
 use super::error::{CliError, CliErrorKind};
 
 pub fn print_json<T: Serialize>(value: &T) -> Result<(), CliError> {
@@ -104,6 +105,11 @@ pub struct ObjectRow {
     pub kind: String,
     pub size: u64,
     pub format: String,
+    /// ISO 8601, with an offset only when the device sent one (see [`dates::iso`]). `null` when
+    /// the device sent no date or one that doesn't parse.
+    pub modified: Option<String>,
+    /// Like `modified`. Often `null`: Android's fast folder listing carries no creation date.
+    pub created: Option<String>,
 }
 
 impl From<&ObjectInfo> for ObjectRow {
@@ -116,6 +122,8 @@ impl From<&ObjectInfo> for ObjectRow {
             kind: if info.is_folder() { "folder" } else { "file" }.to_string(),
             size: info.size,
             format: format!("{:#06x}", info.format.code()),
+            modified: info.modified.as_ref().map(dates::iso),
+            created: info.created.as_ref().map(dates::iso),
         }
     }
 }

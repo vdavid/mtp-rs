@@ -133,10 +133,31 @@ List a remote folder.
 mtp-rs ls /
 mtp-rs ls /Music
 mtp-rs ls /Music --recursive
+mtp-rs ls /Music --long
 mtp-rs ls / --storage 0 --json
 ```
 
 `ls` requires the path to resolve to a folder.
+
+`--long` (`-l`) adds a column with each object's modification date, `-` when
+the device sent none:
+
+```
+FILE      3145728 2026-11-03 14:22:05 handle=42 PXL_20261103_142205.jpg
+```
+
+In `--json`, every object has `modified` and `created`, in ISO 8601 as the
+device wrote them, or `null` when it sent none (or one that doesn't parse):
+
+```json
+{ "filename": "PXL_20261103_142205.jpg", "size": 3145728, "modified": "2026-11-03T14:22:05", "created": null }
+```
+
+Most devices, Android included, write dates with no time zone, meaning
+wall-clock time wherever the device is. `ls` prints those as is and adds an
+offset (`2026-11-03T14:22:05+01:00`) only when the device sent one; it never
+converts to UTC or adds a `Z`, since that would make a zone up. `created` is
+often `null`: Android's fast folder listing has no creation date.
 
 Some devices list an object and then refuse to describe it. `ls` shows the rest of the folder rather
 than failing, and says what it left out on stderr:
@@ -173,6 +194,14 @@ Behavior:
 - If the destination file exists, `--replace` deletes it before upload.
 - `--verify` downloads the uploaded object back and compares bytes. This is
   intentionally explicit because it doubles transfer traffic.
+- The local file's modification date goes along with it, in UTC (to the
+  second). UTC is the one form Android reads as the right moment whatever the
+  phone's zone: it honors a `Z`, but reads any other offset, and a date with
+  none, as the phone's local time. The device decides whether to keep it, and
+  some don't: Samsung phones date every upload "now"
+  ([#68](https://github.com/vdavid/mtp-rs/issues/68)). Check with
+  `mtp-rs ls --json`. On Windows, uploads through the Windows MTP driver don't
+  carry the date yet.
 
 Uploads are streamed; large files are not buffered in memory.
 
@@ -213,6 +242,16 @@ Behavior:
   flight does not leave a partial copy behind.
 - Objects the device lists but won't describe are left out and reported, as in
   `ls`: a warning on stderr, and a `skipped` array (always present) in `--json`.
+
+Each downloaded file gets the device's modification date, and so does each
+folder of a folder download (like `cp -a`, existing folders merged into with
+`--replace` too). A date with no time zone, the usual kind, is read as local
+time on this computer, at the offset in force on that date, so a summer photo
+gets summer time. That's right when the device and the computer share a zone,
+and off by the difference when they don't (photos from a trip, say). `TZ`
+picks another zone: `TZ=America/New_York mtp-rs get …`. A date with an offset
+converts exactly. When the device sends no date, the local file keeps the time
+it was written; a date that can't be set only prints a warning.
 
 In `--json`, a folder download reports `"kind": "folder"` with `files`,
 `folders`, and `bytes` totals; a file download reports `"kind": "file"`.
@@ -448,6 +487,13 @@ Download files by path after listing folders:
 ```sh
 mtp-rs ls /DCIM --recursive
 mtp-rs get /DCIM/Camera/IMG_0001.jpg ./IMG_0001.jpg
+```
+
+The copies keep the device's dates (see `get`). To compare them with the
+device's, list the dates as the device has them:
+
+```sh
+mtp-rs ls /DCIM/Camera --json | jq -r '.objects[] | "\(.modified) \(.filename)"'
 ```
 
 ## Troubleshooting

@@ -9,6 +9,7 @@ use std::pin::Pin;
 use tokio::io::AsyncReadExt;
 
 use crate::cli::args::{Cli, PutArgs};
+use crate::cli::dates;
 use crate::cli::device::open_storage;
 use crate::cli::error::{CliError, CliErrorKind};
 use crate::cli::output::{finish_progress, print_json, print_progress};
@@ -70,7 +71,17 @@ pub async fn run(cli: &Cli, args: &PutArgs) -> Result<(), CliError> {
         .map_err(|e| CliError::new(CliErrorKind::Other, format!("open local file: {e}")))?;
     let total_size = metadata.len();
     let stream = file_stream(file);
-    let info = NewObjectInfo::file(target.filename.clone(), total_size);
+    let mut info = NewObjectInfo::file(target.filename.clone(), total_size);
+    // Sent as UTC, the one form Android reads as the right instant whatever the phone's zone
+    // (see `dates::system_time_to_device_date`). Whether the date sticks is the device's call:
+    // Samsung ignores it, for one (#68). A filesystem with no mtime sends none.
+    if let Some(modified) = metadata
+        .modified()
+        .ok()
+        .and_then(dates::system_time_to_device_date)
+    {
+        info = info.with_modified(modified);
+    }
     let mut last_percent = 101u64;
     let handle = match storage
         .upload_with_progress(target.parent, info, stream, move |progress| {

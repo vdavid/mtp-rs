@@ -31,7 +31,13 @@ impl CliFixture {
     }
 
     fn run_json(&self, args: &[&str]) -> Value {
-        let output = self.output(args);
+        self.run_json_env(&[], args)
+    }
+
+    /// Like [`run_json`](Self::run_json), with extra environment variables for the CLI process
+    /// (the host's `TZ`, or the virtual device's clock).
+    fn run_json_env(&self, env: &[(&str, &str)], args: &[&str]) -> Value {
+        let output = self.output_env(env, args);
         assert!(
             output.status.success(),
             "command failed: {args:?}\nstdout:\n{}\nstderr:\n{}",
@@ -48,7 +54,15 @@ impl CliFixture {
     }
 
     fn output(&self, args: &[&str]) -> Output {
-        self.command().args(args).output().unwrap()
+        self.output_env(&[], args)
+    }
+
+    fn output_env(&self, env: &[(&str, &str)], args: &[&str]) -> Output {
+        let mut command = self.command();
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        command.args(args).output().unwrap()
     }
 }
 
@@ -630,5 +644,255 @@ fn ls_always_reports_a_skipped_field_even_when_nothing_was_skipped() {
     assert_eq!(
         value["skipped"].as_array().expect("skipped is present"),
         &Vec::<Value>::new()
+    );
+}
+
+// Dates (#69, #70). `JULY_1_10_UTC` is 2026-07-01T10:00:00Z: noon in Stockholm (CEST, UTC+2), so
+// a device on UTC+2 writes it as `2026-07-01T12:00:00`.
+
+const JULY_1_10_UTC: u64 = 1_782_900_000;
+const DEVICE_ON_UTC_PLUS_2: (&str, &str) = ("__MTP_RS_TEST_VIRTUAL_UTC_OFFSET_MINUTES", "120");
+const DEVICE_SENDS_OFFSET: (&str, &str) = ("__MTP_RS_TEST_VIRTUAL_DATES_INCLUDE_OFFSET", "1");
+
+fn at(secs: u64) -> std::time::SystemTime {
+    std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+}
+
+/// Sets a fixture's date. Opens for writing on Windows, where a read-only handle can't set times
+/// (and folders aren't dated there: the tests that date folders are Unix-only).
+fn set_mtime(path: &Path, secs: u64) {
+    let file = if path.is_dir() {
+        std::fs::File::open(path).unwrap()
+    } else {
+        std::fs::OpenOptions::new().write(true).open(path).unwrap()
+    };
+    file.set_modified(at(secs)).unwrap();
+}
+
+fn mtime(path: &Path) -> std::time::SystemTime {
+    std::fs::metadata(path).unwrap().modified().unwrap()
+}
+
+fn find_object<'a>(listing: &'a Value, filename: &str) -> &'a Value {
+    listing["objects"]
+        .as_array()
+        .expect("objects is an array")
+        .iter()
+        .find(|object| object["filename"] == filename)
+        .unwrap_or_else(|| panic!("{filename} is listed: {listing}"))
+}
+
+/// A device with one file, `a.txt`, dated [`JULY_1_10_UTC`].
+fn fixture_with_dated_file() -> CliFixture {
+    let fixture = CliFixture::new();
+    let file = fixture.backing_dir.join("a.txt");
+    std::fs::write(&file, b"a").unwrap();
+    set_mtime(&file, JULY_1_10_UTC);
+    fixture
+}
+
+#[test]
+fn ls_json_shows_dates_with_no_zone_the_device_did_not_send() {
+    let fixture = fixture_with_dated_file();
+
+    let listing = fixture.run_json_env(
+        &[DEVICE_ON_UTC_PLUS_2],
+        &["--json", "--device", SERIAL, "ls", "/"],
+    );
+    let object = find_object(&listing, "a.txt");
+    assert_eq!(object["modified"], "2026-07-01T12:00:00");
+    // Always present; whether it's a date depends on the host filesystem keeping birth times.
+    let created = object.get("created").expect("created is always present");
+    assert!(created.is_null() || created.is_string(), "{created}");
+}
+
+#[test]
+fn ls_json_shows_the_offset_when_the_device_sends_one() {
+    let fixture = fixture_with_dated_file();
+
+    let listing = fixture.run_json_env(
+        &[DEVICE_ON_UTC_PLUS_2, DEVICE_SENDS_OFFSET],
+        &["--json", "--device", SERIAL, "ls", "/"],
+    );
+    assert_eq!(
+        find_object(&listing, "a.txt")["modified"],
+        "2026-07-01T12:00:00+02:00"
+    );
+}
+
+#[test]
+fn ls_long_adds_a_modified_column() {
+    let fixture = fixture_with_dated_file();
+
+    let output = fixture.output_env(
+        &[DEVICE_ON_UTC_PLUS_2],
+        &["--device", SERIAL, "ls", "--long", "/"],
+    );
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let line = stdout
+        .lines()
+        .find(|line| line.ends_with(" a.txt"))
+        .unwrap_or_else(|| panic!("a.txt is listed:\n{stdout}"));
+    assert!(line.contains(" 2026-07-01 12:00:00 "), "{line}");
+
+    let short = fixture.output_env(&[DEVICE_ON_UTC_PLUS_2], &["--device", SERIAL, "ls", "/"]);
+    assert!(
+        !String::from_utf8_lossy(&short.stdout).contains("2026-07-01"),
+        "plain ls stays narrow"
+    );
+}
+
+#[test]
+fn get_reads_a_zoneless_date_in_the_host_zone() {
+    let fixture = fixture_with_dated_file();
+
+    // Host and device agree on the zone: the copy gets the original instant.
+    let same_zone = fixture._tempdir.path().join("same.txt");
+    fixture.run_json_env(
+        &[DEVICE_ON_UTC_PLUS_2, ("TZ", "Europe/Stockholm")],
+        &[
+            "--json",
+            "--device",
+            SERIAL,
+            "get",
+            "/a.txt",
+            path_str(&same_zone),
+        ],
+    );
+    assert_eq!(mtime(&same_zone), at(JULY_1_10_UTC));
+
+    // The host is on UTC, so it reads the device's `12:00:00` as noon UTC.
+    let utc_host = fixture._tempdir.path().join("utc.txt");
+    fixture.run_json_env(
+        &[DEVICE_ON_UTC_PLUS_2, ("TZ", "UTC")],
+        &[
+            "--json",
+            "--device",
+            SERIAL,
+            "get",
+            "/a.txt",
+            path_str(&utc_host),
+        ],
+    );
+    assert_eq!(mtime(&utc_host), at(JULY_1_10_UTC + 2 * 3600));
+}
+
+#[test]
+fn get_converts_a_date_with_an_offset_exactly() {
+    let fixture = fixture_with_dated_file();
+
+    let local = fixture._tempdir.path().join("a.txt");
+    fixture.run_json_env(
+        &[
+            DEVICE_ON_UTC_PLUS_2,
+            DEVICE_SENDS_OFFSET,
+            ("TZ", "Asia/Kolkata"),
+        ],
+        &[
+            "--json",
+            "--device",
+            SERIAL,
+            "get",
+            "/a.txt",
+            path_str(&local),
+        ],
+    );
+    assert_eq!(mtime(&local), at(JULY_1_10_UTC));
+}
+
+#[test]
+fn get_replace_dates_the_new_copy() {
+    let fixture = fixture_with_dated_file();
+    let local = fixture._tempdir.path().join("a.txt");
+    std::fs::write(&local, b"old").unwrap();
+
+    fixture.run_json_env(
+        &[("TZ", "UTC")],
+        &[
+            "--json",
+            "--device",
+            SERIAL,
+            "get",
+            "/a.txt",
+            path_str(&local),
+            "--replace",
+        ],
+    );
+    assert_eq!(std::fs::read(&local).unwrap(), b"a");
+    assert_eq!(mtime(&local), at(JULY_1_10_UTC));
+}
+
+// Unix-only because the fixture dates folders, which needs a Windows-specific open.
+#[cfg(unix)]
+#[test]
+fn get_folder_keeps_the_dates_of_files_and_folders() {
+    let fixture = CliFixture::new();
+    let dcim = fixture.backing_dir.join("DCIM");
+    let camera = dcim.join("Camera");
+    let empty = dcim.join("Empty");
+    std::fs::create_dir_all(&camera).unwrap();
+    std::fs::create_dir_all(&empty).unwrap();
+    std::fs::write(dcim.join("index.txt"), b"top").unwrap();
+    std::fs::write(camera.join("IMG_0001.jpg"), b"photo").unwrap();
+    // Files first: writing a file into a folder moves the folder's own date.
+    set_mtime(&dcim.join("index.txt"), JULY_1_10_UTC);
+    set_mtime(&camera.join("IMG_0001.jpg"), JULY_1_10_UTC + 60);
+    set_mtime(&camera, JULY_1_10_UTC + 120);
+    set_mtime(&empty, JULY_1_10_UTC + 180);
+    set_mtime(&dcim, JULY_1_10_UTC + 240);
+    let local = fixture._tempdir.path().join("photos");
+
+    fixture.run_json_env(
+        &[("TZ", "UTC")],
+        &[
+            "--json",
+            "--device",
+            SERIAL,
+            "get",
+            "/DCIM",
+            path_str(&local),
+        ],
+    );
+    assert_eq!(mtime(&local.join("index.txt")), at(JULY_1_10_UTC));
+    assert_eq!(
+        mtime(&local.join("Camera").join("IMG_0001.jpg")),
+        at(JULY_1_10_UTC + 60)
+    );
+    assert_eq!(mtime(&local.join("Camera")), at(JULY_1_10_UTC + 120));
+    assert_eq!(mtime(&local.join("Empty")), at(JULY_1_10_UTC + 180));
+    assert_eq!(mtime(&local), at(JULY_1_10_UTC + 240));
+}
+
+#[test]
+fn put_sends_the_local_files_date() {
+    let fixture = CliFixture::new();
+    let local = fixture._tempdir.path().join("report.pdf");
+    std::fs::write(&local, b"pdf").unwrap();
+    set_mtime(&local, JULY_1_10_UTC);
+
+    // The host's zone doesn't matter: the date goes out as UTC.
+    fixture.run_json_env(
+        &[DEVICE_ON_UTC_PLUS_2, ("TZ", "America/New_York")],
+        &[
+            "--json",
+            "--device",
+            SERIAL,
+            "put",
+            path_str(&local),
+            "/report.pdf",
+        ],
+    );
+    assert_eq!(
+        mtime(&fixture.backing_dir.join("report.pdf")),
+        at(JULY_1_10_UTC)
+    );
+    let listing = fixture.run_json_env(
+        &[DEVICE_ON_UTC_PLUS_2],
+        &["--json", "--device", SERIAL, "ls", "/"],
+    );
+    assert_eq!(
+        find_object(&listing, "report.pdf")["modified"],
+        "2026-07-01T12:00:00"
     );
 }

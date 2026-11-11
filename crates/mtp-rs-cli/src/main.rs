@@ -46,6 +46,16 @@ fn register_test_virtual_device() {
                     .collect()
             })
             .unwrap_or_default(),
+        // The device's clock, in minutes east of UTC, and whether its dates carry that offset,
+        // so the date handling of `ls`, `get`, and `put` can be tested against a device in
+        // another zone than the host's.
+        utc_offset: std::env::var("__MTP_RS_TEST_VIRTUAL_UTC_OFFSET_MINUTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .and_then(mtp_rs::UtcOffset::from_minutes)
+            .unwrap_or(mtp_rs::UtcOffset::UTC),
+        dates_include_offset: std::env::var_os("__MTP_RS_TEST_VIRTUAL_DATES_INCLUDE_OFFSET")
+            .is_some(),
         ..Default::default()
     };
     let _ = mtp_rs::virtual_device::register_virtual_device(&config);

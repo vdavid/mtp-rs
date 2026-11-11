@@ -12,6 +12,7 @@
 
 mod args;
 mod commands;
+mod dates;
 mod device;
 mod error;
 mod helpers;
@@ -174,6 +175,7 @@ mod tests {
             &LsArgs {
                 remote_path: "/".to_string(),
                 recursive: false,
+                long: false,
             },
         )
         .await
@@ -206,6 +208,7 @@ mod tests {
             &LsArgs {
                 remote_path: "/Upload".to_string(),
                 recursive: false,
+                long: true,
             },
         )
         .await

@@ -78,10 +78,23 @@ pub async fn run(cli: &Cli, args: &LsArgs) -> Result<(), CliError> {
 
     for row in rows {
         let kind = if row.kind == "folder" { "DIR " } else { "FILE" };
-        println!(
-            "{} {:>12} handle={} {}",
-            kind, row.size, row.handle, row.filename
-        );
+        if args.long {
+            // The JSON date with a space for the `T`, easier to read in a column. `-` when the
+            // device sent none, so the columns still line up.
+            let modified = row
+                .modified
+                .as_deref()
+                .map_or_else(|| "-".to_string(), |date| date.replacen('T', " ", 1));
+            println!(
+                "{} {:>12} {:<19} handle={} {}",
+                kind, row.size, modified, row.handle, row.filename
+            );
+        } else {
+            println!(
+                "{} {:>12} handle={} {}",
+                kind, row.size, row.handle, row.filename
+            );
+        }
     }
     Ok(())
 }

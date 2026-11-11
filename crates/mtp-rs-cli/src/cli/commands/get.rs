@@ -1,5 +1,6 @@
+use jiff::tz::TimeZone;
 use mtp_rs::mtp::Storage;
-use mtp_rs::{ObjectHandle, ObjectInfo};
+use mtp_rs::{DateTime, ObjectHandle, ObjectInfo};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -7,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 
 use crate::cli::args::{Cli, GetArgs};
+use crate::cli::dates;
 use crate::cli::device::open_storage;
 use crate::cli::error::{CliError, CliErrorKind};
 use crate::cli::output::{finish_progress, print_json, print_progress};
@@ -75,6 +77,7 @@ impl FolderPlan {
 struct PlannedFolder {
     remote_path: String,
     local_path: PathBuf,
+    modified: Option<DateTime>,
 }
 
 #[derive(Debug)]
@@ -121,6 +124,7 @@ async fn run_file(
         &args.local_path,
         args.replace,
         "download",
+        &dates::host_zone(),
         cli.verbose,
     )
     .await?;
@@ -213,6 +217,7 @@ async fn run_directory(
         create_local_folder(&local_folder.local_path).await?;
     }
 
+    let zone = dates::host_zone();
     let mut bytes = 0;
     for file in &plan.files {
         bytes += download_file(
@@ -222,9 +227,20 @@ async fn run_directory(
             &file.local_path,
             args.replace,
             &file.remote_path,
+            &zone,
             cli.verbose,
         )
         .await?;
+    }
+
+    // Folders get their dates last, deepest first: putting anything into a folder moves its date,
+    // and dating a folder doesn't move its parent's. Like `cp -a` and `rsync -a`, a merge with
+    // `--replace` dates the existing folders too.
+    for local_folder in plan.folders.iter().rev() {
+        apply_device_date(&local_folder.local_path, local_folder.modified, &zone);
+    }
+    if let Some(folder) = &folder {
+        apply_device_date(&args.local_path, folder.modified, &zone);
     }
 
     let row = GetFolderRow {
@@ -317,6 +333,7 @@ async fn walk_folder(
                 plan.folders.push(PlannedFolder {
                     remote_path: remote_path.clone(),
                     local_path: local_path.clone(),
+                    modified: object.modified,
                 });
                 to_visit.push((Some(object.handle), remote_path, local_path));
             } else {
@@ -380,6 +397,7 @@ async fn download_file(
     local_path: &Path,
     replace: bool,
     progress_label: &str,
+    zone: &TimeZone,
     verbose: bool,
 ) -> Result<u64, CliError> {
     let destination_exists = match tokio::fs::metadata(local_path).await {
@@ -449,13 +467,18 @@ async fn download_file(
         out.flush()
             .await
             .map_err(|e| CliError::new(CliErrorKind::Transfer, format!("flush local file: {e}")))?;
-        Ok::<u64, CliError>(download.bytes_received())
+        Ok::<_, CliError>((download.bytes_received(), download.modified()))
     }
     .await;
     drop(out);
 
     let bytes = match download_result {
-        Ok(bytes) => bytes,
+        Ok((bytes, modified)) => {
+            // Dated before the rename, which keeps the date, so the file never shows up at its
+            // real path with today's.
+            apply_device_date(&temp_path, modified, zone);
+            bytes
+        }
         Err(err) => {
             let _ = tokio::fs::remove_file(&temp_path).await;
             finish_progress();
@@ -473,6 +496,21 @@ async fn download_file(
         .map_err(|e| CliError::new(CliErrorKind::Other, format!("replace local file: {e}")))?;
     finish_progress();
     Ok(bytes)
+}
+
+/// Gives a downloaded file or folder the device's modification date. No date from the device
+/// leaves the local one alone. A failure only warns: the bytes are already safe on disk.
+fn apply_device_date(local_path: &Path, modified: Option<DateTime>, zone: &TimeZone) {
+    let Some(time) = modified.and_then(|date| dates::device_date_to_system_time(&date, zone))
+    else {
+        return;
+    };
+    if let Err(e) = dates::set_mtime(local_path, time) {
+        eprintln!(
+            "warning: couldn't set the modification date of {}: {e}",
+            local_path.display()
+        );
+    }
 }
 
 /// Why a device-supplied name can't be a file or folder name on this machine, or `None` if it can.

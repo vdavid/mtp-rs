@@ -127,6 +127,10 @@ pub struct LsArgs {
     /// List descendants recursively.
     #[arg(long)]
     pub recursive: bool,
+
+    /// Add a column with each object's modification date, as the device wrote it.
+    #[arg(long, short = 'l')]
+    pub long: bool,
 }
 
 #[derive(Debug, Args)]

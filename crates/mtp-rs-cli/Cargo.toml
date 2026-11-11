@@ -36,6 +36,9 @@ mtp-rs = { version = "0.38.1", path = "../mtp-rs", features = ["tracing"] }
 clap = { version = "4.5", features = ["derive"] }
 bytes = "1.5"
 futures = "0.3"
+# The host's time zone, with its DST rules, for turning a device's zoneless date into a file
+# mtime (`get`). Pure Rust; reads the system tzdb, bundles one on Windows.
+jiff = "0.2.40"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "time", "fs", "io-util"] }
