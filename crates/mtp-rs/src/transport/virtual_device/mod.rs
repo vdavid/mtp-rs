@@ -1409,7 +1409,8 @@ mod tests {
         ));
 
         // A short window stays open until its end arrives, which the next call reads before
-        // starting the next window. Each virtual window arrives as one chunk.
+        // starting the next window. A window this small (under one 64 KiB read) arrives as one
+        // chunk, so only the forced caps leave it open.
         let mut dl = windowed(&storages[0], obj.handle, ByteRange::Full, 512).await;
         let w1 = dl.next_chunk().await.unwrap().unwrap();
         assert_eq!(w1.len(), 100, "first read clamped to 100 bytes");

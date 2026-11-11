@@ -406,6 +406,9 @@ When `watch_backing_dirs` is `true`, the virtual device watches its backing dire
 created or removed outside of MTP) and emits `ObjectAdded`/`ObjectRemoved` events, just like a real device would.
 Set it to `false` in tests that don't need this for faster startup.
 
+Downloads come out of `next_chunk` in pieces of at most 64 KiB, as they do over USB, so you can test that your code
+keeps memory bounded per chunk.
+
 ### Discovery registry
 
 You can also register virtual devices so they appear in `MtpDevice::list_devices()` and can be opened with

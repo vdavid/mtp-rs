@@ -4,7 +4,7 @@ Catch-up reading for any agent that picks up issue or PR work, so you don't have
 start. Read this first when triaging a new issue or PR, and update it after work that affects community-facing context
 (see [Updating this doc](#updating-this-doc) at the bottom).
 
-Last updated: 2026-11-01.
+Last updated: 2026-11-11.
 
 ## Intentionally / continuously open threads
 
@@ -605,6 +605,25 @@ copy lookup matched on the name), and his app's rename of "the copy" renamed the
   becomes handle 0 and the copy runs, and `getChild` matches names case-sensitively, so `a.jpg` onto `A.JPG` still
   overwrites. Even after this lands, devices on older Android keep the bug, so keep the mtp-rs guards.
 
+### #63 / #64: Virtual device hands a held-open download over as one chunk (merged 2026-11-11)
+
+Issue #63 was ours (David), found while moving Cmdr's `cmdr-mtp` to 0.38 (getcmdr/cmdr#1055): Cmdr bounds memory per
+`next_chunk` call and couldn't prove it against the virtual device, which ignored `receive_bulk`'s `max_size` and
+returned each queued container whole. PR #64 by [@Muhtasim-Munif-Fahim](https://github.com/Muhtasim-Munif-Fahim) (first
+contribution) cuts a container longer than the read into `max_size` pieces at the front of the queue, so a held-open
+`GetObject` and any window over 64 KiB arrive in 64 KiB chunks, as on USB.
+
+- **Review notes**: every `receive_bulk` caller either accumulates a data container to its header length
+  (`execute_with_receive`, session-less `GetDeviceInfo`), streams it (`ReceiveStream`), or reads a ≤ 32-byte response
+  with a 512-byte read, so nothing relied on whole-container reads. The virtual device never sends the >4 GiB
+  `0xFFFFFFFF` sentinel, so the "short packet ends the phase" path can't be fooled by a container that ends exactly on
+  a 64 KiB boundary without a ZLP. Cost: one extra copy of a big container, fine for tests.
+- **The author's sandbox couldn't run USB enumeration or the CLI subprocess tests**; we ran `just` before merging
+  (green apart from the known `fs_watcher` load flake, which failed the same way on `main`). They disclosed AI
+  assistance in the PR body.
+- Rebase-merged with authorship kept; ships in the next release. Follow-up docs (AGENTS.md § Paced downloads no longer
+  claims a window is always one chunk) landed separately.
+
 ## Device quirks reference
 
 Cross-cutting summary of every quirk currently handled or known. Sorted by device family.
@@ -680,6 +699,9 @@ Cross-cutting summary of every quirk currently handled or known. Sorted by devic
   [EyeCanSee](https://github.com/IoSonoPiero/eyecansee) (#51). Has a Xiaomi POCO X7 Pro and Samsungs, and runs both
   Fedora and Windows 11, and ran the full integration suite on both within hours of
   being asked, with a root-cause guess for the one failure. A strong tester for the WPD backend.
+- [@Muhtasim-Munif-Fahim](https://github.com/Muhtasim-Munif-Fahim): Muhtasim Munif Fahim. Picked up our own issue #63
+  and sent PR #64 (2026-11-11): a focused fix with a regression test that fails on `main`, a CHANGELOG line, a doc
+  line, and an honest note on which tests their sandbox couldn't run. AI-assisted, disclosed.
 
 ## Updating this doc
 
