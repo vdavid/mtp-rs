@@ -252,6 +252,10 @@ user-supplied compare function that panics) is unreachable from `serial_test`'s 
 bumping `serial_test` to 3.5.0, which dropped `scc` entirely in favor of `parking_lot` — a
 lockfile-only change (7184d25).
 
+### #66: RUSTSEC-2026-0486: rustix xattr unsoundness (opened 2026-11-11)
+
+Source: github-actions advisory. Not affected: `rustix` 1.1.4 came in only through `tempfile` (dev-dependency of both crates) and `crossterm` (via `comfy-table` in the unpublished `mtp-bench`), so it never reached downstream consumers, and nothing here calls the xattr functions. Cleared anyway with a lockfile-only bump to 1.1.6 (76e3966); `fuzz/Cargo.lock` was already on 1.1.6.
+
 ### #18: "A lot of problems with Samsung A15" (opened 2026-07-18; fixed and released same day in v0.24.0)
 
 Reporter: [@qarmin](https://github.com/qarmin) (Rafał Mikrut, author of Czkawka/Krokiet), building
