@@ -598,7 +598,7 @@ The "one request per file" column was timed with the folder already scanned by t
 more. Check your own device with `cargo run --release -p mtp-rs --example list_speed -- DCIM/Camera`.
 
 The benchmark tool is included in the repo. [Run it yourself](../../benchmarks/mtp-rs-vs-libmtp/) with
-`cargo run -p mtp-bench -- --warmup 5 --runs 10`.
+`cargo run --release -p mtp-bench -- --warmup 5 --runs 10`.
 
 ## Comparison with other libraries
 

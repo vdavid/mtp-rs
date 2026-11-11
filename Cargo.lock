@@ -804,6 +804,7 @@ dependencies = [
  "mtp-rs",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

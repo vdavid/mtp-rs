@@ -15,11 +15,11 @@ pub async fn run_benchmarks(
     let mut results = Vec::new();
 
     for &operation in &config.operations {
-        let sizes: Vec<u64> = if operation == Operation::ListFiles {
+        let sizes: Vec<u64> = match operation {
             // ListFiles does not depend on file size; run once with size 0.
-            vec![0]
-        } else {
-            config.file_sizes.clone()
+            Operation::ListFiles => vec![0],
+            Operation::ListDuringDownload { .. } => config.list_during_sizes.clone(),
+            _ => config.file_sizes.clone(),
         };
 
         for &file_size in &sizes {
@@ -73,13 +73,25 @@ async fn run_mtp_rs_scenario(
     num_runs: usize,
     warmup_runs: usize,
 ) -> Result<BenchmarkResult, Box<dyn std::error::Error>> {
-    let test_data = vec![0xABu8; file_size as usize];
     let total_iterations = warmup_runs + num_runs;
     let mut durations = Vec::with_capacity(num_runs);
+    let mut list_latencies = Vec::new();
 
     eprintln!("  Connecting (mtp-rs)...");
     let backend = MtpRsBackend::connect().await?;
     eprintln!("  Device: {}", backend.device_description());
+
+    // The mid-download listing reads the same file every run (reads don't change it), so it's
+    // uploaded once: at 4 GB, an upload per run would cost more than the runs themselves.
+    let shared_file = if let Operation::ListDuringDownload { .. } = operation {
+        eprintln!(
+            "  Uploading the {} test file (untimed)...",
+            format_bytes(file_size)
+        );
+        Some(backend.upload("bench-list-during.bin", file_size).await?)
+    } else {
+        None
+    };
 
     for i in 0..total_iterations {
         let is_warmup = i < warmup_runs;
@@ -92,9 +104,7 @@ async fn run_mtp_rs_scenario(
         let elapsed = match operation {
             Operation::Download => {
                 // Setup: upload a test file (not timed).
-                let handle = backend
-                    .upload("bench-download-file.bin", &test_data)
-                    .await?;
+                let handle = backend.upload("bench-download-file.bin", file_size).await?;
                 let start = Instant::now();
                 let _data = backend.download(handle).await?;
                 let elapsed = start.elapsed();
@@ -104,9 +114,7 @@ async fn run_mtp_rs_scenario(
             Operation::DownloadStream
             | Operation::DownloadPaced
             | Operation::DownloadWindowed { .. } => {
-                let handle = backend
-                    .upload("bench-download-file.bin", &test_data)
-                    .await?;
+                let handle = backend.upload("bench-download-file.bin", file_size).await?;
                 let start = Instant::now();
                 let bytes = match operation {
                     Operation::DownloadWindowed { window_mib } => {
@@ -130,7 +138,7 @@ async fn run_mtp_rs_scenario(
             Operation::Upload => {
                 let filename = format!("bench-upload-{}.bin", i);
                 let start = Instant::now();
-                let handle = backend.upload(&filename, &test_data).await?;
+                let handle = backend.upload(&filename, file_size).await?;
                 let elapsed = start.elapsed();
                 backend.delete(handle).await?;
                 elapsed
@@ -139,6 +147,25 @@ async fn run_mtp_rs_scenario(
                 let start = Instant::now();
                 let _count = backend.list_objects().await?;
                 start.elapsed()
+            }
+            Operation::ListDuringDownload { pacing } => {
+                let handle = shared_file.expect("uploaded before the loop");
+                let t = backend
+                    .download_with_mid_list(handle, file_size, pacing.to_download_pacing())
+                    .await?;
+                if t.bytes != file_size {
+                    return Err(format!("read {} bytes, expected {file_size}", t.bytes).into());
+                }
+                eprintln!(
+                    "{label} listing issued at {}, answered in {:.0} ms, at {}",
+                    format_bytes(t.issued_at),
+                    t.list_latency.as_secs_f64() * 1000.0,
+                    format_bytes(t.answered_at)
+                );
+                if !is_warmup {
+                    list_latencies.push(t.list_latency);
+                }
+                t.download
             }
         };
 
@@ -149,14 +176,14 @@ async fn run_mtp_rs_scenario(
         }
     }
 
+    if let Some(handle) = shared_file {
+        backend.delete(handle).await?;
+    }
     backend.cleanup().await?;
 
-    Ok(BenchmarkResult {
-        backend: BackendName::MtpRs,
-        operation,
-        file_size_bytes: file_size,
-        durations,
-    })
+    let mut result = BenchmarkResult::new(BackendName::MtpRs, operation, file_size, durations);
+    result.list_latencies = list_latencies;
+    Ok(result)
 }
 
 /// Run a single scenario with the libmtp (sync) backend.
@@ -186,7 +213,8 @@ fn run_libmtp_scenario(
         let elapsed = match operation {
             Operation::DownloadStream
             | Operation::DownloadPaced
-            | Operation::DownloadWindowed { .. } => {
+            | Operation::DownloadWindowed { .. }
+            | Operation::ListDuringDownload { .. } => {
                 return Err(format!("{operation} is mtp-rs only").into());
             }
             Operation::Download => {
@@ -236,10 +264,10 @@ fn run_libmtp_scenario(
         .cleanup()
         .map_err(|e| format!("libmtp cleanup failed: {e}"))?;
 
-    Ok(BenchmarkResult {
-        backend: BackendName::Libmtp,
+    Ok(BenchmarkResult::new(
+        BackendName::Libmtp,
         operation,
-        file_size_bytes: file_size,
+        file_size,
         durations,
-    })
+    ))
 }

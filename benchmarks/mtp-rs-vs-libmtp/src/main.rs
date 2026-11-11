@@ -1,7 +1,12 @@
 use clap::Parser;
 use mtp_bench::report;
+use mtp_bench::run_info::RunInfo;
 use mtp_bench::runner::run_benchmarks;
-use mtp_bench::types::{format_bytes, BackendName, BenchmarkConfig, Operation};
+use mtp_bench::types::{
+    format_bytes, parse_sizes, BackendName, BenchmarkConfig, Operation, Pacing,
+    DEFAULT_LIST_DURING_SIZES, DEFAULT_SIZES,
+};
+use std::time::Duration;
 
 /// Benchmark mtp-rs vs libmtp for MTP file transfers.
 #[derive(Parser, Debug)]
@@ -19,16 +24,22 @@ struct Cli {
     warmup: usize,
 
     /// Comma-separated file sizes: 1MB,10MB,100MB,1GB.
-    #[arg(long, default_value = "1MB,10MB,100MB")]
+    #[arg(long, default_value = DEFAULT_SIZES)]
     sizes: String,
 
+    /// Comma-separated file sizes for `list_during`, which needs a file many times one ~2 s
+    /// window to tell the pacings apart.
+    #[arg(long, default_value = DEFAULT_LIST_DURING_SIZES)]
+    list_during_sizes: String,
+
     /// Comma-separated operations: download,upload,list, plus the mtp-rs-only `stream`
-    /// (held-open), `paced` (the default adaptive pacing), and `windowed` (fixed windows, one run
-    /// per `--windows` size).
+    /// (held-open), `paced` (the default adaptive pacing), `windowed` (fixed windows, one run
+    /// per `--windows` size), and `list_during` (a listing halfway through a download, held open,
+    /// default pacing, and each `--windows` size).
     #[arg(long, default_value = "download,upload,list")]
     operations: String,
 
-    /// Comma-separated window sizes in MiB for the `windowed` operation.
+    /// Comma-separated window sizes in MiB for `windowed` and `list_during`.
     #[arg(long, default_value = "8")]
     windows: String,
 
@@ -41,35 +52,8 @@ struct Cli {
     output: String,
 }
 
-fn parse_sizes(input: &str) -> Result<Vec<u64>, String> {
-    input
-        .split(',')
-        .map(|s| {
-            let s = s.trim().to_uppercase();
-            if s.ends_with("GB") {
-                s.trim_end_matches("GB")
-                    .parse::<u64>()
-                    .map(|n| n * 1_000_000_000)
-                    .map_err(|e| format!("Invalid size '{}': {}", s, e))
-            } else if s.ends_with("MB") {
-                s.trim_end_matches("MB")
-                    .parse::<u64>()
-                    .map(|n| n * 1_000_000)
-                    .map_err(|e| format!("Invalid size '{}': {}", s, e))
-            } else if s.ends_with("KB") {
-                s.trim_end_matches("KB")
-                    .parse::<u64>()
-                    .map(|n| n * 1_000)
-                    .map_err(|e| format!("Invalid size '{}': {}", s, e))
-            } else {
-                s.parse::<u64>()
-                    .map_err(|e| format!("Invalid size '{}': {}", s, e))
-            }
-        })
-        .collect()
-}
-
-/// `windowed` expands to one operation per entry in `windows_mib`.
+/// `windowed` expands to one operation per entry in `windows_mib`, and `list_during` to held
+/// open, the default pacing, and one per entry in `windows_mib`.
 fn parse_operations(input: &str, windows_mib: &[u32]) -> Result<Vec<Operation>, String> {
     let mut ops = Vec::new();
     for s in input.split(',') {
@@ -84,11 +68,20 @@ fn parse_operations(input: &str, windows_mib: &[u32]) -> Result<Vec<Operation>, 
             ),
             "upload" => ops.push(Operation::Upload),
             "list" | "list_files" | "listfiles" => ops.push(Operation::ListFiles),
+            "list_during" | "list-during" => {
+                let pacings = [Pacing::HeldOpen, Pacing::Default].into_iter().chain(
+                    windows_mib
+                        .iter()
+                        .map(|&window_mib| Pacing::FixedWindow { window_mib }),
+                );
+                ops.extend(pacings.map(|pacing| Operation::ListDuringDownload { pacing }));
+            }
             other => {
                 return Err(format!(
-                "Unknown operation '{}'. Expected: download, stream, paced, windowed, upload, list",
-                other
-            ))
+                    "Unknown operation '{}'. Expected: download, stream, paced, windowed, \
+                     list_during, upload, list",
+                    other
+                ))
             }
         }
     }
@@ -131,6 +124,14 @@ async fn main() {
         }
     };
 
+    let list_during_sizes = match parse_sizes(&cli.list_during_sizes) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error parsing --list-during-sizes: {}", e);
+            std::process::exit(1);
+        }
+    };
+
     let windows = match parse_windows(&cli.windows) {
         Ok(w) => w,
         Err(e) => {
@@ -159,6 +160,7 @@ async fn main() {
         num_runs: cli.runs,
         warmup_runs: cli.warmup,
         file_sizes,
+        list_during_sizes,
         operations,
         backends,
     };
@@ -194,8 +196,30 @@ async fn main() {
             .collect::<Vec<_>>()
             .join(", ")
     );
+    if config
+        .operations
+        .iter()
+        .any(|o| matches!(o, Operation::ListDuringDownload { .. }))
+    {
+        eprintln!(
+            "List-during sizes: {}",
+            config
+                .list_during_sizes
+                .iter()
+                .map(|&s| format_bytes(s))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     eprintln!("Output:     {}", cli.output);
     eprintln!();
+
+    let info = RunInfo::collect().await;
+    for line in info.lines() {
+        eprintln!("{line}");
+    }
+    // The probe just closed a session; give the device the same settle as between scenarios.
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
     let results = match run_benchmarks(&config).await {
         Ok(r) => r,
@@ -214,15 +238,15 @@ async fn main() {
 
     match cli.output.to_lowercase().as_str() {
         "table" => {
-            println!("{}", report::render_terminal_table(&results));
+            println!("{}", report::render_terminal_table(&info, &results));
         }
         "markdown" | "md" => {
-            println!("{}", report::render_markdown_table(&results));
+            println!("{}", report::render_markdown_table(&info, &results));
         }
         "csv" => {
-            println!("{}", report::render_csv(&results));
+            println!("{}", report::render_csv(&info, &results));
         }
-        "json" => match report::render_json(&results) {
+        "json" => match report::render_json(&info, &results) {
             Ok(json) => println!("{}", json),
             Err(e) => {
                 eprintln!("Failed to serialize results to JSON: {}", e);
@@ -236,5 +260,50 @@ async fn main() {
             );
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_during_expands_to_held_default_and_each_window() {
+        let ops = parse_operations("list_during", &[8, 64]).unwrap();
+        let pacings: Vec<Pacing> = ops
+            .iter()
+            .map(|o| match o {
+                Operation::ListDuringDownload { pacing } => *pacing,
+                other => panic!("unexpected {other}"),
+            })
+            .collect();
+        assert_eq!(
+            pacings,
+            vec![
+                Pacing::HeldOpen,
+                Pacing::Default,
+                Pacing::FixedWindow { window_mib: 8 },
+                Pacing::FixedWindow { window_mib: 64 },
+            ]
+        );
+        assert_eq!(parse_operations("list-during", &[8]).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn other_operations_still_parse() {
+        let ops = parse_operations("download, list,windowed", &[8, 32]).unwrap();
+        assert_eq!(ops.len(), 4);
+        assert!(parse_operations("nope", &[8]).is_err());
+    }
+
+    #[test]
+    fn cli_defaults_parse() {
+        let cli = Cli::parse_from(["mtp-bench"]);
+        assert_eq!(parse_sizes(&cli.sizes).unwrap().len(), 4);
+        assert_eq!(
+            parse_sizes(&cli.list_during_sizes).unwrap(),
+            vec![4_000_000_000]
+        );
+        assert_eq!(parse_windows(&cli.windows).unwrap(), vec![8]);
     }
 }

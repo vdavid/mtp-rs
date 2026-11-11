@@ -637,7 +637,8 @@ chunks and is mid-window after the first. A smaller window (the tests use 512–
 one chunk, so a test there needs a forced short read to be mid-window.
 `examples/paced_download.rs` demonstrates it with no hardware. Real-device coverage:
 `test_paced_download_matches_held_open_and_frees_session` in `tests/integration.rs` (`#[ignore]`),
-and `mtp-bench --operations stream,paced,windowed`.
+and `mtp-bench --operations stream,paced,windowed` (cost) plus `list_during` (a listing's wait halfway through a
+download, the benefit; see `benchmarks/mtp-rs-vs-libmtp/README.md`).
 
 ## Paced uploads (windows through Android's edit ops)
 

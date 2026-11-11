@@ -36,3 +36,8 @@ futures = "0.3"
 
 # Needed by libmtp-rs FileMetadata (DateTime<Utc>)
 chrono = "0.4"
+
+[dev-dependencies]
+# Unit tests drive the mtp-rs backend against the in-process virtual device (no hardware).
+mtp-rs = { path = "../../crates/mtp-rs", features = ["virtual-device"] }
+tempfile = "3"

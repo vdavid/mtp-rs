@@ -1,25 +1,25 @@
 # mtp-bench: mtp-rs vs libmtp benchmark
 
-Compares [mtp-rs](https://crates.io/crates/mtp-rs) (pure Rust) against [libmtp-rs](https://crates.io/crates/libmtp-rs) (C library bindings) for MTP file transfers on a real device.
+Compares [mtp-rs](https://crates.io/crates/mtp-rs) (pure Rust) against [libmtp-rs](https://crates.io/crates/libmtp-rs) (C library bindings) for MTP file transfers on a real device, and measures what mtp-rs's paced downloads cost and buy.
 
 ## Prerequisites
 
 - Rust toolchain (stable)
-- `libmtp` system library installed (needed by libmtp-rs)
+- `libmtp` system library installed (needed by libmtp-rs, which links the system copy through `pkg-config`)
   - **Linux:** `sudo apt install libmtp-dev` (Debian/Ubuntu) or equivalent
   - **macOS:** `brew install libmtp`
-- A real MTP device (Android phone, etc.) connected via USB
-- On macOS, you'll need to kill `ptpcamerad` first (see main README)
+- A real MTP device (Android phone, etc.) connected via USB, with a `Download` folder in its first storage and enough free space for the biggest size (4 GB with `list_during`)
+- On macOS, you'll need to stop `ptpcamerad` first (see `docs/debugging.md`)
 
 ## How to run
 
-From the repo root:
+From the repo root, always with `--release`: a debug build of mtp-rs can't keep up with USB 3, while libmtp is optimized C either way.
 
 ```bash
-cargo run -p mtp-bench
+cargo run --release -p mtp-bench
 ```
 
-This runs all operations (download, upload, list) at all default sizes (1 MB, 10 MB, 100 MB) with both backends, using 1 warmup + 5 measured runs per scenario.
+This runs all operations (download, upload, list) at all default sizes (1 MB, 10 MB, 100 MB, 1 GB) with both backends, using 1 warmup + 5 measured runs per scenario.
 
 ### CLI options
 
@@ -27,51 +27,78 @@ This runs all operations (download, upload, list) at all default sizes (1 MB, 10
 |------|---------|-------------|
 | `--runs` | `5` | Number of measured runs per scenario |
 | `--warmup` | `1` | Number of warmup runs (excluded from results) |
-| `--sizes` | `1MB,10MB,100MB` | Comma-separated file sizes (supports KB, MB, GB) |
-| `--operations` | `download,upload,list` | Comma-separated operations to benchmark. mtp-rs only: `stream` (`DownloadPacing::HeldOpen`), `paced` (the default adaptive pacing), and `windowed` (`DownloadPacing::FixedWindow`, one run per `--windows` size); all discard the bytes |
-| `--windows` | `8` | Comma-separated window sizes in MiB for `windowed` |
+| `--sizes` | `1MB,10MB,100MB,1GB` | Comma-separated file sizes (supports KB, MB, GB, decimal) |
+| `--list-during-sizes` | `4GB` | File sizes for `list_during` |
+| `--operations` | `download,upload,list` | Comma-separated operations to benchmark. mtp-rs only: `stream` (`DownloadPacing::HeldOpen`), `paced` (the default adaptive pacing), `windowed` (`DownloadPacing::FixedWindow`, one run per `--windows` size), and `list_during` (see below); the download modes discard the bytes |
+| `--windows` | `8` | Comma-separated window sizes in MiB for `windowed` and `list_during` |
 | `--backends` | `mtp-rs,libmtp` | Comma-separated backends to test |
 | `--output` | `table` | Output format: `table`, `markdown`, `csv`, or `json` |
+
+### Why these sizes
+
+- **1 GB in `--sizes`**: paced downloads read in windows of about two seconds (the first one is 8 MiB). At the ~268 MB/s a Pixel 9 Pro XL reaches on USB 3, a 100 MB file is the first window plus one more, so it can't show what pacing costs. 1 GB takes about three windows.
+- **4 GB for `list_during`**: the listing is issued halfway, so held open it waits for the rest of the file. At 268 MB/s that's ~7.5 s for 4 GB against at most one ~2 s window paced; at 1 GB the two would look alike (~1.9 s left, one window's worth). 4 GB also stays under 4 GiB, so the run doesn't cross into the over-4-GiB size path as well. On USB 2 (~40 MB/s) each 4 GB download takes ~100 s, so expect a long run there.
+
+### Listing during a download (`list_during`)
+
+The point of paced downloads is that the device stays usable while a big file comes off it. `list_during` measures that directly: it downloads a `--list-during-sizes` file and, once half of it has arrived, lists the storage root on the same session, the way a file manager refreshes a folder while a copy runs. Each run records two numbers:
+
+- **Download**: start to last byte, including the listing's turn. This is the cost of pacing.
+- **Listing**: from issuing the listing to its answer. This is the benefit.
+
+`list_during` expands to three pacings, each its own scenario: held open (the listing waits for the whole rest of the file), the default (~2 s windows), and a fixed window per `--windows` size. The file is uploaded once per scenario, untimed, and read by every run. The report prints these in their own table, next to the main one. Add `list` to the operations to see an idle listing's time for comparison.
+
+### What the report records
+
+Every output starts with the run's context, so a table can be trusted on its own: date, host OS and version, mtp-rs version and git commit (`-dirty` with local changes), the system libmtp version, the device's name and firmware, and the negotiated USB link speed (the slowest of port, cable, and device, from `MtpDeviceInfo::speed`). A USB 3 phone on a USB 2 cable reports USB 2, which is the first thing to check when numbers look low. `csv` writes the context as `#` comment lines; `json` writes `{ "run": {...}, "results": [...] }`.
 
 ### Example commands
 
 Run only downloads at 10 MB with 10 measured runs:
 
 ```bash
-cargo run -p mtp-bench -- --operations download --sizes 10MB --runs 10
+cargo run --release -p mtp-bench -- --operations download --sizes 10MB --runs 10
 ```
 
 Quick smoke test (1 run, no warmup, small file):
 
 ```bash
-cargo run -p mtp-bench -- --runs 1 --warmup 0 --sizes 1MB
+cargo run --release -p mtp-bench -- --runs 1 --warmup 0 --sizes 1MB
 ```
 
 Full benchmark matching the README results (10 runs, 5 warmup), output as markdown:
 
 ```bash
-cargo run -p mtp-bench -- --runs 10 --warmup 5 --output markdown
+cargo run --release -p mtp-bench -- --runs 10 --warmup 5 --output markdown
+```
+
+What pacing costs and buys (mtp-rs only):
+
+```bash
+cargo run --release -p mtp-bench -- --backends mtp-rs \
+    --operations stream,paced,windowed,list_during,list --windows 8,32 --output markdown
 ```
 
 Only test mtp-rs (skip libmtp):
 
 ```bash
-cargo run -p mtp-bench -- --backends mtp-rs
+cargo run --release -p mtp-bench -- --backends mtp-rs
 ```
 
 Export results as JSON for further analysis:
 
 ```bash
-cargo run -p mtp-bench -- --output json > results.json
+cargo run --release -p mtp-bench -- --output json > results.json
 ```
 
 ## How it works
 
-1. Connects to the first available MTP device
+1. Opens the first MTP device briefly to record its name, firmware, and link speed
 2. For each (operation, file size, backend) combination:
    - **Download:** uploads a test file to the device (untimed), then times the download, then deletes it
    - **Upload:** times the upload of a test file, then deletes it
    - **List files:** times listing all objects in the storage root
+   - **List during:** uploads one test file (untimed), then each run times a download with a listing issued halfway
 3. Runs warmup iterations first (discarded), then measured iterations
 4. Waits 2 seconds between scenarios to let the USB device settle
 5. Reports median, mean, std dev, and throughput for each scenario
@@ -84,4 +111,5 @@ Each backend connects and disconnects independently per scenario because both op
 - **USB settle delay** (2s) between scenarios prevents connection failures when switching backends.
 - **List files caching:** the first list call on a device is often slower due to device-side indexing. Warmup runs help stabilize this.
 - **Median** is used as the primary metric because it's more robust to outliers than mean (and libmtp can have significant outliers at large file sizes).
-- Test files are filled with a constant byte (`0xAB`). Content doesn't affect MTP transfer speed, but it does mean the data isn't compressible (not that MTP compresses anything).
+- Test files are filled with a constant byte (`0xAB`). Content doesn't affect MTP transfer speed (MTP doesn't compress anything). mtp-rs uploads stream them in 1 MiB chunks, so a 4 GB file needs no 4 GB buffer; libmtp's upload takes a buffer of the whole file.
+- **The listing in `list_during` runs in the same task as the download** (`futures::join!`), the way an app with one device handle would issue it. It queues for the device while the download keeps reading, and gets in at the next window boundary.

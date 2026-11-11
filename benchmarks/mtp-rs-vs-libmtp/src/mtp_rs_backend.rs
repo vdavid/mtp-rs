@@ -21,8 +21,11 @@ impl MtpRsBackend {
     /// and create a temporary benchmark folder (e.g. "mtp-bench-tmp") in the Download folder.
     /// The Download folder is the safest target on Android.
     pub async fn connect() -> Result<Self, Box<dyn std::error::Error>> {
-        let device = MtpDevice::open_first().await?;
+        Self::with_device(MtpDevice::open_first().await?).await
+    }
 
+    /// [`connect`](Self::connect) on an already open device.
+    pub async fn with_device(device: MtpDevice) -> Result<Self, Box<dyn std::error::Error>> {
         let info = device.device_info();
         let description = format!("{} {}", info.manufacturer, info.model);
 
@@ -61,21 +64,17 @@ impl MtpRsBackend {
         Ok(self.device.storage(self.storage_id).await?)
     }
 
-    /// Upload `data` as `filename` into the benchmark folder. Returns the object handle.
+    /// Upload `size` bytes of [`FILL_BYTE`] as `filename` into the benchmark folder, streamed in
+    /// 1 MiB chunks so a 4 GB file costs no more memory than a 1 MB one. Returns the handle.
     pub async fn upload(
         &self,
         filename: &str,
-        data: &[u8],
+        size: u64,
     ) -> Result<ObjectHandle, Box<dyn std::error::Error>> {
         let storage = self.storage().await?;
-        let info = NewObjectInfo::file(filename, data.len() as u64);
-
-        // Build a single-item stream of bytes for the upload.
-        let data_vec = data.to_vec();
-        let stream = SingleChunkStream::new(data_vec);
-
+        let info = NewObjectInfo::file(filename, size);
         let handle = storage
-            .upload(Some(self.bench_folder_handle), info, stream)
+            .upload(Some(self.bench_folder_handle), info, FillStream::new(size))
             .await?;
         Ok(handle)
     }
@@ -123,6 +122,57 @@ impl MtpRsBackend {
         Ok(total)
     }
 
+    /// Download the whole file with `pacing`, discarding chunks, and once at least half of it
+    /// has arrived, list the storage root on the same session, the way a file manager refreshes
+    /// a folder while a copy runs. Both run in this one task: the listing queues for the device
+    /// while the download keeps reading, so it gets in at the next window boundary (or, held
+    /// open, when the download ends).
+    pub async fn download_with_mid_list(
+        &self,
+        handle: ObjectHandle,
+        size: u64,
+        pacing: DownloadPacing,
+    ) -> Result<MidListTiming, Box<dyn std::error::Error>> {
+        let storage = self.storage().await?;
+        let start = Instant::now();
+        let mut download = storage
+            .download_with_pacing(handle, mtp_rs::ByteRange::Full, pacing)
+            .await?;
+        // A `Cell`, so the listing can read how far the download got when it answered.
+        let received = Cell::new(0u64);
+        while received.get() < size / 2 {
+            match download.next_chunk().await {
+                Some(chunk) => received.set(received.get() + chunk?.len() as u64),
+                None => break,
+            }
+        }
+        let issued_at = received.get();
+        let list = async {
+            let t = Instant::now();
+            storage
+                .list_objects(None)
+                .await
+                .map(|_| (t.elapsed(), received.get()))
+        };
+        let rest = async {
+            while let Some(chunk) = download.next_chunk().await {
+                received.set(received.get() + chunk?.len() as u64);
+            }
+            Ok::<_, mtp_rs::Error>(())
+        };
+        let (list, rest) = futures::join!(list, rest);
+        let (list_latency, answered_at) = list?;
+        rest?;
+        let received = received.get();
+        Ok(MidListTiming {
+            answered_at,
+            download: start.elapsed(),
+            list_latency,
+            bytes: received,
+            issued_at,
+        })
+    }
+
     /// List objects in the root of the first storage. Returns the count.
     pub async fn list_objects(&self) -> Result<usize, Box<dyn std::error::Error>> {
         let storage = self.storage().await?;
@@ -160,37 +210,155 @@ impl MtpRsBackend {
     }
 }
 
+/// What one [`MtpRsBackend::download_with_mid_list`] run measured.
+#[derive(Debug, Clone, Copy)]
+pub struct MidListTiming {
+    /// The whole download, from the call to the last byte, the listing's turn included.
+    pub download: Duration,
+    /// From issuing the listing to its answer.
+    pub list_latency: Duration,
+    /// Bytes the download delivered.
+    pub bytes: u64,
+    /// Bytes already delivered when the listing was issued.
+    pub issued_at: u64,
+    /// Bytes delivered when the listing answered: the file's size when it had to wait for the
+    /// whole download (held open), less when it got in between windows.
+    pub answered_at: u64,
+}
+
 // ---------------------------------------------------------------------------
-// Minimal single-chunk stream implementation. The mtp-rs `upload` method
-// requires `Stream<Item = Result<Bytes, io::Error>> + Unpin`, so we provide
-// a lightweight wrapper that yields all data in one chunk.
+// Upload source. The mtp-rs `upload` method takes a
+// `Stream<Item = Result<Bytes, io::Error>> + Unpin`.
 // ---------------------------------------------------------------------------
 
 use bytes::Bytes;
+use std::cell::Cell;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
-/// A stream that yields a single chunk of bytes and then finishes.
-struct SingleChunkStream {
-    data: Option<Vec<u8>>,
+/// The byte every test file is filled with.
+pub const FILL_BYTE: u8 = 0xAB;
+
+const FILL_CHUNK: usize = 1024 * 1024;
+
+/// `size` bytes of [`FILL_BYTE`], as 1 MiB chunks that all share one buffer.
+pub struct FillStream {
+    chunk: Bytes,
+    remaining: u64,
 }
 
-impl SingleChunkStream {
-    fn new(data: Vec<u8>) -> Self {
-        Self { data: Some(data) }
-    }
-}
-
-impl futures::Stream for SingleChunkStream {
-    type Item = Result<Bytes, io::Error>;
-
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.data.take() {
-            Some(data) => Poll::Ready(Some(Ok(Bytes::from(data)))),
-            None => Poll::Ready(None),
+impl FillStream {
+    /// A stream of `size` fill bytes.
+    pub fn new(size: u64) -> Self {
+        Self {
+            chunk: Bytes::from(vec![FILL_BYTE; FILL_CHUNK]),
+            remaining: size,
         }
     }
 }
 
-impl Unpin for SingleChunkStream {}
+impl futures::Stream for FillStream {
+    type Item = Result<Bytes, io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.remaining == 0 {
+            return Poll::Ready(None);
+        }
+        let n = self.remaining.min(FILL_CHUNK as u64) as usize;
+        self.remaining -= n as u64;
+        Poll::Ready(Some(Ok(self.chunk.slice(..n))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+
+    #[test]
+    fn fill_stream_yields_exactly_the_size_in_bounded_chunks() {
+        for size in [
+            0u64,
+            1,
+            FILL_CHUNK as u64,
+            FILL_CHUNK as u64 + 1,
+            3 * FILL_CHUNK as u64 - 7,
+        ] {
+            let chunks: Vec<Bytes> =
+                futures::executor::block_on(FillStream::new(size).map(|c| c.unwrap()).collect());
+            let total: u64 = chunks.iter().map(|c| c.len() as u64).sum();
+            assert_eq!(total, size);
+            assert!(chunks
+                .iter()
+                .all(|c| !c.is_empty() && c.len() <= FILL_CHUNK));
+            assert!(chunks.iter().all(|c| c.iter().all(|&b| b == FILL_BYTE)));
+        }
+    }
+
+    /// A virtual device with a `Download` folder, like the phone the bench expects.
+    async fn virtual_backend(dir: &std::path::Path) -> MtpRsBackend {
+        use mtp_rs::virtual_device::{VirtualDeviceConfig, VirtualStorageConfig};
+        std::fs::create_dir(dir.join("Download")).unwrap();
+        std::fs::write(dir.join("sibling.txt"), b"something to list").unwrap();
+        let device = MtpDevice::builder()
+            .open_virtual(VirtualDeviceConfig {
+                serial: format!("mtp-bench-{}", dir.display()),
+                storages: vec![VirtualStorageConfig {
+                    description: "Internal Storage".into(),
+                    capacity: 1024 * 1024 * 1024,
+                    backing_dir: dir.to_path_buf(),
+                    read_only: false,
+                }],
+                event_poll_interval: Duration::ZERO,
+                watch_backing_dirs: false,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        MtpRsBackend::with_device(device).await.unwrap()
+    }
+
+    const MIB: u64 = 1024 * 1024;
+
+    #[tokio::test]
+    async fn a_paced_download_lets_the_mid_download_listing_in_before_it_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = virtual_backend(dir.path()).await;
+        let size = 16 * MIB;
+        let handle = backend.upload("big.bin", size).await.unwrap();
+
+        let t = backend
+            .download_with_mid_list(handle, size, DownloadPacing::FixedWindow(MIB as u32))
+            .await
+            .unwrap();
+        assert_eq!(t.bytes, size);
+        assert!(t.issued_at >= size / 2, "{t:?}");
+        assert!(
+            t.answered_at < size,
+            "the listing should get in between windows: {t:?}"
+        );
+        // It waits for at most the window in flight.
+        assert!(t.answered_at - t.issued_at <= MIB, "{t:?}");
+
+        backend.cleanup().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_held_open_download_makes_the_listing_wait_for_the_whole_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = virtual_backend(dir.path()).await;
+        let size = 16 * MIB + 3;
+        let handle = backend.upload("big.bin", size).await.unwrap();
+
+        let t = backend
+            .download_with_mid_list(handle, size, DownloadPacing::HeldOpen)
+            .await
+            .unwrap();
+        assert_eq!(t.bytes, size);
+        assert_eq!(t.answered_at, size, "{t:?}");
+
+        backend.cleanup().await.unwrap();
+    }
+}
