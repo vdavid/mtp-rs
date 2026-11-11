@@ -251,21 +251,26 @@ let handle = storage.upload(None, info, Box::pin(stream)).await?;
 println!("Uploaded with handle {:?}", handle);
 ```
 
-On Android phones, `upload` writes the file in windows of about two seconds each and frees the device between them, the way `download` reads (see below). So a folder listing during a big upload waits for one window, not for the whole file. Each window costs 1–3 ms, well under 1% of the speed. Devices without Android's edit operations (`device.capabilities().supports_windowed_upload` is `false`), and Windows, upload in one piece.
+`upload` sends the file in one transfer, and the device is busy until it ends. On Android phones (`device.capabilities().supports_windowed_upload` is `true`) it can instead go out in windows of about two seconds each, freeing the device between them the way `download` reads (see below): a folder listing during a big upload then waits for one window, not for the whole file. Each window costs 1–3 ms, well under 1% of the speed. Devices without Android's edit operations, and Windows, always upload in one piece.
 
-To pick another pacing, use `upload_with_pacing`, or turn windows off for a whole device with `MtpDevice::builder().use_windowed_uploads(false)`:
+Windows are opt-in, per upload or for a whole device:
 
 ```rust
-use mtp_rs::UploadPacing;
+use mtp_rs::{MtpDevice, UploadPacing, DEFAULT_UPLOAD_WINDOW_TIME};
 use std::ops::ControlFlow;
 
-// One transfer: the device is busy until the end.
-storage.upload_with_pacing(None, info, stream, UploadPacing::HeldOpen, |_| ControlFlow::Continue(())).await?;
+let windows = UploadPacing::MaxWindowTime(DEFAULT_UPLOAD_WINDOW_TIME);
+// One upload:
+storage.upload_with_pacing(None, info, stream, windows, |_| ControlFlow::Continue(())).await?;
+// Every `upload` on this device:
+let device = MtpDevice::builder().upload_pacing(windows).open_first().await?;
 ```
 
-One thing a windowed upload loses on Android: the modification date in `NewObjectInfo`. Android stamps it when the file is created, and every write after that moves it to the time of the write, so the file ends up dated when its last window arrived. Android can't set the date afterwards. A held-open upload keeps it on a Pixel (not on a Galaxy S23 Ultra, which drops it either way), so use `UploadPacing::HeldOpen` where the date matters.
+Why they're not the default: a windowed upload loses the modification date in `NewObjectInfo` on Android. Android stamps it when the file is created, and every write after that moves it to the time of the write, so the file ends up dated when its last window arrived, and Android can't set the date afterwards. A held-open upload keeps it on a Pixel. A Galaxy S23 Ultra drops it either way. We're working out a better default in [#68](https://github.com/vdavid/mtp-rs/issues/68).
 
-If an upload stops partway (an error, or `ControlFlow::Break` from the progress callback), the device may keep the object. `upload()` returns an `UploadError` whose `partial` field carries that object's handle so you decide what to do. The library never auto-deletes it. A windowed upload always keeps the object, holding exactly the windows the device acknowledged: a clean prefix of the file. A held-open upload to Android leaves nothing (`partial` is `None`), and other devices may keep an empty or truncated object:
+If your app has its own lock around the device, `storage.start_upload(..)` returns a `FileUpload` you feed chunk by chunk with `write_chunk`. `upload.holds_session()` tells you when it's safe to let other work in: it's `false` between windows. See `examples/upload_with_app_lock.rs`.
+
+If an upload stops partway (an error, `ControlFlow::Break` from the progress callback, or `FileUpload::cancel`), the device may keep the object. `upload()` returns an `UploadError` whose `partial` field carries that object's handle so you decide what to do; the library doesn't delete it. A held-open upload to Android leaves nothing (`partial` is `None`), and other devices may keep an empty or truncated object. A windowed upload keeps exactly the windows the device acknowledged, a clean prefix of the file. One exception: if you drop a windowed upload before it finishes, nobody gets the handle, so the library deletes the object with the next call on the device, since a file cut short under its real name looks like a complete one.
 
 ```rust
 match storage.upload(None, info, Box::pin(stream)).await {
@@ -476,8 +481,8 @@ We use `nusb` for USB access, which is also runtime-agnostic.
 | Filename length           | Max 254 characters                                 |
 | Non-empty folder delete   | Fails; delete contents first                       |
 | One connection per device | Can't open the same device twice                   |
-| Upload cancellation       | A partial object may remain on the device. `upload()` surfaces its handle via `UploadError::partial` so you can delete it; the library never auto-deletes it. A dropped windowed upload future leaves the acknowledged prefix with no handle returned, so prefer `ControlFlow::Break`. |
-| Upload dates on Android   | A windowed upload (the default there) ends up dated at its last write; use `UploadPacing::HeldOpen` to keep the date on a Pixel. |
+| Upload cancellation       | A partial object may remain on the device. `upload()` surfaces its handle via `UploadError::partial` so you can delete it; the library doesn't. A dropped windowed upload is the exception: nobody has its handle, so the next call deletes it. |
+| Upload dates on Android   | A windowed upload ends up dated at its last write; held open (the default) keeps the date on a Pixel. A Galaxy S23 Ultra loses it either way ([#68](https://github.com/vdavid/mtp-rs/issues/68)). |
 | Recursive listing speed   | Manual traversal is slower (~1 request per folder) |
 
 ## Android weirdnesses

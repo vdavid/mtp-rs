@@ -60,13 +60,15 @@ Ours (`claude-created`), no external reporter, but it changes what consumers see
 
 - Fixed along the way: a stopped Android upload made the next call time out (v0.38.1), and a call from another
   task landing between `SendObjectInfo` and `SendObject` made Android refuse the upload and wedged a Pixel.
-- Built: windowed uploads through Android's edit ops (0x95C2–0x95C5), the default where a device lists them
-  (AGENTS.md § Paced uploads). Spike and hardware numbers: `docs/specs/paced-uploads.md` (Pixel 9 Pro XL and
-  Galaxy S23 Ultra, Samsung's closed server answered like AOSP).
-- **What a consumer will notice** (worth knowing when a report comes in): a stopped upload on Android now leaves
-  a clean prefix and `UploadError::partial: Some`, where it used to leave nothing; a windowed upload is dated at
-  its last write (Android can't set the date afterwards); `use_windowed_uploads(false)` or
-  `UploadPacing::HeldOpen` restores the old behavior. Cmdr needs a heads-up for both.
+- Built: windowed uploads through Android's edit ops (0x95C2–0x95C5), opt-in (AGENTS.md § Paced uploads), and
+  a step-by-step `FileUpload` for apps with their own device lock. Spike and hardware numbers:
+  `docs/specs/paced-uploads.md` (Pixel 9 Pro XL and Galaxy S23 Ultra, Samsung's closed server answered like AOSP).
+- **Why opt-in**: a windowed upload is dated at its last write on Android, which can't set the date afterwards.
+  Picking a default is #68 (`needs-decision`). A Galaxy S23 Ultra loses the date on every upload, held open
+  included, so a Samsung user reporting wrong dates is #68 too, not a regression.
+- **What a consumer will notice with windows on**: a stopped upload leaves a clean prefix and
+  `UploadError::partial: Some`, where a held-open one to Android leaves nothing; a dropped one is deleted by the
+  next call. Cmdr needs a heads-up before it opts in.
 - Not tried yet: the POCO (HyperOS) and any phone on Windows (WPD keeps `Commit`).
 
 ### #43: POCO X6 Pro 5G results, a Linux cancel wedge, and a WPD wait (opened 2026-10-22)

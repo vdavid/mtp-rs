@@ -107,7 +107,7 @@ src/
 │   ├── event.rs           # DeviceEvent
 │   ├── hotplug.rs         # watch_devices, DeviceWatch, HotplugEvent
 │   ├── stream.rs          # FileDownload, DownloadPacing (windows), Pacer, Progress
-│   ├── upload.rs          # UploadPacing, the paced (windowed) upload loop
+│   ├── upload.rs          # FileUpload (step by step), UploadPacing (windows)
 │   └── backend/           # The MtpBackend seam
 │       ├── mod.rs         # MtpBackend trait, Backend selector, ByteRange
 │       ├── usb.rs         # UsbBackend (PTP over Transport)
@@ -334,7 +334,7 @@ neutral error's too, so they classify USB failures by nusb's kind, never by mess
 | `mtp/event.rs`      | DeviceEvent enum, event stream                |
 | `mtp/hotplug.rs`    | Device arrival/departure watch                |
 | `mtp/stream.rs`     | FileDownload, DownloadPacing, Pacer         |
-| `mtp/upload.rs`     | UploadPacing, windowed uploads              |
+| `mtp/upload.rs`     | FileUpload, UploadPacing, windowed uploads  |
 | `transport/mod.rs`  | Transport trait                               |
 | `transport/nusb.rs` | nusb implementation                           |
 | `transport/mock.rs` | Mock for testing                              |

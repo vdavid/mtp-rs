@@ -1,9 +1,10 @@
 //! Write a file in windows while another task uses the device in between, then stop one partway.
 //!
-//! On a device that lists Android's edit operations, `Storage::upload` writes a file as a series
-//! of windows (by default, each one takes about two seconds) and frees the device's one PTP
-//! session between them, so a folder listing from another task waits for one window instead of
-//! the whole file. This demo uses small fixed windows so the windows are visible, lists the
+//! On a device that lists Android's edit operations, `Storage::upload_with_pacing` with a windowed
+//! `UploadPacing` (usually windows of about two seconds) writes a file as a series of windows and
+//! frees the device's one PTP session between them, so a folder listing from another task waits
+//! for one window instead of the whole file. Windows are opt-in because Android dates such a file
+//! at its last window (#68). This demo uses small fixed windows so the windows are visible, lists the
 //! folder from a second task during the upload, and prints the order things happened in. Then it
 //! stops an upload from its progress callback and shows what's left: exactly the windows the
 //! device acknowledged, under a handle the library hands back and never deletes.

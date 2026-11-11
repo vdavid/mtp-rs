@@ -6,28 +6,32 @@ evidence and the options.
 
 ## Status
 
-**Built (option 1, default on).** The design and its rules are in AGENTS.md § Paced uploads; this doc keeps the
-evidence. Decisions taken (David, 2026-11-11):
+**Built (option 1), opt-in.** The design and its rules are in AGENTS.md § Paced uploads; this doc keeps the
+evidence. Decisions (David, 2026-11-11):
 
-- Windowed uploads on devices listing 0x95C2–0x95C5, the default, with an opt-out
-  (`MtpDeviceBuilder::use_windowed_uploads(false)`, `UploadPacing::HeldOpen`). Everything else keeps one
-  `SendObject`; WPD keeps `Commit`.
-- A stopped windowed upload returns `UploadError::partial: Some(handle)`; the library never deletes it. On a stop:
-  truncate to what was acknowledged, then `EndEditObject`.
+- Windowed uploads on devices listing 0x95C2–0x95C5, everything else one `SendObject`, WPD keeps `Commit`.
+- **Windows are opt-in until the date question is decided** ([#68](https://github.com/vdavid/mtp-rs/issues/68)):
+  `Storage::upload` stays held open; windows per upload (`upload_with_pacing`, `start_upload`) or per device
+  (`MtpDeviceBuilder::upload_pacing`). Windows lose the file's date on Android, and nothing can set it afterwards.
+- A stopped windowed upload returns `UploadError::partial: Some(handle)` with a clean prefix; the library doesn't
+  delete it. On a stop: truncate to what was acknowledged, then `EndEditObject`.
+- **A dropped windowed upload is deleted** by the next operation (truncate, end, delete): nobody holds its handle,
+  and a truncated file under the real name looks complete. A deliberate exception to "never auto-delete".
+- A step-by-step `FileUpload` (`Storage::start_upload`) mirroring `FileDownload`, for consumers with their own
+  device lock; the stream-based uploads sit on top of it.
 - The virtual device models the edit ops, refusals and ghost included.
 - `PtpSession::send_object_with_info` (and the new `begin_edit_upload`) stay crate-private.
+- The `cargo-semver-checks` lint allow for the new `OperationCode`s.
 - Resumable uploads across sessions (option 2): not built.
 
 Decided while building, open to change:
 
-- **A dropped upload future ends its edit on the next operation**, at the acknowledged size (the session's
-  recovery hook). It doesn't delete the object: the prefix stays under the file's name with no handle returned.
 - **Dates aren't set afterwards**: AOSP's `MtpDatabase.setObjectProperty` handles only `ObjectFileName` and answers
-  everything else `ObjectPropNotSupported` (read on `main`, 2026-11-11), so a windowed upload keeps the time of its
-  last write. To verify on the Pixel with `android_edit_probe setdate`; Samsung unverified (the S23 went back before
-  this could run).
+  everything else `ObjectPropNotSupported` (read on `main`, 2026-11-11). To verify on the Pixel with
+  `android_edit_probe setdate`; Samsung unverified (the S23 went back before this could run).
 - A free-space check (`GetStorageInfo`) before a windowed upload, since size 0 keeps the phone from refusing a
   too-big file up front.
+- A held-open upload starts with its first chunk, so a `Break` before any byte went out creates nothing.
 
 Hardware for every claim below unless it says otherwise: Pixel 9 Pro XL, Android 17 (`CP3A.261005.005`),
 macOS/nusb, USB 3 (5 Gb/s), 2026-11-11. § Galaxy S23 Ultra repeats the probe on Samsung's server. The probe is `crates/mtp-rs/examples/android_edit_probe.rs`; its header lists
