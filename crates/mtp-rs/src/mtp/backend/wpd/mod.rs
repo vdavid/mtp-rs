@@ -17,6 +17,7 @@ mod com;
 mod consts;
 mod events;
 mod ids;
+mod ole_date;
 mod passthrough;
 mod props;
 

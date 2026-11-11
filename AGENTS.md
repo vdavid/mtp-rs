@@ -1009,6 +1009,15 @@ semantics that differ from the USB/PTP backend, all hardware-verified on a Pixel
   **no** partial object. So `UploadError::partial` is `None` on WPD (unlike the USB two-phase
   `SendObjectInfo`/`SendObject`, where the data phase can leave a partial the caller must clean up).
   The probe stays in the path defensively: a device that *did* keep a partial would surface its handle.
+- **Upload dates go out as `WPD_OBJECT_DATE_MODIFIED`** (`props::write_date`, a `VT_DATE`), which the driver should
+  send as the `SendObjectInfo`'s `DateModified`. A `VT_DATE` has no zone, and the reading side shows the driver passes
+  the phone's wall-clock time through unconverted, so we write the wall-clock time the phone should show: a zoneless
+  `NewObjectInfo::modified` as is, one with an offset (like the `Z` values `with_modified` recommends) converted to the
+  PC's zone at that date (`SystemTimeToTzSpecificLocalTime`), standing in for Android's own `Z`→phone-local
+  conversion over USB. Microsoft's property docs name no zone. The OLE conversion is in `ole_date.rs`, which
+  `backend/mod.rs` also builds into non-Windows test builds so its tests run on any host. A date at or before
+  1899-12-30 can't go out (the reading side treats it as "no date") and fails the upload with `InvalidData`, like an
+  invalid date over USB. **Not hardware-verified yet**: the check is listed on #67.
 - **Forward-only resource streams**: `IStream::Seek` returns `E_NOTIMPL` on the Pixel. `stream_seek`
   falls back to read-and-discard, so ranged/resumed `download` (`ByteRange::From`/`Range`) and
   `read_range` stay correct (at the cost of reading the skipped prefix). Verified-seekable streams

@@ -65,6 +65,9 @@ windows = { version = "=0.62.2", default-features = false, features = [
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Variant",
+    # SystemTimeToTzSpecificLocalTime: an upload's dated-with-offset modification time becomes
+    # PC-local wall-clock time before it goes out as a zoneless VT_DATE.
+    "Win32_System_Time",
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_Devices_PortableDevices",
     # CfgMgr32 device-tree walk: correlate an nusb USB device to its WPD device by serial.

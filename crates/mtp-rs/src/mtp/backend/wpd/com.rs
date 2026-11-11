@@ -9,6 +9,7 @@ use super::ids::IdMap;
 use super::passthrough::{PartialOp, Passthrough};
 use super::props::{
     is_folder_content_type, map_hresult, read_date, read_object_info, set_u32, take_pwstr, wide,
+    write_date,
 };
 use crate::cancel::CancelToken;
 use crate::mtp::object::NewObjectInfo;
@@ -556,6 +557,12 @@ impl WpdDevice {
         values
             .SetGuidValue(&WPD_OBJECT_CONTENT_TYPE, &WPD_CONTENT_TYPE_GENERIC_FILE)
             .map_err(map_hresult)?;
+        // The driver sends this as the SendObjectInfo's DateModified, which Android stamps on the
+        // file once the data arrives (#68). NewObjectInfo carries no creation date, and the USB
+        // backend sends none either. Zone handling: `write_date`.
+        if let Some(modified) = info.modified {
+            write_date(&values, &WPD_OBJECT_DATE_MODIFIED, modified)?;
+        }
 
         let mut stream_opt: Option<IStream> = None;
         let mut optimal: u32 = 0;

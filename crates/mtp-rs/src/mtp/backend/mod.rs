@@ -16,6 +16,11 @@ pub(crate) mod usb;
 #[cfg(windows)]
 pub(crate) mod wpd;
 
+// The WPD backend's OLE date conversion is pure Rust, so its tests also run off Windows.
+#[cfg(all(test, not(windows)))]
+#[path = "wpd/ole_date.rs"]
+mod wpd_ole_date;
+
 use crate::cancel::CancelToken;
 use crate::mtp::object::NewObjectInfo;
 use crate::mtp::stream::Progress;
