@@ -477,51 +477,80 @@ async fn a_call_from_another_task_waits_for_one_window_on_a_multi_thread_runtime
     let data = pattern(16 * MIB);
     let window = 64 * 1024;
 
+    // Measured as in the download twin (`a_listing_gets_in_between_windows_on_a_multi_thread_
+    // runtime`): from the moment the call has started, so a lister thread kept off the CPU only
+    // delays its listing, and the upload waits for the first listing to start, so one gets in
+    // however starved the lister is. Listings that ran past the handoff's cap don't count.
+    let cap = Duration::from_millis(500);
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (first_started, first_started_rx) = futures::channel::oneshot::channel::<()>();
     let lister = {
         let storage = device.storages().await.unwrap().remove(0);
         let done = std::sync::Arc::clone(&done);
         tokio::spawn(async move {
+            let mut first_started = Some(first_started);
             let mut worst = 0;
             let mut listings = 0;
-            while listings < 20 {
-                // Wait until a window is in flight, then queue a listing behind it.
-                let start = count(serial, OperationCode::SendPartialObject);
-                while count(serial, OperationCode::SendPartialObject) == start {
-                    if done.load(std::sync::atomic::Ordering::Relaxed) {
-                        return (worst, listings);
+            while listings < 20 && !done.load(std::sync::atomic::Ordering::Relaxed) {
+                if first_started.is_none() {
+                    // Wait until a window is in flight, then start a listing behind it.
+                    let start = count(serial, OperationCode::SendPartialObject);
+                    while count(serial, OperationCode::SendPartialObject) == start {
+                        if done.load(std::sync::atomic::Ordering::Relaxed) {
+                            return (worst, listings);
+                        }
+                        tokio::task::yield_now().await;
                     }
-                    tokio::task::yield_now().await;
                 }
-                listings += 1;
+                let call = storage.begin_call();
+                let started = std::time::Instant::now();
                 let before = count(serial, OperationCode::SendPartialObject);
+                if let Some(tx) = first_started.take() {
+                    tx.send(()).unwrap();
+                }
                 storage.list_objects(None).await.unwrap();
-                worst = worst.max(count(serial, OperationCode::SendPartialObject) - before);
+                let ran = count(serial, OperationCode::SendPartialObject) - before;
+                drop(call);
+                listings += 1;
+                if started.elapsed() < cap {
+                    worst = worst.max(ran);
+                }
             }
             (worst, listings)
         })
     };
-    storage
-        .upload_with_pacing(
+    let mut upload = storage
+        .start_upload(
             None,
             NewObjectInfo::file("fair.bin", data.len() as u64),
-            chunks(&data),
             UploadPacing::FixedWindow(window as u32),
-            continue_,
         )
         .await
         .unwrap();
+    let mut pieces = data.chunks(window);
+    while upload.bytes_written() == 0 || upload.holds_session() {
+        let piece = pieces.next().unwrap();
+        upload
+            .write_chunk(Bytes::copy_from_slice(piece))
+            .await
+            .unwrap();
+    }
+    first_started_rx.await.unwrap();
+    for piece in pieces {
+        upload
+            .write_chunk(Bytes::copy_from_slice(piece))
+            .await
+            .unwrap();
+    }
+    upload.finish().await.unwrap();
     done.store(true, std::sync::atomic::Ordering::Relaxed);
     let (worst, listings) = lister.await.unwrap();
+    assert!(listings >= 1, "no listing ran during the upload");
+    // The one window that may have been past its handoff when the call started. Without the
+    // handoff it was 80–193.
     assert!(
-        listings >= 10,
-        "only {listings} listings ran during the upload (worst wait: {worst} windows)"
-    );
-    // A window here takes microseconds, so one or two can start between the lister seeing a
-    // window in flight and its listing queueing for the lock. Without the handoff it was 80–193.
-    assert!(
-        worst <= 3,
-        "a listing waited for {worst} windows to start after the one in flight"
+        worst <= 1,
+        "a listing waited for {worst} windows ({listings} listings)"
     );
     assert_eq!(std::fs::read(dir.path().join("fair.bin")).unwrap(), data);
     assert_clean(&storage, serial).await;
