@@ -13,7 +13,14 @@
 //!   Pixel 9 Pro XL a listing waited out two or three 2 s upload windows (2.7–3.4 s, 2026-11-11).
 //!
 //! So [`OperationLock::let_waiting_calls_in`] waits, when the device is in use or a call is
-//! waiting, until it has been quiet for [`HANDOFF_SETTLE`]: no holder and nobody waiting.
+//! waiting, until it has been quiet for [`HANDOFF_SETTLE`]: no holder, nobody waiting, and no
+//! call between its requests.
+//!
+//! The settle time alone only covers a caller that sends its next request within it. On a starved
+//! host the caller's thread can be off the CPU for longer, and the transfer saw a quiet device and
+//! went on. So a call that finishes inside one API call marks itself in progress for its whole
+//! length ([`OperationLock::begin_call`]), and the handoff waits for it, still capped at
+//! [`HANDOFF_CAP`].
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -38,6 +45,21 @@ pub(crate) struct OperationLock {
     mutex: Arc<Mutex<()>>,
     /// Calls waiting in [`lock`](Self::lock) or [`lock_owned`](Self::lock_owned).
     waiting: AtomicUsize,
+    /// Calls between their first and last request (see [`begin_call`](Self::begin_call)).
+    calls: AtomicUsize,
+}
+
+/// Marks a call of several requests as in progress, from its first request to its last, so a
+/// transfer's handoff waits for the whole call even while the call holds nothing between two
+/// requests (see [`OperationLock::begin_call`]). Stops counting when dropped, a dropped call
+/// included.
+#[must_use = "the call counts as in progress only while the guard lives"]
+pub(crate) struct CallGuard(Arc<OperationLock>);
+
+impl Drop for CallGuard {
+    fn drop(&mut self) {
+        self.0.calls.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Counts one waiting call for as long as it waits, a dropped one included.
@@ -67,10 +89,29 @@ impl OperationLock {
         Arc::clone(&self.mutex).lock_owned().await
     }
 
-    /// Nobody holds the lock and nobody waits for it. The probe takes the lock for an instant; a
-    /// call that asks in that instant is woken when it's released, like after any holder.
+    /// Start a call that makes several requests and finishes inside one API call (a collected
+    /// listing, an `ObjectInfo` with its size lookup, the start of a windowed upload). Until the
+    /// guard drops, [`let_waiting_calls_in`](Self::let_waiting_calls_in) treats the device as
+    /// busy, so a transfer can't slip a window in between the call's requests when the caller's
+    /// thread is slow to send the next one (a starved host: on a virtual device at a load of
+    /// 60–100, a root listing let 14 windows in between its two requests).
+    ///
+    /// Only for calls that end on their own. A streaming listing makes one request per `next()`
+    /// and the consumer's work runs in between, so it takes no guard: a slow consumer would hold
+    /// every window of a transfer to [`HANDOFF_CAP`]. A transfer never takes one either: it would
+    /// wait on itself.
+    pub(crate) fn begin_call(self: &Arc<Self>) -> CallGuard {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        CallGuard(Arc::clone(self))
+    }
+
+    /// Nobody holds the lock, nobody waits for it, and no call is between its requests. The probe
+    /// takes the lock for an instant; a call that asks in that instant is woken when it's
+    /// released, like after any holder.
     fn is_quiet(&self) -> bool {
-        self.waiting.load(Ordering::SeqCst) == 0 && self.mutex.try_lock().is_some()
+        self.waiting.load(Ordering::SeqCst) == 0
+            && self.calls.load(Ordering::SeqCst) == 0
+            && self.mutex.try_lock().is_some()
     }
 
     /// Called between the windows of a transfer, with the lock released. With the device quiet,
@@ -190,6 +231,68 @@ mod tests {
             caller_done <= retaken,
             "the transfer went on before the call's last request"
         );
+    }
+
+    /// A call of several requests whose host is starved between them: the lock is free and
+    /// nobody waits, for longer than [`HANDOFF_SETTLE`]. The call in progress still keeps the
+    /// transfer back until its last request, or until [`HANDOFF_CAP`] runs out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_call_paused_between_its_requests_still_finishes_first() {
+        let lock = Arc::new(OperationLock::default());
+        let (go_on, go_on_rx) = futures::channel::oneshot::channel::<()>();
+        let (first_done, first_done_rx) = futures::channel::oneshot::channel::<()>();
+        let caller = {
+            let lock = Arc::clone(&lock);
+            tokio::spawn(async move {
+                let call = lock.begin_call();
+                drop(lock.lock().await);
+                first_done.send(()).unwrap();
+                // Starved between requests: nothing held, nothing waiting, for as long as the
+                // test says.
+                go_on_rx.await.unwrap();
+                drop(lock.lock().await);
+                drop(call);
+                Instant::now()
+            })
+        };
+        first_done_rx.await.unwrap();
+        let started = Instant::now();
+        let handoff = {
+            let lock = Arc::clone(&lock);
+            tokio::spawn(async move {
+                lock.let_waiting_calls_in().await;
+                Instant::now()
+            })
+        };
+        // Let the handoff see a free, unwanted lock for well over the settle time.
+        futures_timer::Delay::new(HANDOFF_SETTLE * 10).await;
+        go_on.send(()).unwrap();
+        let call_done = caller.await.unwrap();
+        let handoff_done = handoff.await.unwrap();
+        assert!(
+            handoff_done >= call_done || handoff_done - started >= HANDOFF_CAP,
+            "the transfer went on while a call was between its requests"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_call_stops_counting() {
+        let lock = Arc::new(OperationLock::default());
+        let call = lock.begin_call();
+        assert!(!lock.is_quiet());
+        drop(call);
+        assert!(lock.is_quiet());
+        // A call dropped mid-request, the way a cancelled listing future is.
+        {
+            let mut call = Box::pin(async {
+                let _call = lock.begin_call();
+                let _g = lock.lock().await;
+                futures::future::pending::<()>().await;
+            });
+            assert!(futures::poll!(call.as_mut()).is_pending());
+            assert!(!lock.is_quiet());
+        }
+        assert!(lock.is_quiet());
     }
 
     #[tokio::test]

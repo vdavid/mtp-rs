@@ -1583,40 +1583,62 @@ mod tests {
             super::registry::operation_count(serial, OperationCode::GetPartialObject64).unwrap()
         };
 
+        // What's measured is the contract, from the moment a call has started: at most the window
+        // in flight runs before the call finishes, unless the handoff's cap ran out (a listing
+        // that took longer than the cap doesn't count). The lister starts its call before reading
+        // the window count, so a lister thread the OS keeps off the CPU only delays its listing;
+        // it doesn't add windows to the count. And the download waits for the first listing to
+        // start, so a starved lister still gets one in (more are best effort).
+        let cap = std::time::Duration::from_millis(500);
         let done = Arc::new(AtomicBool::new(false));
+        let (first_started, first_started_rx) = futures::channel::oneshot::channel::<()>();
         let lister = {
             let storage = device.storages().await.unwrap().remove(0);
             let done = Arc::clone(&done);
             tokio::spawn(async move {
+                let mut first_started = Some(first_started);
                 let (mut worst, mut listings) = (0, 0);
-                while listings < 20 {
-                    let start = windows();
-                    while windows() == start {
-                        if done.load(Ordering::Relaxed) {
-                            return (worst, listings);
+                while listings < 20 && !done.load(Ordering::Relaxed) {
+                    if first_started.is_none() {
+                        // Later listings start just after a window does, mid-download.
+                        let start = windows();
+                        while windows() == start {
+                            if done.load(Ordering::Relaxed) {
+                                return (worst, listings);
+                            }
+                            tokio::task::yield_now().await;
                         }
-                        tokio::task::yield_now().await;
                     }
-                    listings += 1;
+                    let call = storage.begin_call();
+                    let started = std::time::Instant::now();
                     let before = windows();
+                    if let Some(tx) = first_started.take() {
+                        tx.send(()).unwrap();
+                    }
                     storage.list_objects(None).await.unwrap();
-                    worst = worst.max(windows() - before);
+                    let ran = windows() - before;
+                    drop(call);
+                    listings += 1;
+                    if started.elapsed() < cap {
+                        worst = worst.max(ran);
+                    }
                 }
                 (worst, listings)
             })
         };
-        let got =
-            collect_download(windowed(&storage, handle, ByteRange::Full, 64 * 1024).await).await;
+        let mut download = windowed(&storage, handle, ByteRange::Full, 64 * 1024).await;
+        let mut got = download.next_chunk().await.unwrap().unwrap().to_vec();
+        first_started_rx.await.unwrap();
+        got.extend(collect_download(download).await);
         done.store(true, Ordering::Relaxed);
         let (worst, listings) = lister.await.unwrap();
         assert_eq!(got, content);
+        assert!(listings >= 1, "no listing ran during the download");
+        // The one window that may have been past its handoff when the call started.
         assert!(
-            listings >= 10,
-            "only {listings} listings ran during the download (worst wait: {worst} windows)"
+            worst <= 1,
+            "a listing waited for {worst} windows ({listings} listings)"
         );
-        // As in the upload twin: a window here takes microseconds, so one or two can start
-        // before the listing queues.
-        assert!(worst <= 3, "a listing waited for {worst} windows");
     }
 
     #[tokio::test]

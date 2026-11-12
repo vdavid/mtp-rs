@@ -834,6 +834,7 @@ impl MtpBackend for UsbBackend {
     }
 
     async fn storages(&self) -> Result<Vec<StorageInfo>, Error> {
+        let _call = self.session.begin_call();
         let ids = self.session.get_storage_ids().await?;
         let mut storages = Vec::with_capacity(ids.len());
         for id in ids {
@@ -859,6 +860,10 @@ impl MtpBackend for UsbBackend {
         cancel: Option<&CancelToken>,
     ) -> Result<BackendListing, Error> {
         bail_if_cancelled(cancel)?;
+        // Covers the requests made here (the prop-list properties, the root fallbacks). The
+        // per-handle items below are pulled by the caller, which takes its own guard when it
+        // collects them (`Storage::collect_in`) and none when it streams them.
+        let _call = self.session.begin_call();
 
         // Root listings keep the per-handle path and its quirk handling (they're short anyway).
         if let Some(parent) = parent.filter(|_| self.has_object_prop_list) {
@@ -946,6 +951,8 @@ impl MtpBackend for UsbBackend {
     }
 
     async fn object_info(&self, obj: ObjectHandle) -> Result<ObjectInfo, Error> {
+        // Over 4 GiB the size takes a second request (`ObjectSize`).
+        let _call = self.session.begin_call();
         let mut info = self.session.get_object_info_full(obj.to_ptp()).await?;
         info.handle = obj.to_ptp();
         Ok(ObjectInfo::from_ptp(info))
@@ -1017,6 +1024,10 @@ impl MtpBackend for UsbBackend {
 
     async fn let_queued_calls_in(&self) {
         self.session.let_waiting_calls_in().await;
+    }
+
+    fn begin_call(&self) -> Option<crate::ptp::CallGuard> {
+        Some(self.session.begin_call())
     }
 
     async fn read_range(
@@ -1156,6 +1167,8 @@ impl MtpBackend for UsbBackend {
             source,
             partial: partial.map(Into::into),
         };
+        // The storage check and the edit's start, before the first window.
+        let _call = self.session.begin_call();
         // The object is declared with size 0 (the phone would otherwise wait for that many bytes
         // in the empty `SendObject`), so the device can't refuse a file too big for the storage
         // up front, as it does for a held-open upload. Check here instead, before anything exists.
@@ -1229,6 +1242,7 @@ impl MtpBackend for UsbBackend {
         new_parent: ObjectHandle,
         new_storage: StorageId,
     ) -> Result<ObjectHandle, Error> {
+        let _call = self.session.begin_call();
         let handle = self
             .session
             .copy_object(obj.to_ptp(), new_storage.to_ptp(), new_parent.to_ptp())

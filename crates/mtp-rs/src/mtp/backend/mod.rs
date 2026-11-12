@@ -262,6 +262,15 @@ pub(crate) trait MtpBackend: Send + Sync {
         crate::mtp::stream::YieldNow::default().await;
     }
 
+    /// Mark a call of several requests that finishes inside one API call as in progress until
+    /// the guard drops, so [`let_queued_calls_in`](Self::let_queued_calls_in) waits for all of
+    /// it, not only for the request that queued (`ptp/session/lock.rs`). `None` where requests
+    /// queue in order anyway (WPD). Never held across a streaming listing's items or by a
+    /// transfer.
+    fn begin_call(&self) -> Option<crate::ptp::CallGuard> {
+        None
+    }
+
     /// A single-shot buffered read of `[offset, offset+len)` (or to EOF when `len` is `None`).
     async fn read_range(
         &self,

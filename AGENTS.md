@@ -613,6 +613,20 @@ Contract:
   Pixel 9 Pro XL a listing waited out two or three 2 s upload windows that way (2026-11-11); with the
   quiet wait, one. Don't go back to a yield. WPD keeps the default yield: its worker serves
   requests in order. Tests: the `*_on_a_multi_thread_runtime` tests and `ptp::session::lock`'s.
+- **"Quiet" also means no call between its requests** (`OperationLock::begin_call`, a drop-safe
+  `CallGuard`, reached as `MtpBackend::begin_call`). The 3 ms settle covers a caller that sends its
+  next request within it; a starved host's thread can be off the CPU longer, and on the virtual
+  device at a load of 60–100 a root listing let 14 windows in between its two requests. On hardware
+  that's one extra window (~2 s) per gap. So calls that finish inside one API call hold a guard for
+  their whole length: `Storage::collect_in` (so `list_objects`, `collect_objects`, the recursive
+  walk's per-folder step, and `copy_object`'s name check), `copy_object` itself, and in
+  `UsbBackend` `list`'s own requests (prop-list properties, root fallbacks), `object_info` (the
+  size lookup past 4 GiB), `storages`, `copy_object` with its verification, and
+  `begin_windowed_upload`. **The streaming `ObjectListing` takes none**: it makes one request per
+  `next()` with the consumer's work in between, and a slow consumer would hold every window of a
+  transfer to the 500 ms cap. So a streamed listing keeps the settle-only behavior. A transfer never
+  holds a guard (it would wait on itself). Deterministic test:
+  `a_call_paused_between_its_requests_still_finishes_first`.
 - `holds_session()` is for consumers with their own device lock (Cmdr): hold it while `true`, let
   other work in while `false`. Never block the download on a lock while waiting on the device.
 - Edge cases: empty file or `offset == size` ⇒ `None`, no read issued; `offset > size` ⇒

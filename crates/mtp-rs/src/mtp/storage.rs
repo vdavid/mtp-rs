@@ -308,6 +308,9 @@ impl Storage {
         parent: Option<ObjectHandle>,
         cancel: Option<&CancelToken>,
     ) -> Result<ObjectCollection, Error> {
+        // The whole collection is one call: a paced transfer waits for its last item rather than
+        // taking a window between two of them (`ptp/session/lock.rs`).
+        let _call = self.backend.begin_call();
         let mut listing = ObjectListing::new(self.backend.list(storage, parent, cancel).await?);
         let mut objects = Vec::with_capacity(listing.total());
         let mut skipped = Vec::new();
@@ -355,6 +358,13 @@ impl Storage {
     /// Returns immediately after the device returns the handle list. The total count is then known
     /// via [`ObjectListing::total()`], and each call to [`ObjectListing::next()`] fetches one
     /// object's metadata.
+    ///
+    /// During a paced download or upload from another task, each of those fetches gets in
+    /// between the transfer's windows, but the listing as a whole doesn't hold the transfer
+    /// back: whatever you do between two `next()` calls is your time, and the transfer goes on
+    /// in it. So a streamed listing can wait for a window per item where
+    /// [`collect_objects`](Self::collect_objects) waits for one window in all (the transfer
+    /// waits up to half a second for a collecting call to finish).
     ///
     /// # Example
     ///
@@ -436,6 +446,13 @@ impl Storage {
             }
         }
         Ok(ObjectCollection { objects, skipped })
+    }
+
+    /// Mark a call of several requests as in progress until the guard drops (see
+    /// `MtpBackend::begin_call`). For tests that measure from a call's start.
+    #[cfg(all(test, feature = "virtual-device"))]
+    pub(crate) fn begin_call(&self) -> Option<crate::ptp::CallGuard> {
+        self.backend.begin_call()
     }
 
     /// Get object metadata by handle.
@@ -725,6 +742,7 @@ impl Storage {
         new_storage: Option<StorageId>,
     ) -> Result<ObjectHandle, Error> {
         let storage = new_storage.unwrap_or(self.id);
+        let _call = self.backend.begin_call();
         let name = self.backend.object_info(handle).await?.filename;
         let dest = (new_parent != ObjectHandle::ROOT).then_some(new_parent);
         let siblings = self.collect_in(storage, dest, None).await?.objects;

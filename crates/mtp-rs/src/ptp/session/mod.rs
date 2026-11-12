@@ -16,6 +16,7 @@ use crate::ptp::{
 };
 use crate::transport::Transport;
 use crate::PtpError as Error;
+pub(crate) use lock::CallGuard;
 use lock::OperationLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -473,6 +474,12 @@ impl PtpSession {
     /// waiting for the session take it first. See [`OperationLock::let_waiting_calls_in`].
     pub(crate) async fn let_waiting_calls_in(&self) {
         self.operation_lock.let_waiting_calls_in().await;
+    }
+
+    /// Mark a call of several requests as in progress until the guard drops, so a paced
+    /// transfer doesn't take a window between its requests. See [`OperationLock::begin_call`].
+    pub(crate) fn begin_call(&self) -> CallGuard {
+        self.operation_lock.begin_call()
     }
 
     /// Keep an edit open on the device from being forgotten: the next operation on this session

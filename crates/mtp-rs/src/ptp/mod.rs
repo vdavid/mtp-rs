@@ -74,6 +74,7 @@ pub(crate) use pack::{
 #[allow(unused_imports)]
 pub(crate) use pack::{pack_u16_array, pack_u32_array};
 pub use pack::{DateTime, UtcOffset, MAX_STRING_UNITS};
+pub(crate) use session::CallGuard;
 pub use session::{receive_stream_to_stream, PtpSession, ReceiveStream};
 pub use types::{
     AccessCapability, AssociationType, DeviceInfo, DevicePropDesc, FilesystemType, ObjectInfo,
