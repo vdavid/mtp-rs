@@ -30,8 +30,10 @@ use windows::Win32::System::Variant::VT_DATE;
 /// Zoneless is what the hardware shows, not an assumption: the Windows MTP driver hands the
 /// device's wall-clock time through without converting it. On a Xiaomi POCO X7 Pro (Windows 11,
 /// PR #41) `IMG_20260809_190833.jpg` read back as 19:08:33, where a local↔UTC conversion would
-/// have shifted it by the PC's offset. One device so far, so a phone that reports a different
-/// hour from the USB backend is a reason to revisit this.
+/// have shifted it by the PC's offset. A Pixel 9 Pro XL under Windows 10 agrees (#67): a file the
+/// phone stores at 10:23 local read back as 10:23 with the PC in Central European time and in
+/// Pacific time alike. A phone that reports a different hour from the USB backend is a reason to
+/// revisit this.
 ///
 /// # Safety
 /// `v` must be a live `IPortableDeviceValues`.
@@ -60,7 +62,10 @@ pub(crate) unsafe fn read_date(v: &IPortableDeviceValues, key: &PROPERTYKEY) -> 
 /// converts to phone-local itself. Should the PC's zone not resolve, the value's own wall-clock
 /// fields go out.
 ///
-/// Not hardware-verified yet (#67).
+/// Hardware-verified on a Pixel 9 Pro XL under Windows 10 (#67): with PC and phone in the same
+/// zone, a `Z` date lands on the phone's file system at the exact instant. With the PC in another
+/// zone it lands at the PC's wall-clock time, so the driver really does pass `VT_DATE` through
+/// unconverted, and a phone in a different zone ends up off by the zone difference.
 ///
 /// # Safety
 /// `bag` must be a live `IPortableDeviceValues`.

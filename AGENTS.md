@@ -1017,7 +1017,13 @@ semantics that differ from the USB/PTP backend, all hardware-verified on a Pixel
   conversion over USB. Microsoft's property docs name no zone. The OLE conversion is in `ole_date.rs`, which
   `backend/mod.rs` also builds into non-Windows test builds so its tests run on any host. A date at or before
   1899-12-30 can't go out (the reading side treats it as "no date") and fails the upload with `InvalidData`, like an
-  invalid date over USB. **Not hardware-verified yet**: the check is listed on #67.
+  invalid date over USB. **Hardware-verified on a Pixel 9 Pro XL** (Windows 10 22H2, `f6b548a`, 2026-11-12, #67):
+  `mtp-rs put` of files dated 2019-06-14 10:23 (CEST) and 2019-01-15 10:23 (CET), PC and phone both on Central
+  European time, landed on the phone's own file system (`stat` over ssh) at exactly 08:23Z and 09:23Z, read back the
+  same through `ls --json`, and `get` restored both mtimes; no upload failed. With the PC switched to Pacific time,
+  the same 08:23Z file landed at 01:23 *phone* time: the driver converts neither way, so when PC and phone zones
+  differ the phone gets the PC's wall clock, off by the zone difference, and a `get` on that PC still restores the
+  instant it sent. Nothing over WPD tells us the phone's zone; over USB a `Z` date avoids this.
 - **Forward-only resource streams**: `IStream::Seek` returns `E_NOTIMPL` on the Pixel. `stream_seek`
   falls back to read-and-discard, so ranged/resumed `download` (`ByteRange::From`/`Range`) and
   `read_range` stay correct (at the cost of reading the skipped prefix). Verified-seekable streams
