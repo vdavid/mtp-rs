@@ -60,16 +60,32 @@ Ours (`claude-created`), no external reporter, but it changes what consumers see
 
 - Fixed along the way: a stopped Android upload made the next call time out (v0.38.1), and a call from another
   task landing between `SendObjectInfo` and `SendObject` made Android refuse the upload and wedged a Pixel.
-- Built: windowed uploads through Android's edit ops (0x95C2–0x95C5), opt-in (AGENTS.md § Paced uploads), and
+- Built: windowed uploads through Android's edit ops (0x95C2–0x95C5) (AGENTS.md § Paced uploads), and
   a step-by-step `FileUpload` for apps with their own device lock. Spike and hardware numbers:
   `docs/specs/paced-uploads.md` (Pixel 9 Pro XL and Galaxy S23 Ultra, Samsung's closed server answered like AOSP).
-- **Why opt-in**: a windowed upload is dated at its last write on Android, which can't set the date afterwards.
-  Picking a default is #68 (`needs-decision`). A Galaxy S23 Ultra loses the date on every upload, held open
-  included, so a Samsung user reporting wrong dates is #68 too, not a regression.
+- **Default**: windows wherever they don't cost a date (#68's `KeepDates`): a windowed upload is dated at its last
+  write on Android. A Galaxy S23 Ultra loses the date on every upload, held open included, so a Samsung user
+  reporting wrong dates is #68 too, not a regression.
 - **What a consumer will notice with windows on**: a stopped upload leaves a clean prefix and
   `UploadError::partial: Some`, where a held-open one to Android leaves nothing; a dropped one is deleted by the
   next call. Cmdr needs a heads-up before it opts in.
 - Not tried yet: the POCO (HyperOS) and any phone on Windows (WPD keeps `Commit`).
+
+### #68: Uploads to Android can lose the file's modification date (opened 2026-11-11, our own)
+
+Ours (`claude-created`, `needs-decision` when opened). A windowed upload is dated at its last write on Android, and
+nothing can set the date afterwards; a held-open one keeps it on a Pixel; a Galaxy S23 Ultra drops it either way.
+
+- **Decided**: David's option (a), "dates win": `UploadPacing::KeepDates` is the default (held open when the upload
+  carries a date and the device keeps dates, windows otherwise), learned per session. AGENTS.md § Paced uploads.
+- **Hardware**: verified on a Pixel 9 Pro XL (2026-11-12, M1 Max host, `test_default_upload_pacing_keeps_dates`
+  and a CLI `put`). **The Galaxy S23 Ultra run of that test is still owed** (expect "keeps upload dates: false").
+- **Upstream AOSP patch**: `SetObjectPropValue(DateModified)` sets the file's date,
+  [bug 584828271](https://issuetracker.google.com/issues/584828271),
+  [change 4435411](https://android-review.googlesource.com/c/platform/frameworks/base/+/4435411). Host order with it:
+  `EndEditObject`, then `SetObjectPropValue(DateModified)`. Not used by the library yet (no phone has it).
+- Windows (WPD) sends the date with the upload since #67/#68's WPD fix; it lands exactly when PC and phone share a
+  zone.
 
 ### #43: POCO X6 Pro 5G results, a Linux cancel wedge, and a WPD wait (opened 2026-10-22)
 

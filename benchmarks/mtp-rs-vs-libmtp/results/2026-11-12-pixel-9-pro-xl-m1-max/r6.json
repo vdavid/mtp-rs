@@ -1,0 +1,103 @@
+{
+  "run": {
+    "date": "2026-11-12 10:37 +01:00",
+    "os": "macOS 27.0.1",
+    "host": "Apple M1 Max (MacBookPro18,2)",
+    "mtp_rs_version": "0.38.1",
+    "git_rev": "8df56d43811b",
+    "libmtp_version": "1.1.23",
+    "device": "Google Pixel 9 Pro XL",
+    "device_firmware": "1.0",
+    "usb_speed": "USB 3.2 Gen 1 (5 Gbit/s)",
+    "load_start": "3.07 3.46 4.04 (10 cores)",
+    "load_end": "3.88 3.83 4.06 (10 cores)"
+  },
+  "results": [
+    {
+      "backend": "MtpRs",
+      "operation": {
+        "DownloadWindowed": {
+          "window_mib": 8
+        }
+      },
+      "file_size_bytes": 1000000000,
+      "durations": [
+        {
+          "secs": 7,
+          "nanos": 618577083
+        },
+        {
+          "secs": 7,
+          "nanos": 719886833
+        },
+        {
+          "secs": 7,
+          "nanos": 837318667
+        },
+        {
+          "secs": 9,
+          "nanos": 217387250
+        },
+        {
+          "secs": 8,
+          "nanos": 44996833
+        },
+        {
+          "secs": 8,
+          "nanos": 366816125
+        },
+        {
+          "secs": 7,
+          "nanos": 681766666
+        },
+        {
+          "secs": 8,
+          "nanos": 385944416
+        }
+      ]
+    },
+    {
+      "backend": "MtpRs",
+      "operation": {
+        "DownloadWindowed": {
+          "window_mib": 32
+        }
+      },
+      "file_size_bytes": 1000000000,
+      "durations": [
+        {
+          "secs": 6,
+          "nanos": 409007125
+        },
+        {
+          "secs": 6,
+          "nanos": 502280375
+        },
+        {
+          "secs": 6,
+          "nanos": 575689959
+        },
+        {
+          "secs": 6,
+          "nanos": 273291375
+        },
+        {
+          "secs": 6,
+          "nanos": 528237292
+        },
+        {
+          "secs": 6,
+          "nanos": 469289333
+        },
+        {
+          "secs": 6,
+          "nanos": 457709875
+        },
+        {
+          "secs": 6,
+          "nanos": 524589291
+        }
+      ]
+    }
+  ]
+}

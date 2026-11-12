@@ -7,7 +7,7 @@
 [![MSRV](https://img.shields.io/badge/MSRV-1.90-blue)](https://blog.rust-lang.org/2025/09/18/Rust-1.90.0/)
 
 A pure-Rust, async MTP/PTP library.
-No C dependencies, consistently faster than libmtp (up to 4x for large transfers), and way more predictable.
+No C dependencies, and faster than libmtp on big files: 1.3x on 1 GB downloads and 1.8x on 1 GB uploads to a Pixel 9 Pro XL.
 Lists big Android folders fast: 3,248 photos in 0.4 s.
 
 Talk to Android phones, e-book readers incl. Kindle, and digital cameras over USB.
@@ -559,27 +559,40 @@ and any issues encountered.
 
 ## Benchmarks
 
-mtp-rs is faster than libmtp across every operation we tested, and the gap widens with file size. On a Google Pixel 9
-Pro XL (USB, 5 warmup + 10 measured runs per scenario):
+Medians against libmtp 1.1.23, release builds, 5 warmup + 10 measured runs per row. Throughput depends on the host
+as well as the phone, so each block names both. Raw results, the exact commands, and notes are linked under each one.
+
+### Google Pixel 9 Pro XL, Apple M1 Max
+
+Android 17, USB 3.2 Gen 1 (5 Gbit/s), macOS 27.0.1, mtp-rs 0.38.1 at `8df56d4`, 2026-11-12.
+[Results](../../benchmarks/mtp-rs-vs-libmtp/results/2026-11-12-pixel-9-pro-xl-m1-max/).
 
 | Operation  | Size   | mtp-rs  | libmtp  | Speedup   |
 |------------|--------|---------|---------|-----------|
-| download   | 1 MB   | 33.9ms  | 45.3ms  | **1.34x** |
-| download   | 10 MB  | 258.3ms | 391.1ms | **1.51x** |
-| download   | 100 MB | 2.447s  | 9.897s  | **4.04x** |
-| upload     | 1 MB   | 76.1ms  | 115.0ms | **1.51x** |
-| upload     | 10 MB  | 326.9ms | 345.1ms | **1.06x** |
-| upload     | 100 MB | 2.388s  | 2.796s  | **1.17x** |
-| list_files | -      | 15.5ms  | 24.9ms  | **1.61x** |
+| download   | 1 MB   | 24.0ms  | 25.3ms  | 1.05x     |
+| download   | 10 MB  | 84.3ms  | 89.7ms  | 1.06x     |
+| download   | 100 MB | 679.0ms | 836.9ms | **1.23x** |
+| download   | 1 GB   | 5.967s  | 7.977s  | **1.34x** |
+| upload     | 1 MB   | 82.9ms  | 71.6ms  | 0.86x     |
+| upload     | 10 MB  | 151.2ms | 153.2ms | 1.01x     |
+| upload     | 100 MB | 485.0ms | 851.3ms | **1.76x** |
+| upload     | 1 GB   | 4.203s  | 7.531s  | **1.79x** |
+| list_files | -      | 23.8ms  | 33.9ms  | **1.42x** |
 
-Beyond raw speed, mtp-rs is far more predictable. At 100 MB downloads, libmtp's individual runs ranged from 3.7s to
-18.2s (std dev 4.6s, that's 47% of its median). mtp-rs stayed within a 15ms band (std dev 4.7ms, 0.2% of its median).
-In practice this means a 100 MB transfer with mtp-rs reliably takes ~2.4s, while with libmtp it could take anywhere from
-4s to 18s.
+At 1 GB that's 168 MB/s down and 238 MB/s up for mtp-rs, against 125 and 133 MB/s for libmtp. The mtp-rs uploads
+carry no date, so they went in windows (see [Upload a file](#upload-a-file)).
 
-For large-file throughput, a separate test uploaded an 8.06 GB file to a Pixel 9 Pro XL over USB 3.2 in 98.5s,
-sustained **83.8 MB/s**. Partial reads at offsets 2 GB, 4.1 GB, and near-EOF all returned correct bytes, confirming
-`GetPartialObject64` works end-to-end on Android.
+Paced downloads keep the phone usable during a big copy. Listing the storage root halfway through a 4 GB download
+(7 runs):
+
+| Download                 | Download time | Listing waited |
+|--------------------------|---------------|----------------|
+| held open                | 24.0s         | 12.1s          |
+| default (~2 s windows)   | 24.6s         | 0.78s          |
+| fixed 32 MiB windows     | 25.0s         | 0.11s          |
+| fixed 8 MiB windows      | 33.4s         | 0.06s          |
+
+The default costs 2.4% of the download's time and cuts the listing's wait from 12 s to under a second.
 
 ### Folder listings
 

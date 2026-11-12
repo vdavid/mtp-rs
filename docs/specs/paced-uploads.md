@@ -16,8 +16,12 @@ uploads; this doc keeps the evidence. Decisions (David, 2026-11-11):
   first held-open upload dated more than three days from now (no device list); a Pixel keeps them, a Galaxy S23
   Ultra drops them, so Samsung gets windows from its second dated upload on. An explicit pacing always wins.
   Windows lose the file's date on Android, and nothing can set it afterwards (§ Dates (#68)). The matching
-  rule and its tolerances are in AGENTS.md § Paced uploads. Not hardware-verified yet:
-  `test_default_upload_pacing_keeps_dates` in `tests/integration.rs` is the check.
+  rule and its tolerances are in AGENTS.md § Paced uploads. Hardware-verified on the Pixel
+  (`test_default_upload_pacing_keeps_dates`, § The built API on hardware); the Galaxy S23 Ultra run is still owed.
+- **Upstream**: an AOSP patch lets `SetObjectPropValue(DateModified)` set the date, so a windowed upload could keep
+  it ([bug 584828271](https://issuetracker.google.com/issues/584828271),
+  [change 4435411](https://android-review.googlesource.com/c/platform/frameworks/base/+/4435411)). Host order
+  with it: `EndEditObject`, then `SetObjectPropValue(DateModified)`. Not built here: no released phone has it.
 - A stopped windowed upload returns `UploadError::partial: Some(handle)` with a clean prefix; the library doesn't
   delete it. On a stop: truncate to what was acknowledged, then `EndEditObject`.
 - **A dropped windowed upload is deleted** by the next operation (truncate, end, delete): nobody holds its handle,
@@ -255,7 +259,10 @@ The options #68 weighed (David chose (a), built as `UploadPacing::KeepDates`):
 - (c) A size threshold.
 - (d) An AOSP patch: let `setObjectProperty` accept `DateModified` (`File.setLastModified`) and mark it writable in
   the prop desc, a few lines in `MtpDatabase.java`. It would also let a host fix Samsung's held-open uploads if
-  Samsung picked it up. Years to reach phones, so it only comes with one of the others.
+  Samsung picked it up. Years to reach phones, so it only comes with one of the others. Proposed upstream as
+  [change 4435411](https://android-review.googlesource.com/c/platform/frameworks/base/+/4435411)
+  ([bug 584828271](https://issuetracker.google.com/issues/584828271)); a host would send
+  `SetObjectPropValue(DateModified)` after `EndEditObject`, since the edit's writes move the date.
 - (e) The app decides per transfer.
 
 ## The built API on hardware
@@ -288,6 +295,21 @@ Pixel 9 Pro XL, Android 17, macOS/nusb, USB 3 (5 Gb/s), 2026-11-11 evening, the 
   in `ls --json` (`2019-06-14T10:23:00`), `ls -l`, and `stat` on the phone; `get` of it and of four existing
   files (summer and winter dates) set the host mtime to the phone's to the second; a folder `get` dated the folder
   too.
+
+2026-11-12, same phone, from an M1 Max host (macOS 27.0.1, nusb, 5 Gb/s), with `UploadPacing::KeepDates` the
+default:
+
+- **`test_default_upload_pacing_keeps_dates`** (16 MiB each, 2 runs): both dated uploads went held open and came
+  back dated 2019-06-14 12:23 (the sent 10:23 UTC as phone-local CEST), the undated one went in windows, and the
+  session's verdict was "keeps upload dates: true".
+- **CLI `put`** with the new default (4 KiB and 50 MB files dated 2019-06-14 10:23 local, 1 run): both kept the date
+  in `ls --long` and `--json`, and `get` brought it back to the host file, bytes identical.
+- **`test_paced_download_with_listings_from_another_task`** (1 GiB, a listing every 250 ms from another task, 2
+  runs): held open, the one listing waited 8.0–8.6 s; default pacing, 4 listings, median 2.0–2.3 s, max 2.3–2.5 s,
+  so one window each. Throughput is the test's own (it checks every byte): 124–132 MB/s either way.
+- **`test_paced_upload_round_trip_with_listings`** (1 run, after the call-guard fix): held open 204 MB/s, the
+  listing waited 5.1 s; `MaxWindowTime(2 s)` 210 MB/s, 3 listings, median 1.76 s, max 1.79 s. Held open kept the
+  2020 date, windowed was dated now.
 
 ## Desk research
 

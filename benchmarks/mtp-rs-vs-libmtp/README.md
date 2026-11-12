@@ -43,7 +43,7 @@ With `--serial`, mtp-rs opens that device by serial. libmtp's raw device list ha
 
 ### Why these sizes
 
-- **1 GB in `--sizes`**: paced downloads read in windows of about two seconds (the first one is 8 MiB). At the ~268 MB/s a Pixel 9 Pro XL reaches on USB 3, a 100 MB file is the first window plus one more, so it can't show what pacing costs. 1 GB takes about three windows.
+- **1 GB in `--sizes`**: paced downloads read in windows of about two seconds (the first one is 8 MiB). At the ~168–268 MB/s a Pixel 9 Pro XL reaches on USB 3 (the host decides where: an M1 Max at the low end, an M3 Max at the high one), a 100 MB file is the first window plus one more, so it can't show what pacing costs. 1 GB takes about three windows.
 - **4 GB for `list_during`**: the listing is issued halfway, so held open it waits for the rest of the file. At 268 MB/s that's ~7.5 s for 4 GB against at most one ~2 s window paced; at 1 GB the two would look alike (~1.9 s left, one window's worth). 4 GB also stays under 4 GiB, so the run doesn't cross into the over-4-GiB size path as well. On USB 2 (~40 MB/s) each 4 GB download takes ~100 s, so expect a long run there.
 
 ### Listing during a download (`list_during`)

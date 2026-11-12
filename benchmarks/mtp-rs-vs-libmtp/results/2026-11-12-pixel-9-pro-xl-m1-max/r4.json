@@ -1,0 +1,111 @@
+{
+  "run": {
+    "date": "2026-11-12 10:30 +01:00",
+    "os": "macOS 27.0.1",
+    "host": "Apple M1 Max (MacBookPro18,2)",
+    "mtp_rs_version": "0.38.1",
+    "git_rev": "8df56d43811b",
+    "libmtp_version": "1.1.23",
+    "device": "Google Pixel 9 Pro XL",
+    "device_firmware": "1.0",
+    "usb_speed": "USB 3.2 Gen 1 (5 Gbit/s)",
+    "load_start": "2.28 4.23 4.59 (10 cores)",
+    "load_end": "4.30 3.80 4.31 (10 cores)"
+  },
+  "results": [
+    {
+      "backend": "MtpRs",
+      "operation": "Upload",
+      "file_size_bytes": 1000000000,
+      "durations": [
+        {
+          "secs": 3,
+          "nanos": 882537250
+        },
+        {
+          "secs": 3,
+          "nanos": 978741542
+        },
+        {
+          "secs": 4,
+          "nanos": 188245167
+        },
+        {
+          "secs": 4,
+          "nanos": 9864625
+        },
+        {
+          "secs": 4,
+          "nanos": 218492625
+        },
+        {
+          "secs": 4,
+          "nanos": 46862583
+        },
+        {
+          "secs": 4,
+          "nanos": 447210625
+        },
+        {
+          "secs": 4,
+          "nanos": 322559083
+        },
+        {
+          "secs": 4,
+          "nanos": 802443208
+        },
+        {
+          "secs": 4,
+          "nanos": 883519042
+        }
+      ]
+    },
+    {
+      "backend": "Libmtp",
+      "operation": "Upload",
+      "file_size_bytes": 1000000000,
+      "durations": [
+        {
+          "secs": 7,
+          "nanos": 514100333
+        },
+        {
+          "secs": 7,
+          "nanos": 590885583
+        },
+        {
+          "secs": 7,
+          "nanos": 520871875
+        },
+        {
+          "secs": 7,
+          "nanos": 543495791
+        },
+        {
+          "secs": 7,
+          "nanos": 480473500
+        },
+        {
+          "secs": 7,
+          "nanos": 452925917
+        },
+        {
+          "secs": 7,
+          "nanos": 541862125
+        },
+        {
+          "secs": 7,
+          "nanos": 566948125
+        },
+        {
+          "secs": 7,
+          "nanos": 702193792
+        },
+        {
+          "secs": 7,
+          "nanos": 436597000
+        }
+      ]
+    }
+  ]
+}

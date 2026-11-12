@@ -741,6 +741,16 @@ Rules the hardware set; keep all of them:
   moves it to now. Hardware-verified on a Pixel 9 Pro XL, file system mtimes read on the phone (macOS/nusb,
   2026-11-11, `android_edit_probe dates`); details in the spec. A Pixel keeps the sent date on a held-open
   upload, a Galaxy S23 Ultra never does. This is why `KeepDates` holds dated uploads open.
+  **The `KeepDates` default is hardware-verified on the Pixel** (`test_default_upload_pacing_keeps_dates`,
+  M1 Max host, macOS/nusb, 2026-11-12, 2 runs: dated uploads held open and kept 2019-06-14, the undated one
+  windowed, verdict `Kept`; CLI `put` kept the date too). The Galaxy S23 Ultra run, which should end in
+  `Dropped` and windows from the second dated upload on, is still owed. **Upstream**: an AOSP patch makes
+  `SetObjectPropValue(DateModified)` set the date
+  ([bug 584828271](https://issuetracker.google.com/issues/584828271),
+  [change 4435411](https://android-review.googlesource.com/c/platform/frameworks/base/+/4435411)). With it a
+  windowed upload could keep its date by sending `EndEditObject`, then `SetObjectPropValue(DateModified)`
+  (the edit's writes move the date, so the order matters). Not built: no shipped phone has it, and old ones
+  never will, so `KeepDates` stays the default either way.
 - A source shorter or longer than `NewObjectInfo::size` stops the upload (never a short window).
 - The `SendPartialObject` response parameter is a server bug (length minus the first 16 KiB read), never a
   byte count.
