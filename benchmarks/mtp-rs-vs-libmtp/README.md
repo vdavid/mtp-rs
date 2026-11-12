@@ -57,7 +57,7 @@ The point of paced downloads is that the device stays usable while a big file co
 
 ### What the report records
 
-Every output starts with the run's context, so a table can be trusted on its own: date, host OS and version, mtp-rs version and git commit (`-dirty` with local changes), the system libmtp version, the device's name and firmware, and the negotiated USB link speed (the slowest of port, cable, and device, from `MtpDeviceInfo::speed`). A USB 3 phone on a USB 2 cable reports USB 2, which is the first thing to check when numbers look low. `csv` writes the context as `#` comment lines; `json` writes `{ "run": {...}, "results": [...] }`.
+Every output starts with the run's context, so a table can be trusted on its own: date, host machine (CPU, and the model identifier on macOS), host OS and version, mtp-rs version and git commit (`-dirty` with local changes), the system libmtp version, the device's name and firmware, and the negotiated USB link speed (the slowest of port, cable, and device, from `MtpDeviceInfo::speed`). A USB 3 phone on a USB 2 cable reports USB 2, which is the first thing to check when numbers look low. `csv` writes the context as `#` comment lines; `json` writes `{ "run": {...}, "results": [...] }`.
 
 ### Example commands
 
@@ -100,7 +100,7 @@ cargo run --release -p mtp-bench -- --save results.json
 
 ### Long runs in chunks
 
-The full set takes most of an hour on USB 3, longer on USB 2. To run it in pieces (to watch the host's load between them, or to stay under a shell timeout), save each piece with `--save` and merge them with `--render`, which opens no device and refuses pieces from different commits, devices, or links. `list_during_held`, `list_during_paced`, and `list_during_windowed` select one pacing of `list_during` each. Keep each scenario in a single piece: a scenario split across two pieces shows up twice.
+The full set takes most of an hour on USB 3, longer on USB 2. To run it in pieces (to watch the host's load between them, or to stay under a shell timeout), save each piece with `--save` and merge them with `--render`, which opens no device, refuses pieces from different devices, links, hosts, or versions, and warns about pieces from different commits (the header then lists them all). `list_during_held`, `list_during_paced`, and `list_during_windowed` select one pacing of `list_during` each. Keep each scenario in a single piece: a scenario split across two pieces shows up twice.
 
 ```bash
 B="./target/release/mtp-bench --serial <serial> --output markdown"

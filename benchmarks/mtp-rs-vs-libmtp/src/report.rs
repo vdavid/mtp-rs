@@ -333,7 +333,7 @@ pub struct JsonReport {
 
 /// Merge saved JSON reports (from runs split into chunks) into one: their results in order,
 /// the first one's context, with its end load taken from the last. Refuses reports from
-/// different versions, devices, links, or OSes, since one table would then mix them. Reports
+/// different versions, devices, links, hosts, or OSes, since one table would then mix them. Reports
 /// from different code commits merge with a warning, and the header lists every commit, so a
 /// reader sees the mix: a fix to the bench's own plumbing between chunks shouldn't cost a rerun.
 pub fn merge_reports(reports: Vec<JsonReport>) -> Result<(RunInfo, Vec<BenchmarkResult>), String> {
@@ -369,6 +369,7 @@ pub fn merge_reports(reports: Vec<JsonReport>) -> Result<(RunInfo, Vec<Benchmark
         same(&info.device, &r.run.device, "device")?;
         same(&info.usb_speed, &r.run.usb_speed, "USB link")?;
         same(&info.os, &r.run.os, "host OS")?;
+        same(&info.host, &r.run.host, "host")?;
         info.load_end = r.run.load_end;
         results.extend(r.results);
     }
@@ -547,6 +548,10 @@ mod tests {
         other.run.device = "Samsung Galaxy S23 Ultra".into();
         let err = merge_reports(vec![chunk(sample_results(), "2.0"), other]).unwrap_err();
         assert!(err.contains("device"), "{err}");
+        let mut elsewhere = chunk(sample_results(), "2.0");
+        elsewhere.run.host = "Apple M3 Max (Mac15,9)".into();
+        let err = merge_reports(vec![chunk(sample_results(), "2.0"), elsewhere]).unwrap_err();
+        assert!(err.contains("host"), "{err}");
         assert!(merge_reports(vec![]).is_err());
 
         // A different commit merges, and the header names both.

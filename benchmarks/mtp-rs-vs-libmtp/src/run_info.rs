@@ -29,6 +29,11 @@ pub struct RunInfo {
     pub date: String,
     /// Host OS and version, for example `macOS 27.0.1`.
     pub os: String,
+    /// The host machine: CPU, plus the model identifier on macOS, for example
+    /// `Apple M1 Max (MacBookPro18,2)`. Throughput on USB 3 depends on the host's controller and
+    /// CPU, so results from two hosts aren't one table. Empty in reports saved before it existed.
+    #[serde(default)]
+    pub host: String,
     /// mtp-rs crate version under test.
     pub mtp_rs_version: String,
     /// Git commit of the checkout, with `-dirty` when tracked files had local changes.
@@ -65,6 +70,7 @@ impl RunInfo {
                 .format("%Y-%m-%d %H:%M %:z")
                 .to_string(),
             os: host_os(),
+            host: host_machine(),
             mtp_rs_version: mtp_rs_version().to_string(),
             git_rev: git_rev(),
             libmtp_version: command_output("pkg-config", &["--modversion", "libmtp"])
@@ -92,6 +98,7 @@ impl RunInfo {
     pub fn lines(&self) -> Vec<String> {
         vec![
             format!("Date:       {}", self.date),
+            format!("Host:       {}", self.host),
             format!("Host OS:    {}", self.os),
             format!("mtp-rs:     {} ({})", self.mtp_rs_version, self.git_rev),
             format!("libmtp:     {}", self.libmtp_version),
@@ -173,6 +180,27 @@ fn host_os() -> String {
         _ => command_output("uname", &["-sr"]),
     };
     detail.unwrap_or_else(|| std::env::consts::OS.to_string())
+}
+
+fn host_machine() -> String {
+    let cpu = match std::env::consts::OS {
+        "macos" => command_output("sysctl", &["-n", "machdep.cpu.brand_string"]),
+        "linux" => std::fs::read_to_string("/proc/cpuinfo").ok().and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("model name"))
+                .and_then(|l| l.split_once(':'))
+                .map(|(_, v)| v.trim().to_string())
+        }),
+        _ => std::env::var("PROCESSOR_IDENTIFIER").ok(),
+    }
+    .unwrap_or_else(|| "unknown CPU".to_string());
+    match std::env::consts::OS {
+        "macos" => match command_output("sysctl", &["-n", "hw.model"]) {
+            Some(model) => format!("{cpu} ({model})"),
+            None => cpu,
+        },
+        _ => cpu,
+    }
 }
 
 /// The checkout's commit, from the bench crate's own directory so it works from any cwd.
@@ -263,6 +291,7 @@ mod tests {
         let info = RunInfo {
             date: "2026-11-11 10:00 +01:00".into(),
             os: "macOS 27.0.1".into(),
+            host: "Apple M1 Max (MacBookPro18,2)".into(),
             mtp_rs_version: "0.38.0".into(),
             git_rev: "abc123".into(),
             libmtp_version: "1.1.23".into(),
@@ -277,6 +306,7 @@ mod tests {
         for needle in [
             "2026-11-11",
             "macOS 27.0.1",
+            "Apple M1 Max (MacBookPro18,2)",
             "0.38.0 (abc123)",
             "1.1.23",
             "Pixel 9 Pro XL (MTP device version 1.0)",
