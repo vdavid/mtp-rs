@@ -5,10 +5,11 @@ members = [
     "crates/mtp-rs-cli",
     "benchmarks/mtp-rs-vs-libmtp",
 ]
-# `mtp-bench` depends on `libmtp-sys` (C library bindings via pkg-config).
-# It's a manual dev tool, not a CI target. Excluding it from default-members
-# means bare `cargo test` / `cargo clippy` skip it. Build it explicitly with
-# `cargo test -p mtp-bench` when you have libmtp installed locally.
+# `mtp-bench` depends on `libmtp-sys` (C library bindings via pkg-config) through
+# its default `libmtp` feature (never on Windows). It's a manual dev tool, not a
+# CI target. Excluding it from default-members means bare `cargo test` /
+# `cargo clippy` skip it. Build it explicitly with `cargo test -p mtp-bench`
+# (add `--no-default-features` without libmtp installed).
 default-members = [
     "crates/mtp-rs",
     "crates/mtp-rs-cli",

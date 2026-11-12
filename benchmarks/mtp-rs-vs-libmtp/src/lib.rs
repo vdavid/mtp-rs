@@ -1,3 +1,4 @@
+#[cfg(has_libmtp)]
 pub mod libmtp_backend;
 pub mod mtp_rs_backend;
 pub mod report;

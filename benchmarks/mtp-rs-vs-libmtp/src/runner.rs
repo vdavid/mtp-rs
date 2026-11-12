@@ -1,3 +1,4 @@
+#[cfg(has_libmtp)]
 use crate::libmtp_backend::LibmtpBackend;
 use crate::mtp_rs_backend::MtpRsBackend;
 use crate::types::{format_bytes, BackendName, BenchmarkConfig, BenchmarkResult, Operation};
@@ -50,6 +51,7 @@ pub async fn run_benchmarks(
                         )
                         .await?
                     }
+                    #[cfg(has_libmtp)]
                     BackendName::Libmtp => {
                         // Run the entire libmtp scenario on a blocking thread since
                         // libmtp-rs types are not Send and all calls are synchronous.
@@ -66,6 +68,16 @@ pub async fn run_benchmarks(
                             })
                             .await?;
                         r.map_err(|e| -> Box<dyn std::error::Error> { e })?
+                    }
+                    // `--backends` refuses libmtp in such a build; this is the backstop.
+                    #[cfg(not(has_libmtp))]
+                    BackendName::Libmtp => {
+                        let _ = mtp_serial;
+                        return Err(format!(
+                            "no libmtp backend in this build ({})",
+                            crate::types::NO_LIBMTP_REASON
+                        )
+                        .into());
                     }
                 };
 
@@ -205,6 +217,7 @@ async fn run_mtp_rs_scenario(
 
 /// Run a single scenario with the libmtp (sync) backend.
 /// This function is meant to be called from `spawn_blocking`.
+#[cfg(has_libmtp)]
 fn run_libmtp_scenario(
     serial: Option<&str>,
     mtp_serial: Option<&str>,

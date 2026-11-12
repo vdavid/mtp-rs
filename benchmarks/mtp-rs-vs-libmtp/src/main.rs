@@ -3,8 +3,8 @@ use mtp_bench::report;
 use mtp_bench::run_info::RunInfo;
 use mtp_bench::runner::run_benchmarks;
 use mtp_bench::types::{
-    format_bytes, parse_sizes, BackendName, BenchmarkConfig, Operation, Pacing,
-    DEFAULT_LIST_DURING_SIZES, DEFAULT_SIZES,
+    format_bytes, parse_sizes, BackendName, BenchmarkConfig, Operation, Pacing, DEFAULT_BACKENDS,
+    DEFAULT_LIST_DURING_SIZES, DEFAULT_SIZES, LIBMTP_BUILT_IN, NO_LIBMTP_REASON,
 };
 use std::time::Duration;
 
@@ -43,8 +43,9 @@ struct Cli {
     #[arg(long, default_value = "8")]
     windows: String,
 
-    /// Comma-separated backends: mtp-rs,libmtp.
-    #[arg(long, default_value = "mtp-rs,libmtp")]
+    /// Comma-separated backends: mtp-rs,libmtp. Defaults to every backend this build has (no
+    /// libmtp on Windows, or without the `libmtp` feature).
+    #[arg(long, default_value = DEFAULT_BACKENDS)]
     backends: String,
 
     /// Output format: table, markdown, csv, json.
@@ -135,7 +136,11 @@ fn parse_backends(input: &str) -> Result<Vec<BackendName>, String> {
         .split(',')
         .map(|s| match s.trim().to_lowercase().as_str() {
             "mtp-rs" | "mtprs" => Ok(BackendName::MtpRs),
-            "libmtp" => Ok(BackendName::Libmtp),
+            "libmtp" if LIBMTP_BUILT_IN => Ok(BackendName::Libmtp),
+            "libmtp" => Err(format!(
+                "This mtp-bench has no libmtp backend ({NO_LIBMTP_REASON}). \
+                 Use --backends mtp-rs"
+            )),
             other => Err(format!(
                 "Unknown backend '{}'. Expected: mtp-rs, libmtp",
                 other
@@ -289,7 +294,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    info.load_end = mtp_bench::run_info::load_average();
+    info.finish();
 
     if results.is_empty() {
         eprintln!("No results collected.");
@@ -376,6 +381,22 @@ mod tests {
         let ops = parse_operations("download, list,windowed", &[8, 32]).unwrap();
         assert_eq!(ops.len(), 4);
         assert!(parse_operations("nope", &[8]).is_err());
+    }
+
+    #[test]
+    fn the_default_backends_are_the_built_in_ones_and_a_missing_libmtp_says_why() {
+        assert_eq!(
+            parse_backends(DEFAULT_BACKENDS).unwrap(),
+            BackendName::available()
+        );
+        let both = parse_backends("mtp-rs,libmtp");
+        if LIBMTP_BUILT_IN {
+            assert_eq!(both.unwrap().len(), 2);
+        } else {
+            let err = both.unwrap_err();
+            assert!(err.contains(NO_LIBMTP_REASON), "{err}");
+            assert!(err.contains("--backends mtp-rs"), "{err}");
+        }
     }
 
     #[test]

@@ -38,7 +38,8 @@ crates/
     tests/cli.rs             # Cross-process tests via the built binary + virtual device
     docs/cli.md              # Full command reference
 benchmarks/
-  mtp-rs-vs-libmtp/          # Throughput vs libmtp comparison (not published)
+  mtp-rs-vs-libmtp/          # Throughput vs libmtp comparison (not published). libmtp is the default
+                             # `libmtp` feature, never built on Windows (mtp-rs only there, via WPD)
 docs/                        # Protocol, architecture, debugging, release process
 ```
 

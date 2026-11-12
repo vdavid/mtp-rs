@@ -213,7 +213,35 @@ impl MtpRsBackend {
 /// Open the device with this serial, or with no serial the only MTP device connected. Several
 /// devices and no serial is an error rather than a pick: opening the wrong phone could disturb
 /// whatever else is using it.
+///
+/// On Windows a phone is opened through WPD, whose serial is the MTP one (a Pixel's is 32 hex
+/// digits), not the USB serial `mtp-rs devices` prints and `--serial` takes. So there a serial is
+/// looked up in the USB listing and opened by its location, which `MtpDeviceBuilder` maps to the
+/// WPD device by VID/PID (and the USB serial, when two identical models are plugged in). A serial
+/// the listing doesn't know is tried as a WPD serial. Without a serial, the one listed device is
+/// opened by location too, the way the CLI does, so the report's link speed (from the listing)
+/// is the opened device's.
 pub async fn open_device(serial: Option<&str>) -> Result<MtpDevice, Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    {
+        let listed = MtpDevice::list_devices()?;
+        let location = match serial {
+            Some(s) => listed
+                .iter()
+                .find(|d| d.serial_number.as_deref() == Some(s))
+                .map(|d| d.location_id),
+            None => {
+                check_single_device(listed.len())?;
+                Some(listed[0].location_id)
+            }
+        };
+        match (location, serial) {
+            (Some(location), _) => Ok(MtpDevice::open_by_location(location).await?),
+            (None, Some(s)) => Ok(MtpDevice::open_by_serial(s).await?),
+            (None, None) => unreachable!("no serial means one listed device"),
+        }
+    }
+    #[cfg(not(windows))]
     match serial {
         Some(s) => Ok(MtpDevice::open_by_serial(s).await?),
         None => {

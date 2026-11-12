@@ -11,6 +11,34 @@ pub enum BackendName {
     Libmtp,
 }
 
+/// Whether this build has the libmtp baseline: the `libmtp` feature, and not Windows.
+pub const LIBMTP_BUILT_IN: bool = cfg!(has_libmtp);
+
+/// Why a build has no libmtp, for errors and the report.
+pub const NO_LIBMTP_REASON: &str = if cfg!(windows) {
+    "libmtp isn't built on Windows"
+} else {
+    "built without the `libmtp` feature"
+};
+
+/// `--backends`' default: every backend this build has.
+pub const DEFAULT_BACKENDS: &str = if LIBMTP_BUILT_IN {
+    "mtp-rs,libmtp"
+} else {
+    "mtp-rs"
+};
+
+impl BackendName {
+    /// The backends this build can run.
+    pub fn available() -> Vec<BackendName> {
+        let mut all = vec![BackendName::MtpRs];
+        if LIBMTP_BUILT_IN {
+            all.push(BackendName::Libmtp);
+        }
+        all
+    }
+}
+
 impl fmt::Display for BackendName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

@@ -6,6 +6,14 @@ publish = false
 license = "MIT OR Apache-2.0"
 description = "Benchmark comparing mtp-rs (pure Rust) vs libmtp-rs (C library) for MTP file transfers"
 
+[features]
+# The libmtp baseline. On by default, so `cargo run -p mtp-bench` compares both backends wherever
+# libmtp exists. It needs the system libmtp through `pkg-config` (libmtp-sys's build script), so
+# `--no-default-features` builds an mtp-rs-only bench on a Unix box without it. On Windows the
+# dependency itself is left out (below): the feature does nothing there, and no flag is needed.
+default = ["libmtp"]
+libmtp = ["dep:libmtp-rs"]
+
 [[bin]]
 name = "mtp-bench"
 path = "src/main.rs"
@@ -13,9 +21,6 @@ path = "src/main.rs"
 [dependencies]
 # The crate under test
 mtp-rs = { path = "../../crates/mtp-rs" }
-
-# C-library baseline
-libmtp-rs = "0.7"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -34,8 +39,13 @@ comfy-table = "7"
 bytes = "1"
 futures = "0.3"
 
-# Needed by libmtp-rs FileMetadata (DateTime<Utc>)
+# Run dates, and libmtp-rs FileMetadata (DateTime<Utc>)
 chrono = "0.4"
+
+# C-library baseline, behind the `libmtp` feature. Never on Windows: there's no libmtp that
+# `pkg-config` finds there, and Windows reaches phones through WPD, so the bench is mtp-rs only.
+[target.'cfg(not(windows))'.dependencies]
+libmtp-rs = { version = "0.7", optional = true }
 
 [dev-dependencies]
 # Unit tests drive the mtp-rs backend against the in-process virtual device (no hardware).
