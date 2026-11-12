@@ -1,0 +1,157 @@
+{
+  "run": {
+    "date": "2026-11-12 11:53 +01:00",
+    "os": "Windows 11 Pro 25H2 (build 26200.9974)",
+    "host": "11th Gen Intel(R) Core(TM) i3-1115G4 @ 3.00GHz (Dell Inc. Latitude 3420)",
+    "mtp_rs_version": "0.38.1",
+    "git_rev": "d3d2e97787c7 (at build time)",
+    "libmtp_version": "not in this build (libmtp isn't built on Windows)",
+    "backends": "mtp-rs (no libmtp: libmtp isn't built on Windows)",
+    "mtp_rs_uploads": "in one piece (no windowed uploads on this device or backend)",
+    "device": "Google Pixel 9 Pro XL",
+    "device_firmware": "1.0",
+    "usb_speed": "USB 3.2 Gen 1 (5 Gbit/s)",
+    "load_start": "CPU 9% busy over 1 s (4 cores)",
+    "load_end": "CPU 36% busy over 1 s, 23% over the run (4 cores)"
+  },
+  "results": [
+    {
+      "backend": "MtpRs",
+      "operation": {
+        "ListDuringDownload": {
+          "pacing": "HeldOpen"
+        }
+      },
+      "file_size_bytes": 4000000000,
+      "durations": [
+        {
+          "secs": 25,
+          "nanos": 680220700
+        },
+        {
+          "secs": 25,
+          "nanos": 425759000
+        },
+        {
+          "secs": 24,
+          "nanos": 694024100
+        },
+        {
+          "secs": 25,
+          "nanos": 375063000
+        },
+        {
+          "secs": 23,
+          "nanos": 513416700
+        },
+        {
+          "secs": 24,
+          "nanos": 301236800
+        },
+        {
+          "secs": 23,
+          "nanos": 718439600
+        }
+      ],
+      "list_latencies": [
+        {
+          "secs": 11,
+          "nanos": 932143500
+        },
+        {
+          "secs": 12,
+          "nanos": 491740400
+        },
+        {
+          "secs": 12,
+          "nanos": 206524700
+        },
+        {
+          "secs": 12,
+          "nanos": 428910600
+        },
+        {
+          "secs": 11,
+          "nanos": 126566500
+        },
+        {
+          "secs": 12,
+          "nanos": 89598000
+        },
+        {
+          "secs": 11,
+          "nanos": 724707100
+        }
+      ]
+    },
+    {
+      "backend": "MtpRs",
+      "operation": {
+        "ListDuringDownload": {
+          "pacing": "Default"
+        }
+      },
+      "file_size_bytes": 4000000000,
+      "durations": [
+        {
+          "secs": 27,
+          "nanos": 996916000
+        },
+        {
+          "secs": 27,
+          "nanos": 963812900
+        },
+        {
+          "secs": 28,
+          "nanos": 304649400
+        },
+        {
+          "secs": 29,
+          "nanos": 43112400
+        },
+        {
+          "secs": 27,
+          "nanos": 586746600
+        },
+        {
+          "secs": 24,
+          "nanos": 485835700
+        },
+        {
+          "secs": 21,
+          "nanos": 830445900
+        }
+      ],
+      "list_latencies": [
+        {
+          "secs": 1,
+          "nanos": 222745600
+        },
+        {
+          "secs": 1,
+          "nanos": 140530600
+        },
+        {
+          "secs": 1,
+          "nanos": 777620100
+        },
+        {
+          "secs": 1,
+          "nanos": 470800700
+        },
+        {
+          "secs": 0,
+          "nanos": 28669100
+        },
+        {
+          "secs": 1,
+          "nanos": 875453600
+        },
+        {
+          "secs": 0,
+          "nanos": 644042800
+        }
+      ]
+    }
+  ]
+}

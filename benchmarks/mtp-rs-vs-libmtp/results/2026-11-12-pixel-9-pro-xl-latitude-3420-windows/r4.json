@@ -1,0 +1,66 @@
+{
+  "run": {
+    "date": "2026-11-12 11:42 +01:00",
+    "os": "Windows 11 Pro 25H2 (build 26200.9974)",
+    "host": "11th Gen Intel(R) Core(TM) i3-1115G4 @ 3.00GHz (Dell Inc. Latitude 3420)",
+    "mtp_rs_version": "0.38.1",
+    "git_rev": "d3d2e97787c7 (at build time)",
+    "libmtp_version": "not in this build (libmtp isn't built on Windows)",
+    "backends": "mtp-rs (no libmtp: libmtp isn't built on Windows)",
+    "mtp_rs_uploads": "in one piece (no windowed uploads on this device or backend)",
+    "device": "Google Pixel 9 Pro XL",
+    "device_firmware": "1.0",
+    "usb_speed": "USB 3.2 Gen 1 (5 Gbit/s)",
+    "load_start": "CPU 7% busy over 1 s (4 cores)",
+    "load_end": "CPU 7% busy over 1 s, 20% over the run (4 cores)"
+  },
+  "results": [
+    {
+      "backend": "MtpRs",
+      "operation": "Upload",
+      "file_size_bytes": 1000000000,
+      "durations": [
+        {
+          "secs": 4,
+          "nanos": 714452400
+        },
+        {
+          "secs": 4,
+          "nanos": 782389100
+        },
+        {
+          "secs": 4,
+          "nanos": 737207300
+        },
+        {
+          "secs": 4,
+          "nanos": 690341100
+        },
+        {
+          "secs": 4,
+          "nanos": 874471100
+        },
+        {
+          "secs": 4,
+          "nanos": 671323500
+        },
+        {
+          "secs": 4,
+          "nanos": 635606800
+        },
+        {
+          "secs": 5,
+          "nanos": 166307000
+        },
+        {
+          "secs": 5,
+          "nanos": 96993400
+        },
+        {
+          "secs": 4,
+          "nanos": 811596800
+        }
+      ]
+    }
+  ]
+}

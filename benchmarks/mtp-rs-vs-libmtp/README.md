@@ -151,17 +151,21 @@ The copied binary reports the commit it was built from (`(at build time)` in the
 
 ```powershell
 $S = "--serial", "<serial>", "--output", "markdown"
-.\mtp-bench.exe @S --sizes 1MB,10MB,100MB --warmup 5 --runs 10 --save r1.json
-.\mtp-bench.exe @S --sizes 1GB --operations download --warmup 5 --runs 10 --save r2.json
-.\mtp-bench.exe @S --sizes 1GB --operations upload --warmup 5 --runs 10 --save r4.json
-.\mtp-bench.exe @S --sizes 1GB --operations stream,paced --warmup 2 --runs 8 --save r5.json
-.\mtp-bench.exe @S --sizes 1GB --operations windowed --windows 8,32 --warmup 2 --runs 8 --save r6.json
+.\mtp-bench.exe @S --sizes "1MB,10MB,100MB" --warmup 5 --runs 10 --save r1.json
+.\mtp-bench.exe @S --sizes "1GB" --operations download --warmup 5 --runs 10 --save r2.json
+.\mtp-bench.exe @S --sizes "1GB" --operations upload --warmup 5 --runs 10 --save r4.json
+.\mtp-bench.exe @S --sizes "1GB" --operations stream,paced --warmup 2 --runs 8 --save r5.json
+.\mtp-bench.exe @S --sizes "1GB" --operations windowed --windows "8,32" --warmup 2 --runs 8 --save r6.json
 .\mtp-bench.exe @S --operations list_during_held,list_during_paced --warmup 1 --runs 7 --save r7.json
-.\mtp-bench.exe @S --operations list_during_windowed --windows 8,32 --warmup 1 --runs 7 --save r8.json
+.\mtp-bench.exe @S --operations list_during_windowed --windows "8,32" --warmup 1 --runs 7 --save r8.json
 .\mtp-bench.exe --render r1.json,r2.json,r4.json,r5.json,r6.json,r7.json,r8.json --output markdown
 ```
 
+**Quote the sizes.** PowerShell reads an unquoted `1MB` as the number 1,048,576, so `--sizes 1MB,10MB,100MB` measures 1, 10, and 100 MiB, and the rows don't line up with a run elsewhere. The banner's `Sizes:` line shows it: `10.5 MB` instead of `10.0 MB`.
+
 Close File Explorer windows on the phone while it runs: Explorer talks to the same WPD device, and its requests queue with the bench's.
+
+A full Windows run, with notes on what does and doesn't compare with the Mac runs: [results/2026-11-12-pixel-9-pro-xl-latitude-3420-windows](results/2026-11-12-pixel-9-pro-xl-latitude-3420-windows/).
 
 ## How it works
 

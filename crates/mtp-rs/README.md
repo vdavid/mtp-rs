@@ -559,12 +559,12 @@ and any issues encountered.
 
 ## Benchmarks
 
-Medians against libmtp 1.1.23, release builds, 5 warmup + 10 measured runs per row. Throughput depends on the host
-as well as the phone, so each block names both. Raw results, the exact commands, and notes are linked under each one.
+Medians from release builds, 5 warmup + 10 measured runs per row. Throughput depends on the host as well as the phone,
+so each block names both. Raw results, the exact commands, and notes are linked under each one.
 
 ### Google Pixel 9 Pro XL, Apple M1 Max
 
-Android 17, USB 3.2 Gen 1 (5 Gbit/s), macOS 27.0.1, mtp-rs 0.38.1 at `8df56d4`, 2026-11-12.
+Android 17, USB 3.2 Gen 1 (5 Gbit/s), macOS 27.0.1, mtp-rs 0.38.1 at `8df56d4`, against libmtp 1.1.23, 2026-11-12.
 [Results](../../benchmarks/mtp-rs-vs-libmtp/results/2026-11-12-pixel-9-pro-xl-m1-max/).
 
 | Operation  | Size   | mtp-rs  | libmtp  | Speedup   |
@@ -593,6 +593,40 @@ Paced downloads keep the phone usable during a big copy. Listing the storage roo
 | fixed 8 MiB windows      | 33.4s         | 0.06s          |
 
 The default costs 2.4% of the download's time and cuts the listing's wait from 12 s to under a second.
+
+### Google Pixel 9 Pro XL, Dell Latitude 3420 (Windows)
+
+Android 17, USB 3.2 Gen 1 (5 Gbit/s), Windows 11 Pro 25H2, Intel Core i3-1115G4, mtp-rs 0.38.1 at `d3d2e97` through the
+Windows MTP driver (WPD), 2026-11-12. [Results](../../benchmarks/mtp-rs-vs-libmtp/results/2026-11-12-pixel-9-pro-xl-latitude-3420-windows/).
+
+| Operation  | Size   | mtp-rs  |
+|------------|--------|---------|
+| download   | 1 MB   | 22.3ms  |
+| download   | 10 MB  | 93.1ms  |
+| download   | 100 MB | 705.4ms |
+| download   | 1 GB   | 6.521s  |
+| upload     | 1 MB   | 70.8ms  |
+| upload     | 10 MB  | 126.3ms |
+| upload     | 100 MB | 567.3ms |
+| upload     | 1 GB   | 4.760s  |
+| list_files | -      | 4.0ms   |
+
+At 1 GB that's 153 MB/s down and 210 MB/s up. There's no libmtp column: libmtp doesn't run on Windows. This doesn't
+compare row for row with the Mac block: it's a different host, uploads go out in one piece (WPD has no windowed
+uploads), and the driver answers the listing from its own cache.
+
+Listing the storage root halfway through a 4 GB download (7 runs):
+
+| Download                 | Download time | Listing waited |
+|--------------------------|---------------|----------------|
+| held open                | 24.7s         | 12.1s          |
+| default (~2 s windows)   | 28.0s         | 1.22s          |
+| fixed 32 MiB windows     | 29.8s         | 0.10s          |
+| fixed 8 MiB windows      | 35.7s         | 0.04s          |
+
+Pacing costs more on Windows: the default adds 13% to the download's time here, and cuts the listing's wait from 12 s
+to about a second. With a folder listing, a 4.8 MB photo, and its thumbnail read between every window, a 1 GiB file
+took 9.2 s, against 6.2 s held open with nothing else going on.
 
 ### Folder listings
 

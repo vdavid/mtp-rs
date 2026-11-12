@@ -1075,7 +1075,9 @@ semantics that differ from the USB/PTP backend, all hardware-verified on a Pixel
   same through `ls --json`, and `get` restored both mtimes; no upload failed. With the PC switched to Pacific time,
   the same 08:23Z file landed at 01:23 *phone* time: the driver converts neither way, so when PC and phone zones
   differ the phone gets the PC's wall clock, off by the zone difference, and a `get` on that PC still restores the
-  instant it sent. Nothing over WPD tells us the phone's zone; over USB a `Z` date avoids this.
+  instant it sent. Nothing over WPD tells us the phone's zone; over USB a `Z` date avoids this. Same result on Windows
+  11 Pro 25H2 (Dell Latitude 3420, `d3d2e97`, 2026-11-12): both dates landed at 08:23Z and 09:23Z, listed as 10:23,
+  and `get` (file and folder) restored them.
 - **Forward-only resource streams**: `IStream::Seek` returns `E_NOTIMPL` on the Pixel. `stream_seek`
   falls back to read-and-discard, so ranged/resumed `download` (`ByteRange::From`/`Range`) and
   `read_range` stay correct (at the cost of reading the skipped prefix). Verified-seekable streams

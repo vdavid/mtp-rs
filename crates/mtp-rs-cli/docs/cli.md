@@ -200,8 +200,9 @@ Behavior:
   none, as the phone's local time. The device decides whether to keep it, and
   some don't: Samsung phones date every upload "now"
   ([#68](https://github.com/vdavid/mtp-rs/issues/68)). Check with
-  `mtp-rs ls --json`. On Windows, uploads through the Windows MTP driver don't
-  carry the date yet.
+  `mtp-rs ls --json`. On Windows, the Windows MTP driver passes the PC's local
+  time through as is, so the phone shows the right time only when it's in the
+  same zone as the PC.
 
 Uploads are streamed; large files are not buffered in memory.
 

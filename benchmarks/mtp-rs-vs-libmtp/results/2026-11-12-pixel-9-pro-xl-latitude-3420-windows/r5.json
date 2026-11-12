@@ -1,0 +1,97 @@
+{
+  "run": {
+    "date": "2026-11-12 11:44 +01:00",
+    "os": "Windows 11 Pro 25H2 (build 26200.9974)",
+    "host": "11th Gen Intel(R) Core(TM) i3-1115G4 @ 3.00GHz (Dell Inc. Latitude 3420)",
+    "mtp_rs_version": "0.38.1",
+    "git_rev": "d3d2e97787c7 (at build time)",
+    "libmtp_version": "not in this build (libmtp isn't built on Windows)",
+    "backends": "mtp-rs (no libmtp: libmtp isn't built on Windows)",
+    "mtp_rs_uploads": "in one piece (no windowed uploads on this device or backend)",
+    "device": "Google Pixel 9 Pro XL",
+    "device_firmware": "1.0",
+    "usb_speed": "USB 3.2 Gen 1 (5 Gbit/s)",
+    "load_start": "CPU 6% busy over 1 s (4 cores)",
+    "load_end": "CPU 28% busy over 1 s, 22% over the run (4 cores)"
+  },
+  "results": [
+    {
+      "backend": "MtpRs",
+      "operation": "DownloadStream",
+      "file_size_bytes": 1000000000,
+      "durations": [
+        {
+          "secs": 5,
+          "nanos": 771319500
+        },
+        {
+          "secs": 5,
+          "nanos": 983244000
+        },
+        {
+          "secs": 6,
+          "nanos": 61611100
+        },
+        {
+          "secs": 6,
+          "nanos": 301244400
+        },
+        {
+          "secs": 6,
+          "nanos": 412057900
+        },
+        {
+          "secs": 6,
+          "nanos": 231433200
+        },
+        {
+          "secs": 6,
+          "nanos": 55148900
+        },
+        {
+          "secs": 6,
+          "nanos": 291749900
+        }
+      ]
+    },
+    {
+      "backend": "MtpRs",
+      "operation": "DownloadPaced",
+      "file_size_bytes": 1000000000,
+      "durations": [
+        {
+          "secs": 6,
+          "nanos": 621783600
+        },
+        {
+          "secs": 6,
+          "nanos": 768539100
+        },
+        {
+          "secs": 6,
+          "nanos": 541549500
+        },
+        {
+          "secs": 6,
+          "nanos": 665584900
+        },
+        {
+          "secs": 6,
+          "nanos": 620813900
+        },
+        {
+          "secs": 6,
+          "nanos": 781649800
+        },
+        {
+          "secs": 6,
+          "nanos": 752461400
+        },
+        {
+          "secs": 6,
+          "nanos": 737386300
+        }
+      ]
+    }
+  ]
+}
