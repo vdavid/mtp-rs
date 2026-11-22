@@ -671,6 +671,9 @@ copy lookup matched on the name), and his app's rename of "the copy" renamed the
   Older bugs on the same path, left for later changes: the response carries a handle even on failure, a Java exception
   becomes handle 0 and the copy runs, and `getChild` matches names case-sensitively, so `a.jpg` onto `A.JPG` still
   overwrites. Even after this lands, devices on older Android keep the bug, so keep the mtp-rs guards.
+  On 2026-11-17 Neill handed all three to Febin Thattil (also a `media/mtp` owner) to review and cherry-pick into
+  Google's internal branch, which is how outside changes get into Android. A `Lint-1` (clang-format on the
+  `IMtpDatabase.h` line) was fixed in patchset 3 of 4430057.
 
 ### #63 / #64: Virtual device hands a held-open download over as one chunk (merged 2026-11-11)
 
