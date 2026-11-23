@@ -11,8 +11,6 @@ all-features = true
 ignore = [
     # Transitive dep of libmtp-rs (benchmark-only, not published). Nothing we can do upstream.
     "RUSTSEC-2024-0388",  # derivative unmaintained
-    # Transitive dev-dep via proptest. Not affected: requires custom logger calling rand::rng().
-    "RUSTSEC-2026-0097",  # rand unsound with custom logger
 ]
 
 [licenses]
