@@ -1,0 +1,11 @@
+# cargo-audit config, read by `just audit` and the Security Audit workflow (both run from the repo root).
+#
+# Both ignores are unmaintained crates that only the libmtp comparison benchmark (`mtp-bench`)
+# pulls in, through libmtp-rs: never published, never built by CI. cargo-audit can't scope by
+# package, so they're ignored by id; cargo-deny excludes `mtp-bench` instead (see deny.toml) and
+# still watches the crates we ship. Drop an entry once `cargo tree -i <crate> --workspace` is empty.
+[advisories]
+ignore = [
+    "RUSTSEC-2024-0388", # derivative is unmaintained (libmtp-rs)
+    "RUSTSEC-2026-0543", # chrono is unmaintained (libmtp-rs, and mtp-bench for its FileMetadata dates)
+]

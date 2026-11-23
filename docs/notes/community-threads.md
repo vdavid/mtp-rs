@@ -4,7 +4,7 @@ Catch-up reading for any agent that picks up issue or PR work, so you don't have
 start. Read this first when triaging a new issue or PR, and update it after work that affects community-facing context
 (see [Updating this doc](#updating-this-doc) at the bottom).
 
-Last updated: 2026-11-11.
+Last updated: 2026-11-23.
 
 ## Intentionally / continuously open threads
 
@@ -694,6 +694,13 @@ contribution) cuts a container longer than the read into `max_size` pieces at th
 - Rebase-merged with authorship kept; ships in the next release. Follow-up docs (AGENTS.md § Paced downloads no longer
   claims a window is always one chunk) landed separately.
 
+### #72 / #73 / #74: Stale advisory ignores, and `chrono` through the benchmark (closed 2026-11-23)
+
+Issue #73 and PR #74 by [@zyl71](https://github.com/zyl71) (first contribution, AI-assisted, disclosed): `deny.toml` still ignored RUSTSEC-2026-0097 (`rand`), but `Cargo.lock` had moved to the fixed `rand` 0.10.3, so the entry muted nothing. Correct; squash-merged 2026-11-23 after we ran its CI (first-time contributor runs need approval). Issue #72 (github-actions, RUSTSEC-2026-0543 `chrono` unmaintained) was red on the daily audit at the same time.
+
+- **Not affected**: `chrono` and `derivative` (RUSTSEC-2024-0388) come only from the unpublished `mtp-bench`, through `libmtp-rs`, whose `FileMetadata` takes a `chrono` date. Neither reaches consumers.
+- **Follow-up**: cargo-deny now excludes `mtp-bench` from its graph and fails on an ignore that matches nothing (`unused-ignored-advisory = "deny"`), so its ignore list is empty. cargo-audit can't scope by package, so it ignores both ids in `.cargo/audit.toml`, shared by `just audit` and the Security Audit workflow. The `derivative` entry in `deny.toml` had been stale too: cargo-deny only flags unmaintained crates a workspace member depends on directly.
+
 ## Device quirks reference
 
 Cross-cutting summary of every quirk currently handled or known. Sorted by device family.
@@ -772,6 +779,7 @@ Cross-cutting summary of every quirk currently handled or known. Sorted by devic
 - [@Muhtasim-Munif-Fahim](https://github.com/Muhtasim-Munif-Fahim): Muhtasim Munif Fahim. Picked up our own issue #63
   and sent PR #64 (2026-11-11): a focused fix with a regression test that fails on `main`, a CHANGELOG line, a doc
   line, and an honest note on which tests their sandbox couldn't run. AI-assisted, disclosed.
+- [@zyl71](https://github.com/zyl71): Spotted the stale `rand` advisory ignore (#73) and sent PR #74 (2026-11-21). Reads public files only and doesn't build the repo, so CI is its first run; AI-assisted, disclosed.
 
 ## Updating this doc
 

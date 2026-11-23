@@ -24,6 +24,8 @@ on:
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'deny.toml'
+      - '.cargo/audit.toml'
 
 env:
   CARGO_TERM_COLOR: always
@@ -54,9 +56,7 @@ jobs:
         uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          # derivative is unmaintained but only used transitively by libmtp-rs
-          # in the benchmarks workspace member, not a security issue
-          ignore: RUSTSEC-2024-0388
+          # Ignores live in .cargo/audit.toml, shared with `just audit`.
 
   # =============================================================================
   # License Check Job

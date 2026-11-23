@@ -6,12 +6,16 @@
 [graph]
 targets = []
 all-features = true
+# The libmtp comparison benchmark is a manual dev tool: never published, never built by CI, and its
+# libmtp-rs pulls in unmaintained crates (derivative, chrono) we can't move. Checking it would only
+# add ignores that also mute those advisories for the crates we ship. cargo-audit can't scope by
+# package, so it ignores them by id instead, in `.cargo/audit.toml`.
+exclude = ["mtp-bench"]
 
 [advisories]
-ignore = [
-    # Transitive dep of libmtp-rs (benchmark-only, not published). Nothing we can do upstream.
-    "RUSTSEC-2024-0388",  # derivative unmaintained
-]
+# An ignore that no longer matches anything fails the check, so it can't outlive its reason.
+unused-ignored-advisory = "deny"
+ignore = []
 
 [licenses]
 confidence-threshold = 0.8
