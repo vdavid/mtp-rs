@@ -54,7 +54,7 @@ pub fn device_date_to_system_time(dt: &DateTime, zone: &TimeZone) -> Option<Syst
                 0,
             )
             .ok()?;
-            zone.to_ambiguous_zoned(civil)
+            zone.to_ambiguous_zoned_datetime(civil)
                 .compatible()
                 .ok()?
                 .timestamp()
