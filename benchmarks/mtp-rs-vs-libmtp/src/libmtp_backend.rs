@@ -90,7 +90,7 @@ impl LibmtpBackend {
             file_size: data.len() as u64,
             file_name: filename,
             file_type: Filetype::Unknown,
-            modification_date: chrono::Utc::now(),
+            modification_date: libmtp_rs::chrono::Utc::now(),
         };
 
         let offset = Cell::new(0usize);

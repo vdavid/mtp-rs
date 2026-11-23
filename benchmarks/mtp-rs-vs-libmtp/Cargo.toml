@@ -39,8 +39,8 @@ comfy-table = "7"
 bytes = "1"
 futures = "0.3"
 
-# Run dates, and libmtp-rs FileMetadata (DateTime<Utc>)
-chrono = "0.4"
+# Run dates. libmtp-rs FileMetadata takes a chrono `DateTime<Utc>`, built through its `libmtp_rs::chrono` re-export.
+jiff = "1.0.1"
 
 # C-library baseline, behind the `libmtp` feature. Never on Windows: there's no libmtp that
 # `pkg-config` finds there, and Windows reaches phones through WPD, so the bench is mtp-rs only.

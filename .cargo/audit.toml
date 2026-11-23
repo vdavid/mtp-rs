@@ -7,5 +7,5 @@
 [advisories]
 ignore = [
     "RUSTSEC-2024-0388", # derivative is unmaintained (libmtp-rs)
-    "RUSTSEC-2026-0543", # chrono is unmaintained (libmtp-rs, and mtp-bench for its FileMetadata dates)
+    "RUSTSEC-2026-0543", # chrono is unmaintained (libmtp-rs; mtp-bench only reaches it through libmtp-rs's re-export)
 ]

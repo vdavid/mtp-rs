@@ -82,8 +82,8 @@ impl RunInfo {
     pub async fn collect(serial: Option<&str>) -> Self {
         let cpu_at_start = cpu::Times::now();
         let mut info = RunInfo {
-            date: chrono::Local::now()
-                .format("%Y-%m-%d %H:%M %:z")
+            date: jiff::ZonedDateTime::now()
+                .strftime("%Y-%m-%d %H:%M %:z")
                 .to_string(),
             os: host_os(),
             host: host_machine(),
