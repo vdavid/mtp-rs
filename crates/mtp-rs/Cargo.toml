@@ -98,3 +98,6 @@ unstable-raw = []
 # Parse entry points for the cargo-fuzz targets in `fuzz/` (`src/fuzzing.rs`). Not for applications:
 # exempt from SemVer and hidden from the docs.
 fuzzing = []
+
+[lints]
+workspace = true

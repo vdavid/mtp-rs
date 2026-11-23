@@ -51,3 +51,6 @@ libmtp-rs = { version = "0.7", optional = true }
 # Unit tests drive the mtp-rs backend against the in-process virtual device (no hardware).
 mtp-rs = { path = "../../crates/mtp-rs", features = ["virtual-device"] }
 tempfile = "3"
+
+[lints]
+workspace = true

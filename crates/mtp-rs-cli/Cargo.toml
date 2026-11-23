@@ -4,6 +4,8 @@ version = "0.11.9"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+# No `homepage`: it would only repeat `repository` (`cargo::redundant_homepage`). dist warns that it's missing and
+# uses `repository` for the Homebrew formula instead, which is the same URL.
 repository.workspace = true
 # Override the workspace `authors` field so Dmitry, who contributed the
 # initial CLI in #11, is credited on the crates.io page alongside the
@@ -17,7 +19,6 @@ keywords = ["mtp", "cli", "android", "garmin", "kindle"]
 categories = ["command-line-utilities", "filesystem"]
 readme = "README.md"
 documentation = "https://docs.rs/mtp-rs-cli"
-homepage = "https://github.com/vdavid/mtp-rs"
 
 [[bin]]
 name = "mtp-rs"
@@ -55,3 +56,6 @@ default = []
 # Enable to wire the test-only virtual device registration in main.rs.
 # Requires mtp-rs to be built with the virtual-device feature.
 virtual-device = ["mtp-rs/virtual-device"]
+
+[lints]
+workspace = true

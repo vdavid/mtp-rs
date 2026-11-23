@@ -24,7 +24,8 @@ repository = "https://github.com/vdavid/mtp-rs"
 authors = ["David Veszelovszki <veszelovszki@gmail.com>"]
 
 [workspace.lints.clippy]
-# Inherit clippy.toml at the workspace root.
+# Empty for now: every member inherits it (`[lints] workspace = true`), so a lint set here applies workspace-wide.
+# Clippy thresholds live in clippy.toml at the root, which Clippy reads on its own.
 
 # The profile `dist` builds release binaries with (see dist-workspace.toml).
 [profile.dist]
