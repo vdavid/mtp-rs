@@ -1,9 +1,10 @@
 //! Low-level PTP device API.
 
 use crate::mtp::MtpDeviceInfo;
+use crate::ptp::session::ContainerReader;
 use crate::ptp::{
-    container_type, unpack_u32, CommandContainer, ContainerType, DataContainer, DeviceInfo,
-    OperationCode, PtpSession, ResponseCode, ResponseContainer,
+    CommandContainer, ContainerType, DataContainer, DeviceInfo, OperationCode, PtpSession,
+    ResponseCode, ResponseContainer,
 };
 use crate::transport::{NusbTransport, Transport};
 use crate::PtpError as Error;
@@ -131,34 +132,14 @@ impl PtpDevice {
         };
         self.transport.send_bulk(&cmd.to_bytes()).await?;
 
-        // Receive data
-        // A single PTP container may span multiple USB bulk transfers when the
-        // device sends the 12-byte header in one transfer and the payload in
-        // follow-up transfers (allowed by the PTP spec, observed on Garmin
-        // Forerunner 955). Accumulate transfers until the full container is in
-        // hand, matching the in-session receive logic.
+        // Receive the data container(s), then the response. `ContainerReader` handles a
+        // container split across bulk transfers and the zero-length packet that can follow it.
+        let mut reader = ContainerReader::default();
         let mut data_payload = Vec::new();
         loop {
-            let mut bytes = self.transport.receive_bulk(64 * 1024).await?;
-            if bytes.is_empty() {
-                return Err(Error::invalid_data("Empty response"));
-            }
-
-            let ct = container_type(&bytes)?;
+            let (ct, bytes) = reader.next(self.transport.as_ref()).await?;
             match ct {
                 ContainerType::Data => {
-                    if bytes.len() >= 4 {
-                        let total_length = unpack_u32(&bytes[0..4])? as usize;
-                        while bytes.len() < total_length {
-                            let more = self.transport.receive_bulk(64 * 1024).await?;
-                            if more.is_empty() {
-                                return Err(Error::invalid_data(
-                                    "Incomplete data container: device stopped sending",
-                                ));
-                            }
-                            bytes.extend_from_slice(&more);
-                        }
-                    }
                     let container = DataContainer::from_bytes(&bytes)?;
                     data_payload.extend_from_slice(&container.payload);
                 }
@@ -281,6 +262,26 @@ mod tests {
         // Split: header in one transfer, payload in another.
         mock.queue_response(data_container_header(total_length));
         mock.queue_response(payload);
+        mock.queue_response(ok_response_session_less());
+
+        let device = PtpDevice {
+            transport: mock as Arc<dyn Transport>,
+        };
+
+        let info = device.get_device_info().await.unwrap();
+        assert_eq!(info.standard_version, 100);
+    }
+
+    #[tokio::test]
+    async fn get_device_info_skips_the_zero_length_packet_after_a_full_read() {
+        let mock = Arc::new(MockTransport::new());
+
+        let mut payload = minimal_device_info_payload();
+        payload.resize(64 * 1024 - 12, 0);
+        let mut container = data_container_header(64 * 1024);
+        container.extend_from_slice(&payload);
+        mock.queue_response(container);
+        mock.queue_response(Vec::new());
         mock.queue_response(ok_response_session_less());
 
         let device = PtpDevice {
