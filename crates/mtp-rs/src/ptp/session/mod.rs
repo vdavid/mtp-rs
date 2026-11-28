@@ -693,36 +693,15 @@ impl PtpSession {
         };
         self.transport.send_bulk(&cmd.to_bytes()).await?;
 
-        // Receive data container(s)
-        // MTP sends data in one or more containers, then response.
-        // A single data container may span multiple USB transfers if larger than 64KB.
+        // Receive data container(s), then the response.
+        let mut reader = ContainerReader::default();
         let mut data = Vec::new();
         let mut skipped = 0;
 
         loop {
-            let mut bytes = self.transport.receive_bulk(64 * 1024).await?;
-            if bytes.is_empty() {
-                return Err(Error::invalid_data("Empty response"));
-            }
-
-            let ct = container_type(&bytes)?;
+            let (ct, bytes) = reader.next(self.transport.as_ref()).await?;
             match ct {
                 ContainerType::Data => {
-                    // Check if we need to receive more data for this container.
-                    // The length field in the header tells us the total container size.
-                    if bytes.len() >= 4 {
-                        let total_length = unpack_u32(&bytes[0..4])? as usize;
-                        // Keep receiving until we have the complete container
-                        while bytes.len() < total_length {
-                            let more = self.transport.receive_bulk(64 * 1024).await?;
-                            if more.is_empty() {
-                                return Err(Error::invalid_data(
-                                    "Incomplete data container: device stopped sending",
-                                ));
-                            }
-                            bytes.extend_from_slice(&more);
-                        }
-                    }
                     let container = DataContainer::from_bytes(&bytes)?;
                     data.extend_from_slice(&container.payload);
                     // Continue to receive more containers or response
@@ -885,6 +864,56 @@ impl PtpSession {
                 operation,
             })
         }
+    }
+}
+
+/// Bulk IN read size for the buffered receive paths.
+const BUFFERED_READ: usize = 64 * 1024;
+
+/// Reads complete containers off bulk IN for buffered receives
+/// ([`PtpSession::execute_with_receive`] and `PtpDevice::get_device_info`).
+///
+/// Accumulates data containers split across bulk transfers (larger than 64 KiB, or a
+/// separate 12-byte header transfer), and skips at most one trailing zero-length packet
+/// immediately after a `Data` container whose last read filled [`BUFFERED_READ`]. Empty
+/// reads anywhere else stay errors.
+#[derive(Default)]
+pub(crate) struct ContainerReader {
+    zero_length_packet_may_follow: bool,
+}
+
+impl ContainerReader {
+    /// Read the next complete container, data or otherwise.
+    pub(crate) async fn next(
+        &mut self,
+        transport: &dyn Transport,
+    ) -> Result<(ContainerType, Vec<u8>), Error> {
+        let mut bytes = transport.receive_bulk(BUFFERED_READ).await?;
+        if bytes.is_empty() && std::mem::take(&mut self.zero_length_packet_may_follow) {
+            bytes = transport.receive_bulk(BUFFERED_READ).await?;
+        }
+        self.zero_length_packet_may_follow = false;
+        if bytes.is_empty() {
+            return Err(Error::invalid_data("Empty response"));
+        }
+
+        let ct = container_type(&bytes)?;
+        if ct == ContainerType::Data {
+            let total_length = unpack_u32(&bytes[0..4])? as usize;
+            let mut last_read = bytes.len();
+            while bytes.len() < total_length {
+                let more = transport.receive_bulk(BUFFERED_READ).await?;
+                if more.is_empty() {
+                    return Err(Error::invalid_data(
+                        "Incomplete data container: device stopped sending",
+                    ));
+                }
+                last_read = more.len();
+                bytes.extend_from_slice(&more);
+            }
+            self.zero_length_packet_may_follow = last_read == BUFFERED_READ;
+        }
+        Ok((ct, bytes))
     }
 }
 
@@ -1157,6 +1186,171 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.transaction_id, 2);
+    }
+
+    /// A session with `GetPartialObject` (tx 1) about to run, for the zero-length-packet tests.
+    async fn session_for_buffered_receive() -> (PtpSession, Arc<MockTransport>) {
+        let (transport, mock) = mock_transport();
+        mock.queue_response(ok_response(0)); // OpenSession
+        (PtpSession::open(transport, 1).await.unwrap(), mock)
+    }
+
+    async fn get_partial_object(session: &PtpSession, max_bytes: u32) -> Result<Vec<u8>, Error> {
+        session
+            .execute_with_receive(OperationCode::GetPartialObject, &[1, 0, max_bytes])
+            .await
+            .map(|(_, data)| data)
+    }
+
+    fn payload(len: usize) -> Vec<u8> {
+        (0..len).map(|i| i as u8).collect()
+    }
+
+    /// The next operation must run without a recovery drain (the mock's drain would
+    /// swallow its queued reply).
+    async fn assert_session_in_sync(session: &PtpSession, mock: &MockTransport, tx_id: u32) {
+        mock.queue_response(ok_response(tx_id));
+        session
+            .execute(OperationCode::GetStorageIds, &[])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn zero_length_packet_after_a_split_header_and_full_read_payload_is_skipped() {
+        let (session, mock) = session_for_buffered_receive().await;
+        let data = payload(64 * 1024);
+        let mut container = data_container(1, OperationCode::GetPartialObject, &data);
+        let body = container.split_off(HEADER_SIZE);
+        mock.queue_response(container);
+        mock.queue_response(body);
+        mock.queue_response(Vec::new());
+        mock.queue_response(ok_response(1));
+
+        assert_eq!(
+            get_partial_object(&session, data.len() as u32)
+                .await
+                .unwrap(),
+            data
+        );
+        assert_session_in_sync(&session, &mock, 2).await;
+    }
+
+    #[tokio::test]
+    async fn zero_length_packet_after_a_multi_read_container_ending_on_a_full_read_is_skipped() {
+        let (session, mock) = session_for_buffered_receive().await;
+        let data = payload(2 * 64 * 1024 - HEADER_SIZE);
+        let mut first = data_container(1, OperationCode::GetPartialObject, &data);
+        let second = first.split_off(64 * 1024);
+        assert_eq!(first.len(), 64 * 1024);
+        assert_eq!(second.len(), 64 * 1024);
+        mock.queue_response(first);
+        mock.queue_response(second);
+        mock.queue_response(Vec::new());
+        mock.queue_response(ok_response(1));
+
+        assert_eq!(
+            get_partial_object(&session, data.len() as u32)
+                .await
+                .unwrap(),
+            data
+        );
+        assert_session_in_sync(&session, &mock, 2).await;
+    }
+
+    #[tokio::test]
+    async fn zero_length_packet_after_a_container_filling_the_read_is_skipped() {
+        let (session, mock) = session_for_buffered_receive().await;
+        let data = payload(64 * 1024 - HEADER_SIZE);
+        mock.queue_response(data_container(1, OperationCode::GetPartialObject, &data));
+        mock.queue_response(Vec::new());
+        mock.queue_response(ok_response(1));
+
+        assert_eq!(
+            get_partial_object(&session, data.len() as u32)
+                .await
+                .unwrap(),
+            data
+        );
+        assert_session_in_sync(&session, &mock, 2).await;
+    }
+
+    #[tokio::test]
+    async fn empty_read_before_any_data_is_still_an_error() {
+        let (session, mock) = session_for_buffered_receive().await;
+        mock.queue_response(Vec::new());
+
+        let result = get_partial_object(&session, 64 * 1024).await;
+        assert!(
+            matches!(&result, Err(Error::InvalidData { message }) if message == "Empty response"),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_read_inside_a_data_container_is_still_an_error() {
+        let (session, mock) = session_for_buffered_receive().await;
+        let mut container = data_container(1, OperationCode::GetPartialObject, &payload(64 * 1024));
+        container.truncate(HEADER_SIZE + 1024);
+        mock.queue_response(container);
+        mock.queue_response(Vec::new());
+
+        let result = get_partial_object(&session, 64 * 1024).await;
+        assert!(
+            matches!(&result, Err(Error::InvalidData { message }) if message.starts_with("Incomplete data container")),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_zero_length_packet_is_an_error() {
+        let (session, mock) = session_for_buffered_receive().await;
+        let data = payload(64 * 1024 - HEADER_SIZE);
+        mock.queue_response(data_container(1, OperationCode::GetPartialObject, &data));
+        mock.queue_response(Vec::new());
+        mock.queue_response(Vec::new());
+        mock.queue_response(ok_response(1));
+
+        let result = get_partial_object(&session, data.len() as u32).await;
+        assert!(
+            matches!(&result, Err(Error::InvalidData { message }) if message == "Empty response"),
+            "{result:?}"
+        );
+        // It failed on the second empty read, not the first: the response is still queued.
+        assert_eq!(mock.receive_bulk(512).await.unwrap(), ok_response(1));
+    }
+
+    #[tokio::test]
+    async fn a_full_read_may_be_followed_directly_by_the_response() {
+        let (session, mock) = session_for_buffered_receive().await;
+        let data = payload(64 * 1024 - HEADER_SIZE);
+        mock.queue_response(data_container(1, OperationCode::GetPartialObject, &data));
+        mock.queue_response(ok_response(1));
+
+        assert_eq!(
+            get_partial_object(&session, data.len() as u32)
+                .await
+                .unwrap(),
+            data
+        );
+        assert_session_in_sync(&session, &mock, 2).await;
+    }
+
+    #[tokio::test]
+    async fn empty_read_after_a_container_ending_on_a_short_read_is_an_error() {
+        let (session, mock) = session_for_buffered_receive().await;
+        mock.queue_response(data_container(
+            1,
+            OperationCode::GetPartialObject,
+            &payload(1000),
+        ));
+        mock.queue_response(Vec::new());
+
+        let result = get_partial_object(&session, 1000).await;
+        assert!(
+            matches!(&result, Err(Error::InvalidData { message }) if message == "Empty response"),
+            "{result:?}"
+        );
     }
 
     #[tokio::test]
